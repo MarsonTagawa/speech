@@ -1,0 +1,490 @@
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+
+  color: #0f0f0f;
+  background-color: #f6f6f6;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.container {
+  margin: 0 auto;
+  max-width: 640px;
+  padding: 6vh 24px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+h1 {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.record-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.record-btn {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.7em 1.6em;
+  font-size: 1em;
+  font-weight: 600;
+  font-family: inherit;
+  color: #ffffff;
+  background-color: #396cd8;
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.15);
+}
+
+.record-btn:hover {
+  background-color: #2f5bb8;
+}
+
+.record-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.record-btn.recording {
+  background-color: #d83939;
+}
+
+.record-btn.recording:hover {
+  background-color: #b82f2f;
+}
+
+.status {
+  font-size: 0.95em;
+  opacity: 0.7;
+}
+
+.mode-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+}
+
+/* Key for the two-pass transcript colors (fast draft vs corrected). */
+.legend {
+  display: flex;
+  gap: 1.25rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.legend-swatch {
+  width: 0.85em;
+  height: 0.85em;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.legend-fast {
+  background-color: #d9a441;
+}
+
+.legend-corrected {
+  background-color: #2e7d32;
+}
+
+.script-section {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+  text-align: left;
+}
+
+.script-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.file-btn {
+  font-size: 0.85em;
+  padding: 0.3em 0.8em;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.script-input {
+  width: 100%;
+  resize: vertical;
+  padding: 0.6em 0.8em;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  font-family: inherit;
+  font-size: 0.95em;
+  background-color: #ffffff;
+  color: #0f0f0f;
+}
+
+.script-display {
+  width: 100%;
+  max-height: 30vh;
+  overflow-y: auto;
+  position: relative;
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+  background-color: #ffffff;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+  line-height: 1.8;
+  font-size: 1.1em;
+}
+
+.script-display[hidden],
+.script-progress[hidden] {
+  display: none;
+}
+
+/* Upcoming (not-yet-read) script text is dimmed; spoken words go solid green;
+   the current position is highlighted. */
+.script-pending {
+  opacity: 0.45;
+}
+
+.script-hit {
+  color: #2e7d32;
+}
+
+/* Skipped or misread: the reader moved past it without saying it. */
+.script-miss {
+  color: #c62828;
+  background-color: #f8d7da;
+  border-radius: 3px;
+  padding: 0 0.1em;
+}
+
+.script-current {
+  background-color: #ffe08a;
+  border-radius: 3px;
+  padding: 0 0.1em;
+}
+
+.script-progress {
+  font-size: 0.85em;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats {
+  display: flex;
+  width: 100%;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.75rem 0.5rem;
+  border-radius: 8px;
+  background-color: #ffffff;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+}
+
+.stat-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+  margin-top: 0.15rem;
+}
+
+.transcript {
+  width: 100%;
+  min-height: 320px;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+  background-color: #ffffff;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+  text-align: left;
+}
+
+.transcript .placeholder {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.transcript .segment {
+  margin: 0 0 0.6em;
+  padding-left: 0.6em;
+  border-left: 3px solid transparent;
+  transition: opacity 0.15s, border-color 0.2s;
+}
+
+/* Two-pass status, shown via the left border + a small trailing chip:
+   - partial/draft: fast (tiny) model output — live interim, then committed
+     draft — marked amber.
+   - corrected: replaced by the accurate (medium) model — green, and the line
+     flashes once so the correction is visible as it lands. */
+.transcript .segment.partial {
+  opacity: 0.55;
+  font-style: italic;
+  border-left-color: #d9a441;
+}
+
+.transcript .segment.draft {
+  border-left-color: #d9a441;
+}
+
+.transcript .segment.corrected {
+  border-left-color: #2e7d32;
+  animation: correctedFlash 0.9s ease-out;
+}
+
+.transcript .segment.draft::after,
+.transcript .segment.corrected::after {
+  margin-left: 0.5em;
+  font-size: 0.62em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  vertical-align: middle;
+  opacity: 0.85;
+}
+
+.transcript .segment.draft::after {
+  content: "fast";
+  color: #b9822a;
+}
+
+.transcript .segment.corrected::after {
+  content: "corrected";
+  color: #2e7d32;
+}
+
+@keyframes correctedFlash {
+  from {
+    background-color: rgba(46, 125, 50, 0.22);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.transcript .timestamp {
+  display: inline-block;
+  min-width: 3em;
+  color: #396cd8;
+  font-variant-numeric: tabular-nums;
+  margin-right: 0.5em;
+}
+
+.transcript .error {
+  color: #d83939;
+  margin: 0 0 0.6em;
+}
+
+/* Filler words / hesitation markers, flagged inline in the transcript. */
+.transcript .filler {
+  background-color: #ffe08a;
+  border-radius: 3px;
+  padding: 0 0.15em;
+  font-weight: 600;
+}
+
+/* Per-utterance amplitude waveform under each committed line, with the VAD-
+   detected hesitation pauses shaded on top. Stretches to the line width;
+   preserveAspectRatio="none" on the SVG lets the bars fill it horizontally. */
+.transcript .waveform {
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin-top: 0.4em;
+  overflow: visible;
+}
+
+.transcript .waveform-bars rect {
+  fill: #396cd8;
+  opacity: 0.5;
+}
+
+.transcript .waveform-pause {
+  fill: rgba(216, 57, 57, 0.16);
+}
+
+/* Pace-per-sentence chart: one bar per committed utterance, with a dashed line
+   at the session-average WPM. The SVG uses preserveAspectRatio="none" so bars
+   fill the width; the average line uses non-scaling-stroke to stay crisp. */
+.chart-section {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1.25rem;
+  text-align: left;
+}
+
+.chart-section[hidden] {
+  display: none;
+}
+
+.wpm-chart {
+  width: 100%;
+  height: 100px;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  background-color: #ffffff;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+}
+
+.wpm-chart svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.wpm-bar {
+  fill: #396cd8;
+  opacity: 0.75;
+}
+
+.wpm-avg {
+  stroke: #d9a441;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-caption {
+  font-size: 0.8em;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f6f6f6;
+    background-color: #2f2f2f;
+  }
+
+  .transcript,
+  .stat {
+    background-color: #0f0f0f98;
+  }
+
+  .script-input {
+    background-color: #1f1f1f;
+    color: #f6f6f6;
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .script-display {
+    background-color: #0f0f0f98;
+  }
+
+  .file-btn {
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .script-hit {
+    color: #7ee081;
+  }
+
+  .script-miss {
+    color: #ffb3b3;
+    background-color: #6e2020;
+  }
+
+  .script-current {
+    background-color: #8a6d1f;
+    color: #fff6da;
+  }
+
+  .transcript .timestamp {
+    color: #7fa8f0;
+  }
+
+  .transcript .filler {
+    background-color: #8a6d1f;
+    color: #fff6da;
+  }
+
+  .transcript .waveform-bars rect {
+    fill: #7fa8f0;
+    opacity: 0.45;
+  }
+
+  .transcript .waveform-pause {
+    fill: rgba(255, 179, 179, 0.18);
+  }
+
+  .wpm-chart {
+    background-color: #0f0f0f98;
+  }
+
+  .wpm-bar {
+    fill: #7fa8f0;
+  }
+
+  .wpm-avg {
+    stroke: #e0b968;
+  }
+
+  /* Brighter green for the "corrected" state so it reads on the dark panel. */
+  .transcript .segment.corrected {
+    border-left-color: #7ee081;
+  }
+
+  .transcript .segment.corrected::after {
+    color: #7ee081;
+  }
+
+  .legend-corrected {
+    background-color: #7ee081;
+  }
+
+  @keyframes correctedFlash {
+    from {
+      background-color: rgba(126, 224, 129, 0.18);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+}
