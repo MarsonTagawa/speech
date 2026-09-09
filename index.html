@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Speech</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="container">
+      <h1>Speech</h1>
+
+      <div class="record-row">
+        <button id="record-btn" class="record-btn">Start recording</button>
+        <span id="status" class="status">Idle</span>
+      </div>
+
+      <div class="legend" aria-label="Transcription status legend">
+        <span class="legend-item"><span class="legend-swatch legend-fast"></span>fast draft</span>
+        <span class="legend-item"><span class="legend-swatch legend-corrected"></span>corrected</span>
+      </div>
+
+      <div class="script-section">
+        <div class="script-head">
+          <span class="mode-label">Script</span>
+          <label class="file-btn">
+            Load .txt
+            <input id="script-file" type="file" accept=".txt,text/plain" hidden />
+          </label>
+        </div>
+        <textarea
+          id="script-input"
+          class="script-input"
+          rows="3"
+          spellcheck="false"
+          placeholder="Paste a script to read aloud, or load a .txt. As you speak, your words are matched against it in real time."
+        ></textarea>
+        <div id="script-display" class="script-display" hidden></div>
+        <div id="script-progress" class="script-progress" hidden></div>
+      </div>
+
+      <div id="stats" class="stats">
+        <div class="stat">
+          <span class="stat-value" id="stat-wpm">0</span>
+          <span class="stat-label">WPM</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-words">0</span>
+          <span class="stat-label">words</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-fillers">0</span>
+          <span class="stat-label">fillers</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-pauses">0</span>
+          <span class="stat-label">pauses</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-time">0:00</span>
+          <span class="stat-label">speaking</span>
+        </div>
+      </div>
+
+      <div id="wpm-chart-section" class="chart-section" hidden>
+        <span class="mode-label">Pace per sentence (WPM)</span>
+        <div id="wpm-chart" class="wpm-chart"></div>
+        <div id="wpm-chart-caption" class="chart-caption"></div>
+      </div>
+
+      <div id="transcript" class="transcript">
+        <p class="placeholder">Your transcript will appear here as you speak.</p>
+      </div>
+    </main>
+  </body>
+</html>
