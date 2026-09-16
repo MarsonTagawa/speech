@@ -3748,6 +3748,7 @@ dependencies = [
  "ndarray 0.15.6",
  "ort",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

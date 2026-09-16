@@ -151,7 +151,7 @@ pub fn run(state: &mut WhisperState, audio: &[f32], prime_fillers: bool) -> Resu
         // stray byte and keeps the rest of the text.
         text.push_str(&state.full_get_segment_text_lossy(i).map_err(|e| e.to_string())?);
     }
-    Ok(collapse_repeats(text.trim()))
+    Ok(clean_transcript(&collapse_repeats(text.trim())))
 }
 
 /// Collapses runaway repetition-loop hallucinations. Greedy Whisper decoding —
@@ -201,9 +201,34 @@ fn collapse_repeats(text: &str) -> String {
     out.join(" ")
 }
 
+/// Strips Whisper's non-speech artifacts. On silence, breaths, or background
+/// noise both models hallucinate annotations — "(silence)", "[BLANK_AUDIO]",
+/// "(coughs)", "♪music♪" — or bare punctuation like "." or "...". Whisper
+/// reserves brackets/parens/music-notes for these non-speech tokens, so removing
+/// those spans is safe for real speech (which never contains them). If nothing
+/// with a letter or digit survives, the clip was non-speech and we return "" so
+/// the caller drops the line (fast pass) or keeps the prior text (correction).
+fn clean_transcript(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut depth: i32 = 0;
+    for c in text.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = (depth - 1).max(0),
+            '♪' | '♫' => {}
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    if !out.chars().any(char::is_alphanumeric) {
+        return String::new();
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::collapse_repeats;
+    use super::{clean_transcript, collapse_repeats};
 
     #[test]
     fn collapses_phrase_loop() {
@@ -234,6 +259,24 @@ mod tests {
     fn keeps_a_double() {
         // Only 2 repeats: below the 3x threshold, left untouched.
         assert_eq!(collapse_repeats("bye bye now"), "bye bye now");
+    }
+
+    #[test]
+    fn drops_punctuation_only_hallucinations() {
+        // The two reported non-speech artifacts: bare "." and parentheses.
+        assert_eq!(clean_transcript("."), "");
+        assert_eq!(clean_transcript("..."), "");
+        assert_eq!(clean_transcript("(...)"), "");
+        assert_eq!(clean_transcript("[BLANK_AUDIO]"), "");
+        assert_eq!(clean_transcript("(silence)"), "");
+        assert_eq!(clean_transcript("♪♪"), "");
+    }
+
+    #[test]
+    fn strips_annotations_but_keeps_speech() {
+        assert_eq!(clean_transcript("hello (laughs) world"), "hello world");
+        assert_eq!(clean_transcript("the quick brown fox"), "the quick brown fox");
+        assert_eq!(clean_transcript("um, so, like"), "um, so, like");
     }
 }
 

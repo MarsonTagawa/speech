@@ -103,6 +103,16 @@ pub struct UtteranceAnalysis {
     pub pauses: Vec<Pause>,
     pub pause_count: u32,
     pub total_pause_ms: u64,
+    /// Absolute RMS loudness of the whole utterance (0-1). Unlike `envelope`
+    /// (self-normalized per utterance), this is comparable across utterances, so
+    /// the frontend can score loudness consistency and flag too-quiet speech.
+    pub rms_level: f32,
+    /// Median voiced pitch in Hz (0.0 if unvoiced).
+    pub f0_median: f32,
+    /// Within-utterance pitch spread in semitones (the inflection range; ~0 = monotone).
+    pub f0_range_semitones: f32,
+    /// True if the utterance's pitch rises at the end (uptalk).
+    pub f0_terminal_rising: bool,
 }
 
 /// A committed utterance queued for the accurate-model correction pass. Carries
@@ -399,6 +409,12 @@ fn detect_pauses(probs: &[f32]) -> Vec<Pause> {
 fn analyze_utterance(index: u64, audio: &[f32], probs: &[f32]) -> UtteranceAnalysis {
     let pauses = detect_pauses(probs);
     let total_pause_ms = pauses.iter().map(|p| p.end_ms - p.start_ms).sum();
+    let rms_level = if audio.is_empty() {
+        0.0
+    } else {
+        (audio.iter().map(|s| s * s).sum::<f32>() / audio.len() as f32).sqrt()
+    };
+    let pitch = crate::pitch::analyze(audio);
     UtteranceAnalysis {
         index,
         duration_ms: audio.len() as u64 * 1000 / TARGET_SAMPLE_RATE as u64,
@@ -406,6 +422,10 @@ fn analyze_utterance(index: u64, audio: &[f32], probs: &[f32]) -> UtteranceAnaly
         pause_count: pauses.len() as u32,
         total_pause_ms,
         pauses,
+        rms_level,
+        f0_median: pitch.median_hz,
+        f0_range_semitones: pitch.range_semitones,
+        f0_terminal_rising: pitch.terminal_rising,
     }
 }
 

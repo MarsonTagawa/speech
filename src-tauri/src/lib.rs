@@ -1,4 +1,6 @@
 mod audio;
+mod history;
+mod pitch;
 mod vad;
 mod whisper;
 
@@ -107,7 +109,9 @@ pub fn run() {
             greet,
             whisper::transcribe,
             audio::start_recording,
-            audio::stop_recording
+            audio::stop_recording,
+            history::save_session,
+            history::list_sessions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
