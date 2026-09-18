@@ -9,17 +9,32 @@
   </head>
 
   <body>
+    <canvas id="ribbon" class="ribbon" aria-hidden="true"></canvas>
+
     <main class="container">
       <h1>Speech</h1>
 
       <div class="record-row">
         <button id="record-btn" class="record-btn">Start recording</button>
+        <button id="reset-btn" class="mini-btn" type="button">Reset</button>
         <span id="status" class="status">Idle</span>
       </div>
 
       <div class="legend" aria-label="Transcription status legend">
         <span class="legend-item"><span class="legend-swatch legend-fast"></span>fast draft</span>
         <span class="legend-item"><span class="legend-swatch legend-corrected"></span>corrected</span>
+      </div>
+
+      <div class="practice">
+        <div class="practice-controls">
+          <button id="prompt-btn" class="mini-btn" type="button">Random prompt</button>
+          <button id="drill-btn" class="mini-btn" type="button">Start 60s drill</button>
+          <label class="toggle">
+            <input id="filler-free" type="checkbox" />
+            Filler-free mode
+          </label>
+        </div>
+        <p id="practice-prompt" class="practice-prompt"></p>
       </div>
 
       <div class="script-section">
@@ -64,11 +79,20 @@
         </div>
       </div>
 
-      <div id="wpm-chart-section" class="chart-section" hidden>
-        <span class="mode-label">Pace per sentence (WPM)</span>
-        <div id="wpm-chart" class="wpm-chart"></div>
-        <div id="wpm-chart-caption" class="chart-caption"></div>
-      </div>
+      <section id="report" class="report" hidden>
+        <div class="report-head">
+          <span class="mode-label">Session report</span>
+          <label class="context-select">
+            Context
+            <select id="report-preset">
+              <option value="conversation">Conversation</option>
+              <option value="presentation">Presentation</option>
+              <option value="interview">Interview</option>
+            </select>
+          </label>
+        </div>
+        <div id="report-body"></div>
+      </section>
 
       <div id="transcript" class="transcript">
         <p class="placeholder">Your transcript will appear here as you speak.</p>

@@ -454,6 +454,10 @@ fn run_processing_loop(
     let mut utterance_start_sample: u64 = 0;
     let mut utterance_index: u64 = 0;
     let mut samples_since_partial: usize = 0;
+    // Live input level (peak RMS) for the UI ribbon visualizer, emitted ~every
+    // other frame (~64ms) so IPC stays cheap; the frontend smooths it.
+    let mut level_peak: f32 = 0.0;
+    let mut level_frames: u32 = 0;
     // Ensures at most one interim decode runs at a time; a new one is skipped
     // while the previous is still in the model, which self-throttles to the
     // machine's decode speed.
@@ -466,6 +470,15 @@ fn run_processing_loop(
 
         while pending.len() >= FRAME_SAMPLES {
             let frame: Vec<f32> = pending.drain(0..FRAME_SAMPLES).collect();
+
+            let energy: f32 = frame.iter().map(|s| s * s).sum();
+            level_peak = level_peak.max((energy / frame.len() as f32).sqrt());
+            level_frames += 1;
+            if level_frames >= 2 {
+                let _ = app.emit("audio_level", level_peak);
+                level_peak = 0.0;
+                level_frames = 0;
+            }
 
             let vad_state = app.state::<VadModel>();
             let prob = match vad_state.0.lock() {

@@ -25,7 +25,7 @@ body {
 .container {
   margin: 0 auto;
   max-width: 640px;
-  padding: 6vh 24px 24px;
+  padding: 0 24px 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -34,6 +34,25 @@ body {
 h1 {
   text-align: center;
   margin-bottom: 2rem;
+}
+
+/* Full-bleed hero. The ribbon composites additively, so it needs a black bed;
+   masking the bottom edge to transparent melts it into the page instead of
+   sitting there as a bordered black window. */
+.ribbon {
+  display: block;
+  width: 100%;
+  height: 34vh;
+  min-height: 200px;
+  max-height: 320px;
+  background: #000;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
+}
+
+/* Title rises into the ribbon's fade so the two read as one header. */
+.container h1 {
+  margin-top: -6vh;
 }
 
 .record-row {
@@ -347,54 +366,339 @@ h1 {
   fill: rgba(216, 57, 57, 0.16);
 }
 
-/* Pace-per-sentence chart: one bar per committed utterance, with a dashed line
-   at the session-average WPM. The SVG uses preserveAspectRatio="none" so bars
-   fill the width; the average line uses non-scaling-stroke to stay crisp. */
-.chart-section {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-bottom: 1.25rem;
-  text-align: left;
+.chart-caption {
+  font-size: 0.8em;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
 }
 
-.chart-section[hidden] {
+/* --- Practice controls ---------------------------------------------------- */
+.practice {
+  width: 100%;
+  margin-bottom: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.practice-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.mini-btn {
+  font-size: 0.85em;
+  padding: 0.35em 0.8em;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.mini-btn:hover {
+  border-color: #396cd8;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-size: 0.85em;
+  opacity: 0.85;
+  cursor: pointer;
+}
+
+.practice-prompt {
+  margin: 0;
+  font-size: 1.05em;
+  font-style: italic;
+  min-height: 1.2em;
+}
+
+.practice-prompt:empty {
   display: none;
 }
 
-.wpm-chart {
-  width: 100%;
-  height: 100px;
-  padding: 0.5rem 0.6rem;
-  border-radius: 8px;
-  background-color: #ffffff;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+/* Brief red flash of the window edge when a filler is caught in filler-free mode. */
+body.filler-flash {
+  box-shadow: inset 0 0 0 4px rgba(216, 57, 57, 0.75);
+  transition: box-shadow 0.1s;
 }
 
-.wpm-chart svg {
+/* --- Session report ------------------------------------------------------- */
+.report {
+  width: 100%;
+  margin-bottom: 1.25rem;
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+  text-align: left;
+}
+
+.report[hidden] {
+  display: none;
+}
+
+.report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.context-select {
+  font-size: 0.8em;
+  opacity: 0.8;
+}
+
+.context-select select {
+  font-family: inherit;
+  font-size: 1em;
+  margin-left: 0.3em;
+  padding: 0.15em 0.3em;
+  border-radius: 5px;
+}
+
+.score-hero {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.score-ring {
+  flex: 0 0 auto;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: #396cd8;
+}
+
+.score-a { background: #2e7d32; }
+.score-b { background: #5a9e3a; }
+.score-c { background: #d9a441; }
+.score-d { background: #d97941; }
+.score-e { background: #d83939; }
+
+.score-num {
+  font-size: 1.9rem;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-grade {
+  font-size: 0.75rem;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.score-meta {
+  font-size: 0.9em;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+
+.subscores {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.subscore {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr 2rem;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85em;
+}
+
+.subscore-label {
+  opacity: 0.8;
+}
+
+.subscore-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.meter {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: #396cd8;
+}
+
+.tips {
+  margin-bottom: 1rem;
+}
+
+.tips ol {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.tips li {
+  margin-bottom: 0.4rem;
+  line-height: 1.45;
+}
+
+.report-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.report-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.report-chart-box {
+  width: 100%;
+  height: 70px;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.report-chart-box.large {
+  height: 150px;
+}
+
+.report-chart-svg {
   display: block;
   width: 100%;
   height: 100%;
   overflow: visible;
 }
 
-.wpm-bar {
+/* Report bar-chart axes: a y-axis column (peak value + unit at top, 0 at the
+   baseline) beside the plot, and an x-axis label under it. */
+.chart-plot {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+.chart-plot .report-chart-box {
+  flex: 1;
+}
+
+.y-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  padding: 0.2rem 0;
+  font-size: 0.62rem;
+  line-height: 1;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+
+.x-axis-label {
+  margin-top: 0.15rem;
+  text-align: center;
+  font-size: 0.62rem;
+  opacity: 0.55;
+}
+
+.report-bar {
   fill: #396cd8;
   opacity: 0.75;
 }
 
-.wpm-avg {
-  stroke: #d9a441;
-  stroke-width: 1;
-  stroke-dasharray: 4 3;
+.report-chart-svg.trend polyline {
+  stroke: #396cd8;
+  stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }
 
-.chart-caption {
-  font-size: 0.8em;
-  opacity: 0.7;
-  font-variant-numeric: tabular-nums;
+/* Per-point hover targets: invisible until hovered, then a dot appears and the
+   native <title> tooltip shows that second's WPM + filler count. */
+.trend-hit {
+  fill: transparent;
+}
+
+.trend-hit:hover {
+  fill: #396cd8;
+}
+
+.wpm-filler-mark {
+  stroke: #d83939;
+  stroke-width: 2;
+  stroke-linecap: round;
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.report-chart-svg .axis-label,
+.report-chart-svg .axis-unit {
+  fill: currentColor;
+  opacity: 0.55;
+  font-size: 10px;
+}
+
+.report-chart-svg .axis-unit {
+  opacity: 0.75;
+  font-weight: 600;
+}
+
+.report-chart-svg .axis-grid {
+  stroke: currentColor;
+  opacity: 0.14;
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.72rem;
+  opacity: 0.8;
+}
+
+.legend-mark {
+  width: 16px;
+  height: 10px;
+  overflow: visible;
+}
+
+.legend-mark line {
+  stroke: #396cd8;
+  stroke-width: 2;
+}
+
+.legend-mark circle {
+  fill: #396cd8;
+}
+
+.legend-mark.filler path {
+  stroke: #d83939;
+  stroke-width: 2;
+  stroke-linecap: round;
+  fill: none;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -454,16 +758,42 @@ h1 {
     fill: rgba(255, 179, 179, 0.18);
   }
 
-  .wpm-chart {
+  .mini-btn {
+    background-color: #1f1f1f;
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .report {
     background-color: #0f0f0f98;
   }
 
-  .wpm-bar {
+  .report-chart-box {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .meter {
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .report-bar,
+  .trend-hit:hover {
     fill: #7fa8f0;
   }
 
-  .wpm-avg {
-    stroke: #e0b968;
+  .report-chart-svg.trend polyline {
+    stroke: #7fa8f0;
+  }
+
+  .legend-mark line {
+    stroke: #7fa8f0;
+  }
+
+  .legend-mark circle {
+    fill: #7fa8f0;
+  }
+
+  .meter-fill {
+    background: #7fa8f0;
   }
 
   /* Brighter green for the "corrected" state so it reads on the dark panel. */

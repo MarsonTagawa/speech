@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Ribbon } from "./ribbon";
+
+let ribbon: Ribbon | null = null;
 
 interface TranscriptSegment {
   index: number;
@@ -29,6 +32,14 @@ interface UtteranceAnalysis {
   pauses: Pause[];
   pause_count: number;
   total_pause_ms: number;
+  // Absolute loudness (0-1), comparable across utterances (unlike `envelope`,
+  // which is self-normalized). Median voiced pitch in Hz (0 = unvoiced), the
+  // within-utterance inflection range in semitones, and an uptalk flag. See
+  // UtteranceAnalysis / pitch.rs in the backend.
+  rms_level: number;
+  f0_median: number;
+  f0_range_semitones: number;
+  f0_terminal_rising: boolean;
 }
 
 // Gaps between separate utterances this long or longer are counted as pauses
@@ -45,9 +56,6 @@ let wordsEl: HTMLElement | null;
 let fillersEl: HTMLElement | null;
 let pausesEl: HTMLElement | null;
 let timeEl: HTMLElement | null;
-let wpmChartSection: HTMLElement | null;
-let wpmChartEl: HTMLElement | null;
-let wpmChartCaptionEl: HTMLElement | null;
 
 // One <p> per utterance index, so interim decodes update a line in place and
 // the final decode commits it. `finalized` guards against a slow interim
@@ -88,6 +96,16 @@ const timingByIndex = new Map<number, { start: number; end: number }>();
 // so a review that resolves after the user has restarted is discarded instead
 // of writing into the new session's transcript or stats.
 let sessionId = 0;
+
+// Last script-alignment result (null until a script is used), so the end-of-
+// session report can score articulation. Updated every re-align in renderScriptMatch.
+let lastScriptResult:
+  | { total: number; hits: number; misses: number; subs: number; accuracy: number }
+  | null = null;
+
+// The report re-renders live as deferred corrections trickle in after stop, so
+// this tracks whether it's on screen (see renderStats).
+let reportVisible = false;
 
 // Filler detection runs in two tiers:
 //
@@ -236,7 +254,7 @@ async function ambiguousFillerRanges(text: string): Promise<Range[]> {
         end: t.offset!.start + t.offset!.length,
       }));
 
-    for (let i = 0; i < terms.length; ) {
+    for (let i = 0; i < terms.length;) {
       const phrase = AMBIGUOUS_PHRASES.find(
         (p) =>
           i + p.length <= terms.length &&
@@ -290,6 +308,8 @@ async function reviewFillers(
   if (ranges.length > 0) {
     entry.innerHTML = `<span class="timestamp">${formatTimestamp(startMs)}</span> ${renderHighlighted(text, ranges)}`;
     refreshWaveform(index); // innerHTML rewrite wiped it
+    // Practice: in filler-free mode, flag any newly counted fillers on this line.
+    if (fillerFreeMode && ranges.length > (fillersByIndex.get(index) ?? 0)) flashFillerAlert();
   }
   // Adjust the running total by the delta for this line, so a re-review of a
   // corrected line replaces its earlier filler count rather than stacking on it.
@@ -334,7 +354,8 @@ function renderStats() {
   if (fillersEl) fillersEl.textContent = String(totalFillers);
   if (pausesEl) pausesEl.textContent = String(countPauses());
   if (timeEl) timeEl.textContent = formatTimestamp(speakingMs);
-  renderWpmChart();
+  // Keep the report in sync as deferred corrections/analyses trickle in after stop.
+  if (reportVisible) renderReport();
 }
 
 // --- Per-utterance waveform --------------------------------------------------
@@ -378,75 +399,64 @@ function refreshWaveform(index: number) {
   entry.insertAdjacentHTML("beforeend", buildWaveformSvg(analysis));
 }
 
-// --- Pace-per-sentence chart -------------------------------------------------
-// One WPM value per committed utterance, from the same per-index word counts and
-// timing the headline stats use — so a correction re-tallying a line's words
-// moves that bar too. Rebuilt whole on each stats render (cheap; it's a handful
-// of <rect>s). WPM here is per-sentence articulation rate (words over that
-// utterance's own duration), so short utterances read spiky by nature.
-
-interface SentencePace {
+// --- Pace-over-time data -----------------------------------------------------
+// One WPM sample per elapsed second of the session (index 0 = 0:00). Each
+// utterance's words are spread evenly across its duration, then a second's WPM
+// is the words falling in a short trailing window scaled to per-minute — so the
+// line is a smooth pace curve, not a per-word sawtooth, and dips through pauses.
+// Fillers are attributed to the second at their utterance's midpoint; `fillersCum`
+// is the running total up to that second and `fillerHere` flags a filler onset.
+interface SecondPace {
   wpm: number;
+  fillersCum: number;
+  fillerHere: boolean;
 }
 
-function perSentenceWpm(): SentencePace[] {
-  const out: SentencePace[] = [];
-  for (const index of [...timingByIndex.keys()].sort((a, b) => a - b)) {
-    const t = timingByIndex.get(index)!;
-    const words = wordsByIndex.get(index) ?? 0;
-    const minutes = (t.end - t.start) / 60000;
-    if (words > 0 && minutes > 0) out.push({ wpm: Math.round(words / minutes) });
+// ponytail: 5s trailing window — widen to smooth more, narrow to react faster.
+const PACE_WINDOW_MS = 5000;
+
+function perSecondPace(): SecondPace[] {
+  const idx = [...timingByIndex.keys()].sort((a, b) => a - b);
+  if (idx.length === 0) return [];
+  const utts = idx.map((i) => {
+    const t = timingByIndex.get(i)!;
+    return {
+      start: t.start,
+      end: t.end,
+      wordsPerMs: (wordsByIndex.get(i) ?? 0) / Math.max(1, t.end - t.start),
+      fillers: fillersByIndex.get(i) ?? 0,
+      mid: (t.start + t.end) / 2,
+    };
+  });
+  const totalSec = Math.max(1, Math.ceil(Math.max(...utts.map((u) => u.end)) / 1000));
+  const fillerBySec = new Map<number, number>();
+  for (const u of utts)
+    if (u.fillers > 0) {
+      const sec = Math.min(totalSec, Math.floor(u.mid / 1000));
+      fillerBySec.set(sec, (fillerBySec.get(sec) ?? 0) + u.fillers);
+    }
+  const out: SecondPace[] = [];
+  let cum = 0;
+  for (let sec = 0; sec <= totalSec; sec++) {
+    const tEnd = sec * 1000;
+    const tStart = Math.max(0, tEnd - PACE_WINDOW_MS);
+    let words = 0;
+    for (const u of utts) {
+      const a = Math.max(tStart, u.start);
+      const b = Math.min(tEnd, u.end);
+      if (b > a) words += u.wordsPerMs * (b - a);
+    }
+    const minutes = (tEnd - tStart) / 60000;
+    cum += fillerBySec.get(sec) ?? 0;
+    out.push({
+      wpm: minutes > 0 ? Math.round(words / minutes) : 0,
+      fillersCum: cum,
+      fillerHere: (fillerBySec.get(sec) ?? 0) > 0,
+    });
   }
   return out;
 }
 
-function renderWpmChart() {
-  if (!wpmChartSection || !wpmChartEl) return;
-  const data = perSentenceWpm();
-  if (data.length === 0) {
-    wpmChartSection.setAttribute("hidden", "");
-    return;
-  }
-  wpmChartSection.removeAttribute("hidden");
-
-  const W = 300;
-  const H = 100;
-  const values = data.map((d) => d.wpm);
-  const peak = Math.max(...values);
-  const scaleMax = Math.max(peak, 1);
-  const n = data.length;
-  const slot = W / n;
-  const barW = slot * 0.7;
-
-  let bars = "";
-  data.forEach((d, i) => {
-    const h = (d.wpm / scaleMax) * H;
-    const x = i * slot + (slot - barW) / 2;
-    const y = H - h;
-    bars +=
-      `<rect class="wpm-bar" x="${x.toFixed(2)}" y="${y.toFixed(2)}" ` +
-      `width="${barW.toFixed(2)}" height="${Math.max(0.5, h).toFixed(2)}">` +
-      `<title>Sentence ${i + 1}: ${d.wpm} WPM</title></rect>`;
-  });
-
-  // Session-average reference line, matching the headline WPM stat.
-  const speakingMinutes = speakingMs / 60000;
-  const avg = speakingMinutes > 0 ? Math.round(totalWords / speakingMinutes) : 0;
-  let avgLine = "";
-  if (avg > 0) {
-    const y = H - (Math.min(avg, scaleMax) / scaleMax) * H;
-    avgLine = `<line class="wpm-avg" x1="0" y1="${y.toFixed(2)}" x2="${W}" y2="${y.toFixed(2)}" />`;
-  }
-
-  wpmChartEl.innerHTML =
-    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" ` +
-    `role="img" aria-label="Words per minute for each sentence">${avgLine}<g>${bars}</g></svg>`;
-
-  if (wpmChartCaptionEl) {
-    wpmChartCaptionEl.textContent =
-      `avg ${avg} · fastest ${peak} · slowest ${Math.min(...values)} WPM`;
-  }
-}
 
 function formatTimestamp(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -703,6 +713,7 @@ function renderScriptMatch() {
   const { matched, substituted, cursor } = alignToScript(spokenWords());
   let hits = 0;
   let misses = 0;
+  let subs = 0;
   let currentSpan: HTMLElement | null = null;
   for (let i = 0; i < scriptSpans.length; i++) {
     let state: string;
@@ -710,6 +721,7 @@ function renderScriptMatch() {
       // Substitutions (a different/misheard word) count the same as exact hits.
       state = "script-hit";
       hits++;
+      if (substituted[i]) subs++;
     } else if (i === cursor) {
       state = "script-current";
     } else if (i < cursor) {
@@ -729,6 +741,16 @@ function renderScriptMatch() {
   const pct = Math.round((hits / scriptTokens.length) * 100);
   const missText = misses > 0 ? ` · ${misses} missed` : "";
   scriptProgress.textContent = `${hits} / ${scriptTokens.length} words · ${pct}%${missText}`;
+
+  // Stash the alignment result so the end-of-session report can score
+  // articulation against the script (accuracy / omissions / substitutions).
+  lastScriptResult = {
+    total: scriptTokens.length,
+    hits,
+    misses,
+    subs,
+    accuracy: pct,
+  };
 
   // Keep the current word in view within the panel.
   if (currentSpan) {
@@ -882,17 +904,26 @@ async function toggleRecording() {
       tokensByIndex.clear();
       renderScriptMatch(); // reset read-along highlights to the start
       resetStats();
+      // Clear the previous session's report; it's rebuilt on stop.
+      reportVisible = false;
+      document.querySelector("#report")?.setAttribute("hidden", "");
       await invoke("start_recording");
       recording = true;
       recordBtn.textContent = "Stop recording";
       recordBtn.classList.add("recording");
+      ribbon?.setMode("listening");
       setStatus("Recording…");
     } else {
       await invoke("stop_recording");
       recording = false;
       recordBtn.textContent = "Start recording";
       recordBtn.classList.remove("recording");
+      ribbon?.setMode("idle");
+      ribbon?.setLevel(0); // no more level events once stopped; settle to rest
       setStatus("Idle");
+      // Build the report. It keeps refreshing via renderStats as any trailing
+      // corrections land.
+      renderReport();
     }
   } catch (e) {
     setStatus("Error");
@@ -902,7 +933,505 @@ async function toggleRecording() {
   }
 }
 
+// Wipe the current session from the screen — transcript, live stats, and report
+// — so the next attempt starts clean. Ignored mid-recording.
+function resetSession() {
+  if (recording) return;
+  segmentEls.clear();
+  finalized.clear();
+  refinedIndices.clear();
+  tokensByIndex.clear();
+  renderScriptMatch();
+  resetStats();
+  reportVisible = false;
+  document.querySelector("#report")?.setAttribute("hidden", "");
+  if (transcriptEl)
+    transcriptEl.innerHTML =
+      '<p class="placeholder">Your transcript will appear here as you speak.</p>';
+  setStatus("Idle");
+}
+
+// --- Scoring, report, practice -----------------------------------------------
+// Everything below turns the per-utterance metrics accumulated above into an
+// end-of-session score + report, persists the session, and drives the practice
+// UI. All local; the report re-renders live as deferred corrections land.
+
+interface Preset {
+  name: string;
+  wpmLow: number;
+  wpmHigh: number;
+}
+// Target pace bands per speaking context; other targets (fillers, pitch, volume)
+// are universal. Changing the context in the report re-scores the last session.
+const PRESETS: Record<string, Preset> = {
+  conversation: { name: "Conversation", wpmLow: 120, wpmHigh: 160 },
+  presentation: { name: "Presentation", wpmLow: 100, wpmHigh: 140 },
+  interview: { name: "Interview", wpmLow: 120, wpmHigh: 155 },
+};
+const PRESET_KEY = "speech.preset";
+let currentPreset = "conversation";
+
+interface Scores {
+  pace: number;
+  fillers: number;
+  pauses: number;
+  pitch: number;
+  volume: number;
+  articulation: number | null; // null when no script was used
+  overall: number;
+}
+
+interface SessionSummary {
+  ts: number;
+  durationMs: number;
+  words: number;
+  wpm: number;
+  fillers: number;
+  fillersPerMin: number;
+  pauses: number;
+  pausesPerMin: number;
+  pitchRange: number; // mean within-utterance inflection, semitones
+  uptalk: number;
+  loudnessCV: number; // coefficient of variation of loudness across utterances
+  trailingOff: number; // 1 = steady, <1 = fades at sentence ends
+  peakMinuteWpm: number;
+  peakMinute: number;
+  script: { total: number; hits: number; misses: number; subs: number; accuracy: number } | null;
+  preset: string;
+  scores: Scores;
+}
+
+function mean(xs: number[]): number {
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+}
+
+// Analyses ordered by utterance index, for the per-sentence report charts.
+function orderedAnalyses(): UtteranceAnalysis[] {
+  return [...analysisByIndex.keys()]
+    .sort((a, b) => a - b)
+    .map((i) => analysisByIndex.get(i)!);
+}
+
+// End-of-sentence volume decay: mean of the last ~20% of the envelope vs the
+// whole. <1 means the speaker faded out (trailing off). Envelope is self-
+// normalized per utterance, but this is a within-utterance ratio so that's fine.
+function trailingOffRatio(env: number[]): number | null {
+  if (env.length < 5) return null;
+  const tailN = Math.max(1, Math.round(env.length * 0.2));
+  const tailMean = mean(env.slice(env.length - tailN));
+  const allMean = mean(env);
+  return allMean > 0 ? tailMean / allMean : null;
+}
+
+// WPM per wall-clock minute, binning each utterance's words + speaking time by
+// its start. Lets tips cite a specific stretch ("fastest around minute 3").
+function perMinuteWpm(): { minute: number; wpm: number }[] {
+  const wordsBin = new Map<number, number>();
+  const msBin = new Map<number, number>();
+  for (const idx of timingByIndex.keys()) {
+    const t = timingByIndex.get(idx)!;
+    const m = Math.floor(t.start / 60000);
+    wordsBin.set(m, (wordsBin.get(m) ?? 0) + (wordsByIndex.get(idx) ?? 0));
+    msBin.set(m, (msBin.get(m) ?? 0) + Math.max(0, t.end - t.start));
+  }
+  const out: { minute: number; wpm: number }[] = [];
+  for (const m of [...wordsBin.keys()].sort((a, b) => a - b)) {
+    const minutes = (msBin.get(m) ?? 0) / 60000;
+    if (minutes > 0) out.push({ minute: m, wpm: Math.round((wordsBin.get(m) ?? 0) / minutes) });
+  }
+  return out;
+}
+
+// Linear score in [0,100]: `good` value → 100, `bad` value → 0 (either direction).
+function scoreLinear(v: number, good: number, bad: number): number {
+  if (good === bad) return 100;
+  const t = (v - bad) / (good - bad);
+  return Math.round(Math.max(0, Math.min(1, t)) * 100);
+}
+
+// Pace scores 100 inside the target band, falling off outside (0 at ~50 WPM out).
+function scorePace(wpm: number, low: number, high: number): number {
+  if (wpm <= 0) return 0;
+  if (wpm >= low && wpm <= high) return 100;
+  const dist = wpm < low ? low - wpm : wpm - high;
+  return Math.round(Math.max(0, 1 - dist / 50) * 100);
+}
+
+// Relative weights of each dimension in the composite. Fillers and articulation
+// (a graded read-along) weigh most; pauses/volume are secondary.
+const SCORE_WEIGHTS = { pace: 1, fillers: 1.5, pauses: 0.75, pitch: 1, volume: 0.75, articulation: 1.5 };
+
+function computeSummary(): SessionSummary {
+  const minutes = speakingMs / 60000;
+  const wpm = minutes > 0 ? Math.round(totalWords / minutes) : 0;
+  const fillersPerMin = minutes > 0 ? totalFillers / minutes : 0;
+  const pauses = countPauses();
+  const pausesPerMin = minutes > 0 ? pauses / minutes : 0;
+
+  const analyses = [...analysisByIndex.values()];
+  const voiced = analyses.filter((a) => a.f0_median > 0);
+  const pitchRange = mean(voiced.map((a) => a.f0_range_semitones));
+  const uptalk = voiced.filter((a) => a.f0_terminal_rising).length;
+
+  const levels = analyses.map((a) => a.rms_level).filter((x) => x > 0);
+  const lMean = mean(levels);
+  const lSd = levels.length > 1 ? Math.sqrt(mean(levels.map((x) => (x - lMean) ** 2))) : 0;
+  const loudnessCV = lMean > 0 ? lSd / lMean : 0;
+
+  const tails = analyses
+    .map((a) => trailingOffRatio(a.envelope))
+    .filter((x): x is number => x !== null);
+  const trailingOff = tails.length ? mean(tails) : 1;
+
+  let peak = { minute: 0, wpm: 0 };
+  for (const p of perMinuteWpm()) if (p.wpm > peak.wpm) peak = p;
+
+  const script = lastScriptResult && scriptTokens.length > 0 ? { ...lastScriptResult } : null;
+  const preset = PRESETS[currentPreset];
+
+  const pace = scorePace(wpm, preset.wpmLow, preset.wpmHigh);
+  const fillers = scoreLinear(fillersPerMin, 1, 12);
+  const pausesScore = scoreLinear(pausesPerMin, 2, 14);
+  const pitch = scoreLinear(pitchRange, 5, 1);
+  const consistency = scoreLinear(loudnessCV, 0.25, 0.9);
+  const finish = scoreLinear(trailingOff, 0.9, 0.4);
+  const volume = Math.round((consistency + finish) / 2);
+  const articulation = script ? script.accuracy : null;
+
+  const parts: Array<{ s: number; w: number }> = [
+    { s: pace, w: SCORE_WEIGHTS.pace },
+    { s: fillers, w: SCORE_WEIGHTS.fillers },
+    { s: pausesScore, w: SCORE_WEIGHTS.pauses },
+    { s: pitch, w: SCORE_WEIGHTS.pitch },
+    { s: volume, w: SCORE_WEIGHTS.volume },
+  ];
+  if (articulation !== null) parts.push({ s: articulation, w: SCORE_WEIGHTS.articulation });
+  const wsum = parts.reduce((a, p) => a + p.w, 0);
+  const overall = Math.round(parts.reduce((a, p) => a + p.s * p.w, 0) / wsum);
+
+  const scores: Scores = { pace, fillers, pauses: pausesScore, pitch, volume, articulation, overall };
+  return {
+    ts: Date.now(),
+    durationMs: speakingMs,
+    words: totalWords,
+    wpm,
+    fillers: totalFillers,
+    fillersPerMin,
+    pauses,
+    pausesPerMin,
+    pitchRange,
+    uptalk,
+    loudnessCV,
+    trailingOff,
+    peakMinuteWpm: peak.wpm,
+    peakMinute: peak.minute,
+    script,
+    preset: currentPreset,
+    scores,
+  };
+}
+
+// Impact-ranked, specific-number tips. Each candidate's impact = its dimension
+// weight × how far below 100 it scored, so the biggest weighted weakness leads.
+function generateTips(s: SessionSummary): string[] {
+  const preset = PRESETS[s.preset];
+  const tips: Array<{ impact: number; text: string }> = [];
+  const push = (score: number, weight: number, text: string) =>
+    tips.push({ impact: weight * (100 - score), text });
+
+  if (s.wpm > preset.wpmHigh)
+    push(s.scores.pace, SCORE_WEIGHTS.pace, `You averaged ${s.wpm} WPM — ${s.wpm - preset.wpmHigh} above the ${preset.name.toLowerCase()} range (${preset.wpmLow}–${preset.wpmHigh}). Slow down, especially through longer sentences.`);
+  else if (s.wpm > 0 && s.wpm < preset.wpmLow)
+    push(s.scores.pace, SCORE_WEIGHTS.pace, `You averaged ${s.wpm} WPM — ${preset.wpmLow - s.wpm} below the ${preset.name.toLowerCase()} range (${preset.wpmLow}–${preset.wpmHigh}). Pick up the pace to keep energy up.`);
+  if (s.peakMinuteWpm > preset.wpmHigh + 10)
+    push(55, 0.5, `Your fastest stretch hit ${s.peakMinuteWpm} WPM around minute ${s.peakMinute + 1} — watch for rushing there.`);
+
+  if (s.fillersPerMin >= 3)
+    push(s.scores.fillers, SCORE_WEIGHTS.fillers, `You used ${s.fillers} filler words (${s.fillersPerMin.toFixed(1)}/min). Aim under 3/min — swap "um"/"like" for a brief silent pause.`);
+
+  if (s.pitchRange < 3 && s.pitchRange > 0)
+    push(s.scores.pitch, SCORE_WEIGHTS.pitch, `Your pitch varied only ${s.pitchRange.toFixed(1)} semitones — that reads as monotone. Stretch your intonation to hold attention.`);
+  if (s.uptalk >= 3)
+    push(50, 0.75, `${s.uptalk} statements rose in pitch at the end (uptalk), which can sound uncertain. Land statements on a falling tone.`);
+
+  if (s.trailingOff < 0.7)
+    push(s.scores.volume, SCORE_WEIGHTS.volume, `You trailed off at sentence ends (volume fell to ${Math.round(s.trailingOff * 100)}% of your average). Carry energy through the last word.`);
+  else if (s.loudnessCV > 0.6)
+    push(s.scores.volume, SCORE_WEIGHTS.volume, `Your volume was uneven across sentences (±${Math.round(s.loudnessCV * 100)}%). Keep a steadier level.`);
+
+  if (s.pausesPerMin > 10)
+    push(s.scores.pauses, SCORE_WEIGHTS.pauses, `You paused often (${s.pausesPerMin.toFixed(1)}/min). Some pausing lands well, but frequent hesitation gaps break flow.`);
+
+  if (s.script)
+    push(s.script.accuracy, SCORE_WEIGHTS.articulation, `You matched ${s.script.accuracy}% of the script${s.script.misses ? ` — ${s.script.misses} skipped` : ""}${s.script.subs ? `, ${s.script.subs} misread` : ""}.`);
+
+  tips.sort((a, b) => b.impact - a.impact);
+  const top = tips.filter((t) => t.impact > 0).slice(0, 4).map((t) => t.text);
+  if (top.length === 0) top.push("Strong session — no standout weaknesses. Keep it up.");
+  return top;
+}
+
+function grade(n: number): string {
+  if (n >= 90) return "A";
+  if (n >= 80) return "B";
+  if (n >= 70) return "C";
+  if (n >= 60) return "D";
+  return "E";
+}
+
+// Generic per-sentence/per-session bar chart as an inline SVG string. Reused for
+// the pace, pitch and volume report charts (the live WPM chart stays its own).
+function barChartSvg(values: number[], title: (i: number, v: number) => string): string {
+  const W = 300;
+  const H = 70;
+  const n = values.length;
+  if (n === 0) return `<svg viewBox="0 0 ${W} ${H}" class="report-chart-svg"></svg>`;
+  const max = Math.max(...values, 1);
+  const slot = W / n;
+  const barW = slot * 0.7;
+  let bars = "";
+  values.forEach((v, i) => {
+    const h = (v / max) * H;
+    const x = i * slot + (slot - barW) / 2;
+    bars += `<rect class="report-bar" x="${x.toFixed(2)}" y="${(H - h).toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(0.5, h).toFixed(2)}"><title>${title(i, v)}</title></rect>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="report-chart-svg">${bars}</svg>`;
+}
+
+// A point on the WPM line. `x01` is its position along the x-axis in [0,1];
+// `filler` marks a filler onset (drawn as a red ×); `title` is the hover text.
+interface LinePoint {
+  x01: number;
+  wpm: number;
+  filler: boolean;
+  title: string;
+}
+interface XTick {
+  at01: number;
+  label: string;
+  anchor: "start" | "middle" | "end";
+}
+
+// A "nice" tick spacing (1/2/5 × 10^k) so an axis lands ~targetTicks round marks
+// that adapt to the data range, rather than a fixed peak/0 pair.
+function niceStep(range: number, targetTicks: number): number {
+  const raw = Math.max(range, 1) / Math.max(1, targetTicks);
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / pow;
+  return (norm >= 5 ? 5 : norm >= 2 ? 2 : 1) * pow;
+}
+
+// Monkeytype-style WPM line graph: a continuous polyline through `points` with
+// adaptive gridline ticks on both axes (y = WPM in round steps, x from the
+// caller). Every point carries a transparent hover target with its `title`;
+// filler onsets also draw a visible red ×.
+function lineGraphSvg(points: LinePoint[], dataMax: number, xTicks: XTick[]): string {
+  const W = 600;
+  const H = 150;
+  const PAD_L = 40; // y-axis tick labels
+  const PAD_T = 22; // "WPM" unit + headroom
+  const PAD_B = 26; // x-axis labels
+  if (points.length === 0) return `<svg viewBox="0 0 ${W} ${H}" class="report-chart-svg"></svg>`;
+  const top = PAD_T;
+  const bottom = H - PAD_B;
+  const plotW = W - PAD_L - 4;
+  const yStep = niceStep(dataMax, 4);
+  const axisMax = Math.max(yStep, Math.ceil(dataMax / yStep) * yStep);
+  const X = (x01: number) => PAD_L + Math.max(0, Math.min(1, x01)) * plotW;
+  const Y = (v: number) => bottom - (v / axisMax) * (bottom - top);
+  const pts = points.map((p) => `${X(p.x01).toFixed(2)},${Y(p.wpm).toFixed(2)}`).join(" ");
+
+  // Adaptive y-axis: a gridline + WPM value at each round step.
+  let yAxis = "";
+  for (let v = 0; v <= axisMax + 1e-6; v += yStep) {
+    const y = Y(v).toFixed(2);
+    yAxis +=
+      `<line class="axis-grid" x1="${PAD_L}" y1="${y}" x2="${W - 2}" y2="${y}" />` +
+      `<text class="axis-label" x="${PAD_L - 5}" y="${(Y(v) + 3.5).toFixed(2)}" text-anchor="end">${v}</text>`;
+  }
+  // Adaptive x-axis: a short tick + label at each caller-supplied mark.
+  const xAxis = xTicks
+    .map((t) => {
+      const x = X(t.at01).toFixed(2);
+      return (
+        `<line class="axis-grid" x1="${x}" y1="${bottom}" x2="${x}" y2="${bottom + 3}" />` +
+        `<text class="axis-label" x="${x}" y="${H - 6}" text-anchor="${t.anchor}">${escapeHtml(t.label)}</text>`
+      );
+    })
+    .join("");
+
+  const r = 5;
+  const fillerMarks = points
+    .filter((p) => p.filler)
+    .map((p) => {
+      const x = X(p.x01);
+      const y = Y(p.wpm);
+      return (
+        `<path class="wpm-filler-mark" d="M${(x - r).toFixed(2)},${(y - r).toFixed(2)} ` +
+        `l${(2 * r).toFixed(2)},${(2 * r).toFixed(2)} M${(x + r).toFixed(2)},${(y - r).toFixed(2)} ` +
+        `l${(-2 * r).toFixed(2)},${(2 * r).toFixed(2)}" />`
+      );
+    })
+    .join("");
+  // One hover target per point: transparent, reveals a dot on hover (CSS) and
+  // shows the point's WPM + fillers as a native tooltip.
+  const hits = points
+    .map((p) => `<circle class="trend-hit" cx="${X(p.x01).toFixed(2)}" cy="${Y(p.wpm).toFixed(2)}" r="4"><title>${escapeHtml(p.title)}</title></circle>`)
+    .join("");
+
+  return (
+    `<svg viewBox="0 0 ${W} ${H}" class="report-chart-svg trend">` +
+    yAxis +
+    `<text class="axis-unit" x="2" y="14">WPM</text>` +
+    `<polyline points="${pts}" fill="none" />` +
+    fillerMarks +
+    `<g class="trend-hits">${hits}</g>` +
+    xAxis +
+    `</svg>`
+  );
+}
+
+// Per-session pace: WPM sampled every second over the session's elapsed time
+// (x = 0:00 → end, adaptive time ticks). Hover any second for its WPM + running
+// filler count; filler onsets mark as ×.
+function paceLineSvg(): string {
+  const series = perSecondPace();
+  if (series.length === 0) return `<svg viewBox="0 0 600 150" class="report-chart-svg"></svg>`;
+  const totalSec = series.length - 1;
+  const at01 = (sec: number) => (totalSec > 0 ? sec / totalSec : 0.5);
+  const yMax = Math.max(...series.map((s) => s.wpm), 1);
+  const points: LinePoint[] = series.map((s, sec) => ({
+    x01: at01(sec),
+    wpm: s.wpm,
+    filler: s.fillerHere,
+    title: `${formatTimestamp(sec * 1000)} · ${s.wpm} WPM · ${s.fillersCum} filler${s.fillersCum === 1 ? "" : "s"}`,
+  }));
+  const xStep = Math.max(1, Math.round(niceStep(totalSec, 4)));
+  const xTicks: XTick[] = [];
+  for (let sec = 0; sec <= totalSec; sec += xStep)
+    xTicks.push({ at01: at01(sec), label: formatTimestamp(sec * 1000), anchor: sec === 0 ? "start" : "middle" });
+  return lineGraphSvg(points, yMax, xTicks);
+}
+
+// A titled chart with caption. Pass `axis` to frame the plot with a y-axis
+// (peak value + unit at top, 0 at bottom) and an x-axis label — used by the
+// report bar charts so each has readable ticks/units.
+function chartBlock(
+  label: string,
+  svg: string,
+  caption: string,
+  axis?: { max: number; unit: string; xLabel: string },
+): string {
+  let plot = `<div class="report-chart-box">${svg}</div>`;
+  if (axis) {
+    const unit = axis.unit ? ` ${axis.unit}` : "";
+    plot =
+      `<div class="chart-plot">` +
+      `<div class="y-axis"><span>${axis.max}${escapeHtml(unit)}</span><span>0</span></div>` +
+      plot +
+      `</div><div class="x-axis-label">${escapeHtml(axis.xLabel)}</div>`;
+  }
+  return `<div class="report-chart"><span class="mode-label">${label}</span>${plot}<div class="chart-caption">${escapeHtml(caption)}</div></div>`;
+}
+
+function renderReport() {
+  const body = document.querySelector("#report-body");
+  const section = document.querySelector("#report");
+  if (!body || !section) return;
+  if (totalWords === 0) {
+    section.setAttribute("hidden", "");
+    reportVisible = false;
+    return;
+  }
+  reportVisible = true;
+  section.removeAttribute("hidden");
+
+  const s = computeSummary();
+  const c = s.scores;
+  const subscore = (label: string, v: number) =>
+    `<div class="subscore"><span class="subscore-label">${label}</span><div class="meter"><div class="meter-fill" style="width:${v}%"></div></div><span class="subscore-val">${v}</span></div>`;
+
+  const subs = [
+    subscore("Pace", c.pace),
+    subscore("Fillers", c.fillers),
+    subscore("Pauses", c.pauses),
+    subscore("Pitch", c.pitch),
+    subscore("Volume", c.volume),
+    ...(c.articulation !== null ? [subscore("Articulation", c.articulation)] : []),
+  ].join("");
+
+  const ordered = orderedAnalyses();
+  const pitchData = ordered.map((a) => Number(a.f0_range_semitones.toFixed(1)));
+  const volumeData = ordered.map((a) => Math.round(a.rms_level * 1000));
+
+  // Headline chart: continuous WPM-over-time line for the session (Monkeytype
+  // style), followed by the per-sentence pitch/volume bars.
+  const paceBlock =
+    `<div class="report-chart">` +
+    `<span class="mode-label">Pace over time (WPM)</span>` +
+    `<div class="report-chart-box large">${paceLineSvg()}</div>` +
+    `<div class="chart-legend">` +
+    `<span class="legend-item"><svg class="legend-mark" viewBox="0 0 16 10" aria-hidden="true"><line x1="0" y1="5" x2="16" y2="5" /><circle cx="8" cy="5" r="2.2" /></svg>WPM</span>` +
+    `<span class="legend-item"><svg class="legend-mark filler" viewBox="0 0 16 10" aria-hidden="true"><path d="M5,1 L11,9 M11,1 L5,9" /></svg>filler used</span>` +
+    `</div>` +
+    `<div class="chart-caption">${escapeHtml(`avg ${s.wpm} WPM · target ${PRESETS[s.preset].wpmLow}–${PRESETS[s.preset].wpmHigh}`)}</div>` +
+    `</div>`;
+
+  const peak = (d: number[]) => Math.max(...d, 1);
+  const charts =
+    paceBlock +
+    chartBlock("Pitch inflection per sentence (semitones)", barChartSvg(pitchData, (i, v) => `Sentence ${i + 1}: ${v} st`), `avg ${s.pitchRange.toFixed(1)} st${s.pitchRange < 3 ? " · monotone" : ""}`, { max: peak(pitchData), unit: "st", xLabel: "sentence →" }) +
+    chartBlock("Volume per sentence", barChartSvg(volumeData, (i) => `Sentence ${i + 1}`), s.trailingOff < 0.7 ? `trails off to ${Math.round(s.trailingOff * 100)}% at ends` : "steady", { max: peak(volumeData), unit: "", xLabel: "sentence →" });
+
+  const tips = generateTips(s).map((t) => `<li>${escapeHtml(t)}</li>`).join("");
+
+  body.innerHTML = `
+    <div class="score-hero">
+      <div class="score-ring score-${grade(c.overall).toLowerCase()}">
+        <span class="score-num">${c.overall}</span>
+        <span class="score-grade">${grade(c.overall)}</span>
+      </div>
+      <div class="score-meta">
+        <div>${s.words} words · ${formatTimestamp(s.durationMs)} speaking · ${s.wpm} WPM</div>
+        <div>${s.fillers} fillers · ${s.pauses} pauses${s.script ? ` · ${s.script.accuracy}% script` : ""}</div>
+      </div>
+    </div>
+    <div class="subscores">${subs}</div>
+    <div class="tips"><span class="mode-label">What to work on</span><ol>${tips}</ol></div>
+    <div class="report-charts">${charts}</div>
+  `;
+}
+
+// --- Practice ----------------------------------------------------------------
+
+const PROMPTS = [
+  "Describe your ideal weekend in detail.",
+  "Explain how to make your favourite meal.",
+  "Argue for or against remote work.",
+  "Tell the story of a time you overcame a challenge.",
+  "Describe a place that means a lot to you and why.",
+  "Pitch your favourite app to someone who's never used it.",
+  "Explain a complex topic you know well to a 10-year-old.",
+  "What would you change about your city, and how?",
+  "Describe your morning routine step by step.",
+  "Convince a friend to try your favourite hobby.",
+  "Summarise a book or film you enjoyed recently.",
+  "What advice would you give your younger self?",
+];
+
+let fillerFreeMode = false;
+
+function flashFillerAlert() {
+  document.body.classList.add("filler-flash");
+  setTimeout(() => document.body.classList.remove("filler-flash"), 350);
+}
+
+const DRILL_MS = 60_000;
+
 window.addEventListener("DOMContentLoaded", () => {
+  const ribbonCanvas = document.querySelector<HTMLCanvasElement>("#ribbon");
+  if (ribbonCanvas) ribbon = new Ribbon(ribbonCanvas, "idle");
+
   recordBtn = document.querySelector("#record-btn");
   statusEl = document.querySelector("#status");
   transcriptEl = document.querySelector("#transcript");
@@ -911,9 +1440,6 @@ window.addEventListener("DOMContentLoaded", () => {
   fillersEl = document.querySelector("#stat-fillers");
   pausesEl = document.querySelector("#stat-pauses");
   timeEl = document.querySelector("#stat-time");
-  wpmChartSection = document.querySelector("#wpm-chart-section");
-  wpmChartEl = document.querySelector("#wpm-chart");
-  wpmChartCaptionEl = document.querySelector("#wpm-chart-caption");
 
   scriptInput = document.querySelector("#script-input");
   scriptFile = document.querySelector("#script-file");
@@ -921,6 +1447,7 @@ window.addEventListener("DOMContentLoaded", () => {
   scriptProgress = document.querySelector("#script-progress");
 
   recordBtn?.addEventListener("click", toggleRecording);
+  document.querySelector("#reset-btn")?.addEventListener("click", resetSession);
 
   scriptInput?.addEventListener("input", () => setScript(scriptInput?.value ?? ""));
   scriptFile?.addEventListener("change", async () => {
@@ -942,6 +1469,49 @@ window.addEventListener("DOMContentLoaded", () => {
     // storage unavailable; no script to restore
   }
 
+  // Context preset selector (re-scores the currently shown report on change).
+  const presetSelect = document.querySelector<HTMLSelectElement>("#report-preset");
+  try {
+    const savedPreset = localStorage.getItem(PRESET_KEY);
+    if (savedPreset && PRESETS[savedPreset]) currentPreset = savedPreset;
+  } catch {
+    // storage unavailable; default preset stands
+  }
+  if (presetSelect) {
+    presetSelect.value = currentPreset;
+    presetSelect.addEventListener("change", () => {
+      currentPreset = presetSelect.value;
+      try {
+        localStorage.setItem(PRESET_KEY, currentPreset);
+      } catch {
+        // ignore
+      }
+      if (reportVisible) renderReport();
+    });
+  }
+
+  // Practice: random prompt + timed drill + filler-free mode.
+  const promptEl = document.querySelector("#practice-prompt");
+  const showPrompt = () => {
+    if (promptEl) promptEl.textContent = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
+  };
+  document.querySelector("#prompt-btn")?.addEventListener("click", showPrompt);
+  document.querySelector("#drill-btn")?.addEventListener("click", () => {
+    showPrompt();
+    if (!recording) {
+      const drillSession = sessionId + 1; // resetStats (in toggleRecording) bumps to this
+      void toggleRecording();
+      // Auto-stop after the drill window, unless the user already stopped or
+      // started another session.
+      setTimeout(() => {
+        if (recording && sessionId === drillSession) void toggleRecording();
+      }, DRILL_MS);
+    }
+  });
+  document.querySelector<HTMLInputElement>("#filler-free")?.addEventListener("change", (e) => {
+    fillerFreeMode = (e.target as HTMLInputElement).checked;
+  });
+
   listen<TranscriptSegment>("transcript_segment", (event) => {
     upsertSegment(event.payload);
     updateScriptFromSegment(event.payload);
@@ -957,4 +1527,13 @@ window.addEventListener("DOMContentLoaded", () => {
   listen<string>("transcription_error", (event) => {
     appendError(event.payload);
   });
+
+  // Mic RMS → 0..1 ribbon drive. Speech RMS is small (~0.02–0.1) so a plain
+  // multiply barely moves the quiet end; sqrt is a perceptual curve that lifts
+  // soft speech into a visible range. Bump the gain if it still reacts weakly.
+  listen<number>("audio_level", (event) => {
+    ribbon?.setLevel(Math.sqrt(event.payload * RIBBON_LEVEL_GAIN));
+  });
 });
+
+const RIBBON_LEVEL_GAIN = 8;
