@@ -5,10 +5,10 @@
 export type RibbonMode = "idle" | "listening" | "thinking" | "speaking";
 
 const MODES: Record<RibbonMode, any> = {
-  idle:      { label: "Idle",      amp: 0.10, speed: 0.09, ab: 1.0, glow: 0.30, spread: 0.32, width: 0.075, split: 0.00 },
-  listening: { label: "Listening", amp: 0.24, speed: 0.30, ab: 1.3, glow: 0.55, spread: 0.40, width: 0.125, split: 0.22 },
-  thinking:  { label: "Thinking",  amp: 0.13, speed: 0.62, ab: 1.7, glow: 0.36, spread: 0.28, width: 0.070, split: 0.10 },
-  speaking:  { label: "Speaking",  amp: 0.26, speed: 0.48, ab: 1.8, glow: 0.52, spread: 0.40, width: 0.105, split: 0.20 },
+  idle: { label: "Idle", amp: 0.10, speed: 0.09, ab: 1.0, glow: 0.30, spread: 0.32, width: 0.075, split: 0.00 },
+  listening: { label: "Listening", amp: 0.24, speed: 0.30, ab: 1.3, glow: 0.55, spread: 0.40, width: 0.125, split: 0.18 },
+  thinking: { label: "Thinking", amp: 0.13, speed: 0.62, ab: 1.7, glow: 0.36, spread: 0.28, width: 0.070, split: 0.08 },
+  speaking: { label: "Speaking", amp: 0.26, speed: 0.48, ab: 1.8, glow: 0.52, spread: 0.40, width: 0.105, split: 0.16 },
 };
 
 const PROPS = {
@@ -259,11 +259,19 @@ export class Ribbon {
       this.cSp = [0, 1, 2].map(() => new Float32Array(N + 1));
       this.cBd = [0, 1, 2].map(() => new Float32Array(N + 1));
     }
+    // Every sheet's vertical deviation from the centerline (its own wave + the
+    // inter-sheet offset) is windowed by sin(pi*x), which is exactly 0 at both
+    // edges and 1 in the middle. So all three sheets collapse onto the same
+    // centerline at x=0 and x=1 (joined edges) and bloom apart in the center.
+    const half = h * 0.5;
+    const sepAmt = (P.split == null ? 1 : P.split) * h * 0.017;
     for (let i = 0; i < 3; i++) {
       const sp = this.cSp[i], bd = this.cBd[i];
+      const sep = (i - 1) * sepAmt;
       for (let k = 0; k <= N; k++) {
         const x = k / N;
-        sp[k] = this.spine(x, i);
+        const edge = Math.sin(Math.PI * x);
+        sp[k] = half + (this.spine(x, i) - half + sep) * edge;
         bd[k] = this.band(x, i);
       }
     }
@@ -283,22 +291,58 @@ export class Ribbon {
     o.globalCompositeOperation = "lighter";
     o.filter = "none";
 
+    // frosted-glass bridge across the split: as the sheets pull apart, wash a
+    // soft milky tint into the gap between them so the space reads as blurred
+    // frosted glass rather than empty black. The colour is the cool/warm blend
+    // pulled most of the way to white, and the fill itself is blurred. Fades to
+    // nothing at the joined edges and vanishes entirely at split=0.
+    const gap = P.split == null ? 1 : P.split;
+    const fade = Math.min(1, gap * 4); // split values run ~0..0.18; map to 0..1
+    if (fade > 0.001) {
+      // full vertical envelope across all three sheets (spine ± half thickness),
+      // so every gap between the weaving sheets gets filled, not just the 0↔2 band
+      const yTop = new Float32Array(N + 1), yBot = new Float32Array(N + 1);
+      for (let j = 0; j <= N; j++) {
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < 3; i++) {
+          lo = Math.min(lo, this.cSp[i][j] - this.cBd[i][j] * 0.5);
+          hi = Math.max(hi, this.cSp[i][j] + this.cBd[i][j] * 0.5);
+        }
+        yTop[j] = lo; yBot[j] = hi;
+      }
+      o.beginPath();
+      for (let j = 0; j <= N; j++) (j === 0 ? o.moveTo : o.lineTo).call(o, this.sx![j], yTop[j]);
+      for (let j = N; j >= 0; j--) o.lineTo(this.sx![j], yBot[j]);
+      o.closePath();
+      const tint = cool.map((c, k) => (c + warm[k]) / 2 * 0.35 + core[k] * 0.65); // mostly white
+      const gw = o.createLinearGradient(0, 0, w, 0);
+      gw.addColorStop(0.0, rgba(tint, 0));
+      gw.addColorStop(0.5, rgba(tint, 0.25 * fade));
+      gw.addColorStop(1.0, rgba(tint, 0));
+      o.globalCompositeOperation = "source-over";
+      o.filter = "blur(" + Math.max(1, h * 0.012).toFixed(1) + "px)";
+      o.fillStyle = gw;
+      o.fill();
+      o.filter = "none";
+      o.globalCompositeOperation = "lighter";
+    }
+
     const ab = P.ab * abScale * 0.34; // in units of local sheet thickness
     // full prism: violet→cyan on the upper edge, yellow→red on the lower one
     const spectrum = [
       { o: -1.80, c: hueShift(deep, -10, 1.5), a: 0.30 },
-      { o: -1.55, c: deep,                     a: 0.38 },
+      { o: -1.55, c: deep, a: 0.38 },
       { o: -1.18, c: hueShift(cool, -34, 1.6), a: 0.52 },
-      { o: -0.86, c: cool,                     a: 0.82 },
-      { o: -0.50, c: hueShift(cool, 30, 1.5),  a: 0.46 },
-      { o: 0.50,  c: hueShift(warm, 34, 1.5),  a: 0.46 },
-      { o: 0.85,  c: warm,                     a: 0.76 },
-      { o: 1.15,  c: hueShift(warm, 8, 1.6),   a: 0.38 },
+      { o: -0.86, c: cool, a: 0.82 },
+      { o: -0.50, c: hueShift(cool, 30, 1.5), a: 0.46 },
+      { o: 0.50, c: hueShift(warm, 34, 1.5), a: 0.46 },
+      { o: 0.85, c: warm, a: 0.76 },
+      { o: 1.15, c: hueShift(warm, 8, 1.6), a: 0.38 },
     ];
     for (let i = 0; i < 3; i++) {
       const sp = P.split == null ? 1 : P.split;
       const depth = (1 - i * 0.28) * (i === 0 ? 1 : 0.30 + 0.70 * sp);
-      const dy = (i - 1) * h * 0.022 * sp;
+      const dy = 0; // separation is now baked into cSp (windowed), see sampling loop above
       const flip = i === 1 ? 1 - 2 * sp : 1; // middle sheet inverts only as the stack separates
 
       for (let k = 0; k < spectrum.length; k++) {
