@@ -1,11 +1,23 @@
 // Frost-sparkle hover trail, lifted from "Ice Shard Hover.dc.html" (a DCLogic
 // component) and stripped to a plain canvas driver. Moving the pointer over
 // `host` spawns wobbly rings of ice-shard pixels that ripple out and fade.
+// Pressing on `host` does something different: a wave of random symbols spreads
+// out from the point, each cell scrambling through glyphs before it fades.
 
 const CELL = 14; // px per sparkle cell
 const DECAY = 0.9; // per-frame persistence of lit cells
 const SPEED = 420; // ring growth, px/s (time-based so it holds when many rings drop the frame rate)
 const STEP = 18; // px of pointer travel between ring spawns
+
+// click scramble (values tuned in "Live Session.dc.html")
+const SCR_SPEED = 275; // px/s the symbol front travels
+const SCR_REACH = 125; // px before the front dies out
+const SCR_WIDTH = 4; // front thickness, in cells
+const SCR_DECAY = 0.94; // per-frame persistence of a lit symbol
+const SWAP_MIN = 45; // ms between symbol swaps per cell (fastest)
+const SWAP_MAX = 140; // ms between symbol swaps per cell (slowest)
+const GLYPH_FONT = '500 11px "IBM Plex Mono", ui-monospace, monospace';
+const GLYPHS = "01<>/\\|=+-*#%&$@?!{}[]:;~^\u2591\u2592\u2593\u00b7";
 
 type Ring = { x: number; y: number; r: number; g: number; w: number[] };
 
@@ -17,6 +29,10 @@ export class Shards {
   private f = new Float32Array(0);
   private hash = new Float32Array(0);
   private rings: Ring[] = [];
+  private waves: { x: number; y: number; t0: number }[] = [];
+  private gl = new Float32Array(0); // symbol intensity per cell
+  private gc = new Uint8Array(0); // current symbol index per cell
+  private gt = new Float32Array(0); // next swap time per cell
   private groups: Record<number, { t: number }> = {};
   private gid = 0;
   private gdir: { x: number; y: number } | null = null;
@@ -29,6 +45,9 @@ export class Shards {
     new ResizeObserver(() => this.setup()).observe(canvas);
     host.addEventListener("mousemove", (e) => this.move(e));
     host.addEventListener("mouseleave", () => { this.lastRing = null; this.gdir = null; });
+    // pointerdown, not click: the ribbon canvas is a Tauri drag region, so a
+    // press may turn into a window drag and never produce a click.
+    host.addEventListener("pointerdown", (e) => { if (e.button === 0) this.press(e); });
     const loop = () => { this.tick(); requestAnimationFrame(loop); };
     requestAnimationFrame(loop);
   }
@@ -43,6 +62,7 @@ export class Shards {
     const n = this.cols * this.rows;
     this.f = new Float32Array(n);
     this.hash = new Float32Array(n);
+    this.gl = new Float32Array(n); this.gc = new Uint8Array(n); this.gt = new Float32Array(n);
     for (let i = 0; i < n; i++) { const s = Math.sin(i * 12.9898) * 43758.5453; this.hash[i] = s - Math.floor(s); }
   }
 
@@ -60,9 +80,49 @@ export class Shards {
     this.groups[this.gid] = { t: performance.now() };
   }
 
-  private move(e: MouseEvent) {
+  private local(e: MouseEvent) {
     const b = this.canvas.getBoundingClientRect();
-    const zx = e.clientX - b.left, zy = e.clientY - b.top;
+    return { x: e.clientX - b.left, y: e.clientY - b.top };
+  }
+
+  private press(e: MouseEvent) {
+    const { x, y } = this.local(e);
+    if (this.f.length && this.waves.length <= 8) this.waves.push({ x, y, t0: performance.now() });
+    // hover trail resumes in a fresh group after the press
+    this.newGroup(); this.gdir = null;
+    this.lastRing = { x, y };
+    this.lastMove = performance.now();
+  }
+
+  private drawGlyphs(now: number) {
+    const { cols, rows, gl, gc, gt, hash, ctx } = this, cs = CELL, n = GLYPHS.length, end = SCR_REACH + cs;
+    this.waves = this.waves.filter((w) => (now - w.t0) / 1000 * SCR_SPEED < end);
+    // the front lights every cell it crosses; strength falls off with distance
+    for (const w of this.waves) {
+      const R = (now - w.t0) / 1000 * SCR_SPEED, amp = 1 - R / end;
+      const c0 = Math.max(0, Math.floor((w.x - R - cs) / cs)), c1 = Math.min(cols - 1, Math.ceil((w.x + R + cs) / cs));
+      const r0 = Math.max(0, Math.floor((w.y - R - cs) / cs)), r1 = Math.min(rows - 1, Math.ceil((w.y + R + cs) / cs));
+      for (let j = r0; j <= r1; j++) for (let i = c0; i <= c1; i++) {
+        const k = j * cols + i;
+        const d = Math.hypot(i * cs + cs / 2 - w.x, j * cs + cs / 2 - w.y) + (hash[k] - .5) * cs * 1.4;
+        if (d < R && d > R - cs * SCR_WIDTH && amp > gl[k]) gl[k] = amp;
+      }
+    }
+    ctx.font = GLYPH_FONT;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (let k = 0; k < gl.length; k++) {
+      const h = gl[k]; if (h < .03) { gl[k] = 0; continue; }
+      if (now >= gt[k]) { gc[k] = (Math.random() * n) | 0; gt[k] = now + SWAP_MIN + Math.random() * (SWAP_MAX - SWAP_MIN); }
+      ctx.fillStyle = h > .6 ? "#ffffff" : "#4aa8ff"; // fresh front white, tail cools to blue
+      ctx.globalAlpha = Math.min(1, h * 1.2);
+      ctx.fillText(GLYPHS[gc[k]], (k % cols) * cs + cs / 2, ((k / cols) | 0) * cs + cs / 2);
+      gl[k] = h * SCR_DECAY;
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  private move(e: MouseEvent) {
+    const { x: zx, y: zy } = this.local(e);
     const now = performance.now(), lr = this.lastRing;
     if (!lr || now - this.lastMove > 250) {
       this.newGroup(); this.gdir = null;
@@ -139,5 +199,6 @@ export class Shards {
       else { const s = 1 + Math.min(1, v) * 1.4; ctx.fillRect(x - s / 2, y - s / 2, s, s); }
     }
     ctx.globalAlpha = 1;
+    this.drawGlyphs(now);
   }
 }
