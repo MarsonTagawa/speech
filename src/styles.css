@@ -1,147 +1,609 @@
+/* Speech — "mixer chassis" redesign (2a live session, 3a session report).
+   Dark-only: the ribbon scope is black, so the whole app is built around it. */
+
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
+  --chassis: #121214;
+  --rail: #191919;
+  --main: #161619;
+  --pane: #1a1a1e;
+  --dock: #1b1b1f;
+  --card: #212126;
+  --btn: #232327;
+  --btn-hover: #2c2c31;
+  --edge: rgba(255, 255, 255, 0.07);
+  --edge-2: rgba(255, 255, 255, 0.1);
+  --shadow-edge: rgba(0, 0, 0, 0.6);
 
-  color: #0f0f0f;
-  background-color: #000;
+  --ink: #f2f2f7;
+  --ink-2: rgba(242, 242, 247, 0.68);
+  --ink-3: rgba(242, 242, 247, 0.55);
 
+  --blue: #0a84ff;
+  --blue-2: #4aa8ff;
+  --green: #30d158;
+  --amber: #ffd60a;
+  --red: #ff453a;
+  --orange: #ff9f0a;
+  --purple: #bf5af2;
+
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--chassis);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--chassis);
 }
 
-.container {
-  margin: 0 auto;
-  max-width: 640px;
-  padding: 0 24px 24px;
+button {
+  font: inherit;
+  color: inherit;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.sub {
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+/* --- Rail ----------------------------------------------------------------- */
+
+.rail {
+  width: 96px;
+  flex: 0 0 auto;
+  background: var(--rail);
+  border-right: 0.5px solid var(--shadow-edge);
   display: flex;
   flex-direction: column;
   align-items: center;
+  padding: 14px 0 16px;
+  gap: 14px;
+  user-select: none;
 }
 
-h1 {
-  text-align: center;
-  margin-bottom: 2rem;
-}
-
-/* Full-bleed hero. The ribbon composites additively, so it needs a black bed;
-   masking the bottom edge to transparent melts it into the page instead of
-   sitting there as a bordered black window. */
-.ribbon {
-  display: block;
-  width: 100%;
-  height: 34vh;
-  min-height: 200px;
-  max-height: 320px;
-  background: #000;
-  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
-  mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
-}
-
-/* Title rises into the ribbon's fade so the two read as one header. */
-.container h1 {
-  margin-top: -6vh;
-}
-
-.record-row {
+.lights {
   display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 2rem;
+  gap: 9px;
+  align-self: flex-start;
+  padding-left: 14px;
 }
 
-.record-btn {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.7em 1.6em;
-  font-size: 1em;
-  font-weight: 600;
-  font-family: inherit;
-  color: #ffffff;
-  background-color: #396cd8;
+.light {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
   cursor: pointer;
-  transition: background-color 0.2s, border-color 0.2s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.15);
+}
+.light-close { background: #ff736a; }
+.light-min { background: #febc2e; }
+.light-max { background: #19c332; }
+.light:hover { filter: brightness(0.85); }
+
+.rail-rule {
+  width: 60px;
+  height: 1px;
+  background: var(--edge-2);
 }
 
-.record-btn:hover {
-  background-color: #2f5bb8;
+.rail-live,
+.rail-report {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+body[data-view="live"] .rail-report,
+body[data-view="report"] .rail-live,
+body[data-view="report"] .lvl {
+  display: none;
 }
 
-.record-btn:disabled {
+.rail-spacer {
+  flex: 1;
+  align-self: stretch;
+}
+
+.rec-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Idle: a dark bezel with a red dot. Recording: the whole button lights up. */
+.rec-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  border: 2px solid rgba(255, 69, 58, 0.4);
+  background: radial-gradient(circle, var(--red) 0 34%, #2a1716 36%);
+  transition: box-shadow 160ms ease, background 160ms ease;
+}
+.rec-btn:hover {
+  background: radial-gradient(circle, var(--red) 0 40%, #331b19 42%);
+}
+.rec-btn.recording {
+  background: var(--red);
+  box-shadow: 0 0 16px rgba(255, 69, 58, 0.45);
+}
+.rec-btn.recording:hover {
+  background: #e03c32;
+}
+.rec-btn:disabled {
   opacity: 0.6;
   cursor: default;
 }
 
-.record-btn.recording {
-  background-color: #d83939;
+.rec-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+}
+.rec-label.on {
+  color: var(--red);
 }
 
-.record-btn.recording:hover {
-  background-color: #b82f2f;
+.rail-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 68px;
 }
 
-.status {
-  font-size: 0.95em;
-  opacity: 0.7;
+.rail-btn {
+  height: 32px;
+  border-radius: 7px;
+  background: var(--btn);
+  border: 0.5px solid var(--edge);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 10px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.rail-btn:hover:not(:disabled) {
+  background: var(--btn-hover);
+}
+.rail-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.rail-btn[aria-pressed="true"],
+.rail-active {
+  background: rgba(10, 132, 255, 0.18);
+  border-color: rgba(10, 132, 255, 0.4);
+  color: var(--blue-2);
+  font-weight: 600;
+}
+.rail-ff[aria-pressed="true"] {
+  background: rgba(255, 214, 10, 0.16);
+  border-color: rgba(255, 214, 10, 0.3);
+  color: var(--amber);
+}
+.rail-btn.drilling {
+  color: var(--red);
+  font-variant-numeric: tabular-nums;
 }
 
-.mode-label {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.rst-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1.5px solid var(--ink-2);
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+.lvl {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+.lvl-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+}
+.lvl-bars {
+  display: flex;
+  gap: 5px;
+}
+.lvl-bar {
+  width: 7px;
+  height: 82px;
+  border-radius: 3px;
+  background: var(--edge);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+.lvl-fill {
+  width: 100%;
+  height: 0;
+  background: linear-gradient(to top, var(--green), var(--amber));
+  background-size: 100% 82px;
+  background-position: bottom;
+}
+.lvl-dim {
   opacity: 0.6;
 }
 
-/* Key for the two-pass transcript colors (fast draft vs corrected). */
-.legend {
-  display: flex;
-  gap: 1.25rem;
-  margin-bottom: 1.25rem;
-  font-size: 0.8rem;
-  opacity: 0.75;
-}
+/* --- Views ---------------------------------------------------------------- */
 
-.legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4em;
-}
-
-.legend-swatch {
-  width: 0.85em;
-  height: 0.85em;
-  border-radius: 2px;
-  display: inline-block;
-}
-
-.legend-fast {
-  background-color: #d9a441;
-}
-
-.legend-corrected {
-  background-color: #2e7d32;
-}
-
-.script-section {
-  width: 100%;
+.view {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  margin-bottom: 1.25rem;
-  text-align: left;
+}
+body[data-view="live"] .view-report,
+body[data-view="report"] .view-live {
+  display: none;
+}
+
+/* --- Scope (ribbon) ------------------------------------------------------- */
+
+.scope {
+  position: relative;
+  flex: 0 0 auto;
+  height: clamp(180px, 34vh, 252px);
+  overflow: hidden;
+  background: #000;
+  border-bottom: 0.5px solid var(--shadow-edge);
+}
+
+.ribbon {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.scope-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background:
+    repeating-linear-gradient(to right, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 88px),
+    repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 56px);
+}
+
+.scope-tl {
+  position: absolute;
+  top: 14px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  font-size: 11px;
+  font-weight: 600;
+}
+.pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+.pill.recording .pill-dot {
+  background: var(--red);
+  animation: recPulse 1.6s ease-in-out infinite;
+}
+.pill.error .pill-dot {
+  background: var(--orange);
+}
+
+@keyframes recPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.brand {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.brand + .sub {
+  margin-top: 1px;
+}
+
+.scope-tr {
+  position: absolute;
+  top: 12px;
+  right: 18px;
+  text-align: right;
+}
+.clock {
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.clock + .sub {
+  margin-top: 2px;
+}
+
+.scope-bl {
+  position: absolute;
+  bottom: 12px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.gpu {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--green);
+}
+.gpu i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.seg {
+  display: flex;
+  background: rgba(255, 255, 255, 0.08);
+  border: 0.5px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 1px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+.seg button {
+  padding: 3px 9px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.seg button[aria-checked="true"] {
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--ink);
+}
+.scope-br {
+  position: absolute;
+  bottom: 12px;
+  right: 18px;
+}
+
+/* --- Transcript ----------------------------------------------------------- */
+
+.tpane {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--pane);
+}
+
+.tfade {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(to bottom, var(--pane) 0%, rgba(26, 26, 30, 0) 16%, rgba(26, 26, 30, 0) 88%, var(--pane) 100%);
+}
+
+.transcript {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 22px 34px 26px;
+  scrollbar-width: none;
+}
+.transcript::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.practice-prompt:not([hidden]) + .transcript {
+  top: 44px;
+}
+
+.practice-prompt {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  margin: 0;
+  padding: 12px 34px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--pane);
+  border-bottom: 0.5px solid var(--edge);
+}
+.practice-prompt::before {
+  content: "PROMPT";
+  margin-right: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--blue-2);
+}
+
+.placeholder {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+/* One transcript line: a state-colored rail, then meta (time + pass state)
+   over the text. partial = live interim from tiny.en; draft = tiny.en final,
+   correction pending; corrected = medium.en re-decode. */
+.segment {
+  --tone: var(--amber);
+  display: flex;
+  gap: 14px;
+  margin-bottom: 17px;
+  border-radius: 4px;
+}
+.segment::before {
+  content: "";
+  width: 3px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  background: var(--tone);
+  opacity: 0.85;
+}
+.segment.corrected {
+  --tone: var(--green);
+}
+.segment.flash {
+  animation: landFlash 1.4s ease-out;
+}
+
+.seg-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.seg-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.seg-ts {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+.seg-state {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tone);
+}
+.partial .seg-state::before { content: "live"; }
+.draft .seg-state::before { content: "draft"; }
+.corrected .seg-state::before { content: "corrected"; }
+
+.seg-text {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.partial .seg-text {
+  color: rgba(242, 242, 247, 0.62);
+  font-style: italic;
+}
+.corrected .seg-text {
+  animation: landFlash 1.2s ease-out;
+}
+
+@keyframes landFlash {
+  from { background: rgba(48, 209, 88, 0.16); }
+  to { background: transparent; }
+}
+
+.filler {
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: rgba(255, 214, 10, 0.18);
+  color: var(--amber);
+  font-weight: 600;
+}
+
+/* Per-utterance amplitude waveform, with VAD pauses shaded. */
+.waveform {
+  display: block;
+  width: 100%;
+  height: 12px;
+  margin-top: 6px;
+  overflow: visible;
+}
+.waveform-bars rect {
+  fill: var(--ink);
+  opacity: 0.12;
+}
+.waveform-pause {
+  fill: rgba(242, 242, 247, 0.08);
+}
+
+.error {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--red);
+}
+
+/* Filler-free mode: a brief red wash whenever a filler is counted. */
+body.filler-flash .tpane {
+  box-shadow: inset 0 0 0 2px var(--red), inset 0 0 40px rgba(255, 69, 58, 0.25);
+}
+
+/* --- Script read-along ---------------------------------------------------- */
+
+.script-pane {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 34px 20px;
+  background: var(--pane);
 }
 
 .script-head {
@@ -151,670 +613,553 @@ h1 {
 }
 
 .file-btn {
-  font-size: 0.85em;
-  padding: 0.3em 0.8em;
-  border: 1px solid rgba(0, 0, 0, 0.15);
+  font-size: 10px;
+  padding: 5px 10px;
   border-radius: 6px;
+  background: var(--btn);
+  border: 0.5px solid var(--edge);
+  color: var(--ink-2);
   cursor: pointer;
+}
+.file-btn:hover {
+  background: var(--btn-hover);
 }
 
 .script-input {
   width: 100%;
   resize: vertical;
-  padding: 0.6em 0.8em;
+  padding: 10px 12px;
   border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.2);
-  font-family: inherit;
-  font-size: 0.95em;
-  background-color: #ffffff;
-  color: #0f0f0f;
+  border: 0.5px solid var(--edge-2);
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+.script-input:focus {
+  outline: 1px solid rgba(10, 132, 255, 0.5);
 }
 
 .script-display {
-  width: 100%;
-  max-height: 30vh;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   position: relative;
-  padding: 1rem 1.25rem;
-  border-radius: 8px;
-  background-color: #ffffff;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+  font-size: 17px;
   line-height: 1.8;
-  font-size: 1.1em;
+  scrollbar-width: none;
 }
 
-.script-display[hidden],
-.script-progress[hidden] {
-  display: none;
-}
-
-/* Upcoming (not-yet-read) script text is dimmed; spoken words go solid green;
-   the current position is highlighted. */
-.script-pending {
-  opacity: 0.45;
-}
-
-.script-hit {
-  color: #2e7d32;
-}
-
-/* Skipped or misread: the reader moved past it without saying it. */
+.script-pending { opacity: 0.4; }
+.script-hit { color: var(--green); }
 .script-miss {
-  color: #c62828;
-  background-color: #f8d7da;
+  color: var(--red);
+  background: rgba(255, 69, 58, 0.14);
   border-radius: 3px;
-  padding: 0 0.1em;
+  padding: 0 2px;
 }
-
 .script-current {
-  background-color: #ffe08a;
+  background: rgba(255, 214, 10, 0.22);
+  color: var(--amber);
   border-radius: 3px;
-  padding: 0 0.1em;
+  padding: 0 2px;
 }
 
 .script-progress {
-  font-size: 0.85em;
-  opacity: 0.7;
+  font-size: 10px;
+  color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
 
-.stats {
-  display: flex;
-  width: 100%;
-  gap: 0.75rem;
-  margin-bottom: 1.25rem;
+/* --- Dock (live metrics) -------------------------------------------------- */
+
+.dock {
+  flex: 0 0 auto;
+  background: var(--dock);
+  border-top: 0.5px solid var(--shadow-edge);
+  padding: 12px 16px 14px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(0, 1.5fr);
+  gap: 10px;
 }
 
-.stat {
+.card {
+  background: var(--card);
+  border: 0.5px solid var(--edge);
+  border-radius: 8px;
+  padding: 10px 12px 11px;
+  min-width: 0;
+}
+
+.card-top {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.big {
+  font-size: 26px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.unit {
+  font-size: 10px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-sub {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.amber { color: var(--amber); }
+.amber-bg { background: var(--amber); }
+.purple-bg { background: var(--purple); }
+.ink-bg { background: rgba(242, 242, 247, 0.5); }
+
+.track {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.09);
+  margin-top: 9px;
+}
+.fill {
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  transition: width 300ms ease;
+}
+.wpm-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(48, 209, 88, 0.3);
+  border-radius: 2px;
+}
+.wpm-mark {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 8px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--ink-3);
+  transition: left 300ms ease;
+}
+.wpm-mark.in { background: var(--green); }
+.wpm-mark.out { background: var(--orange); }
+
+.pips {
+  display: flex;
+  gap: 2px;
+  height: 4px;
+  margin-top: 9px;
+}
+.pips div {
   flex: 1;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.pips div.on {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.card-pace {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 12px 8px;
+}
+.pace-col {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 0.75rem 0.5rem;
-  border-radius: 8px;
-  background-color: #ffffff;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+  align-self: stretch;
 }
-
-.stat-value {
-  font-size: 1.6rem;
-  font-weight: 700;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
 }
-
-.stat-label {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  opacity: 0.6;
-  margin-top: 0.15rem;
+.card-head .card-sub {
+  margin: 0;
 }
-
-.transcript {
+.spark {
   width: 100%;
-  min-height: 320px;
-  max-height: 55vh;
-  overflow-y: auto;
-  padding: 1rem 1.25rem;
-  border-radius: 8px;
-  background-color: #ffffff;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
-  text-align: left;
-}
-
-.transcript .placeholder {
-  opacity: 0.5;
-  font-style: italic;
-}
-
-.transcript .segment {
-  margin: 0 0 0.6em;
-  padding-left: 0.6em;
-  border-left: 3px solid transparent;
-  transition: opacity 0.15s, border-color 0.2s;
-}
-
-/* Two-pass status, shown via the left border + a small trailing chip:
-   - partial/draft: fast (tiny) model output — live interim, then committed
-     draft — marked amber.
-   - corrected: replaced by the accurate (medium) model — green, and the line
-     flashes once so the correction is visible as it lands. */
-.transcript .segment.partial {
-  opacity: 0.55;
-  font-style: italic;
-  border-left-color: #d9a441;
-}
-
-.transcript .segment.draft {
-  border-left-color: #d9a441;
-}
-
-.transcript .segment.corrected {
-  border-left-color: #2e7d32;
-  animation: correctedFlash 0.9s ease-out;
-}
-
-.transcript .segment.draft::after,
-.transcript .segment.corrected::after {
-  margin-left: 0.5em;
-  font-size: 0.62em;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  vertical-align: middle;
-  opacity: 0.85;
-}
-
-.transcript .segment.draft::after {
-  content: "fast";
-  color: #b9822a;
-}
-
-.transcript .segment.corrected::after {
-  content: "corrected";
-  color: #2e7d32;
-}
-
-@keyframes correctedFlash {
-  from {
-    background-color: rgba(46, 125, 50, 0.22);
-  }
-  to {
-    background-color: transparent;
-  }
-}
-
-.transcript .timestamp {
-  display: inline-block;
-  min-width: 3em;
-  color: #396cd8;
-  font-variant-numeric: tabular-nums;
-  margin-right: 0.5em;
-}
-
-.transcript .error {
-  color: #d83939;
-  margin: 0 0 0.6em;
-}
-
-/* Filler words / hesitation markers, flagged inline in the transcript. */
-.transcript .filler {
-  background-color: #ffe08a;
-  border-radius: 3px;
-  padding: 0 0.15em;
-  font-weight: 600;
-}
-
-/* Per-utterance amplitude waveform under each committed line, with the VAD-
-   detected hesitation pauses shaded on top. Stretches to the line width;
-   preserveAspectRatio="none" on the SVG lets the bars fill it horizontally. */
-.transcript .waveform {
-  display: block;
-  width: 100%;
-  height: 28px;
-  margin-top: 0.4em;
+  flex: 1;
+  min-height: 30px;
+  margin-top: 4px;
   overflow: visible;
 }
 
-.transcript .waveform-bars rect {
-  fill: #396cd8;
-  opacity: 0.5;
-}
-
-.transcript .waveform-pause {
-  fill: rgba(216, 57, 57, 0.16);
-}
-
-.chart-caption {
-  font-size: 0.8em;
-  opacity: 0.7;
-  font-variant-numeric: tabular-nums;
-}
-
-/* --- Practice controls ---------------------------------------------------- */
-.practice {
-  width: 100%;
-  margin-bottom: 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.practice-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-
-.mini-btn {
-  font-size: 0.85em;
-  padding: 0.35em 0.8em;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  border-radius: 6px;
-  background: #fff;
-  color: inherit;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.mini-btn:hover {
-  border-color: #396cd8;
-}
-
-.toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35em;
-  font-size: 0.85em;
-  opacity: 0.85;
-  cursor: pointer;
-}
-
-.practice-prompt {
-  margin: 0;
-  font-size: 1.05em;
-  font-style: italic;
-  min-height: 1.2em;
-}
-
-.practice-prompt:empty {
-  display: none;
-}
-
-/* Brief red flash of the window edge when a filler is caught in filler-free mode. */
-body.filler-flash {
-  box-shadow: inset 0 0 0 4px rgba(216, 57, 57, 0.75);
-  transition: box-shadow 0.1s;
-}
-
-/* --- Session report ------------------------------------------------------- */
-.report {
-  width: 100%;
-  margin-bottom: 1.25rem;
-  padding: 1rem 1.25rem;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
-  text-align: left;
-}
-
-.report[hidden] {
-  display: none;
-}
-
-.report-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
-}
-
-.context-select {
-  font-size: 0.8em;
-  opacity: 0.8;
-}
-
-.context-select select {
-  font-family: inherit;
-  font-size: 1em;
-  margin-left: 0.3em;
-  padding: 0.15em 0.3em;
-  border-radius: 5px;
-}
-
-.score-hero {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.score-ring {
+/* Score ring: conic fill to --p percent in the grade color --c. */
+.ring {
+  --p: 0;
+  --c: var(--green);
+  --hole: var(--card);
+  width: 58px;
+  height: 58px;
   flex: 0 0 auto;
-  width: 84px;
-  height: 84px;
   border-radius: 50%;
+  background: conic-gradient(var(--c) 0 calc(var(--p) * 1%), rgba(255, 255, 255, 0.08) 0 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ring-in {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--hole);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #fff;
-  background: #396cd8;
 }
-
-.score-a { background: #2e7d32; }
-.score-b { background: #5a9e3a; }
-.score-c { background: #d9a441; }
-.score-d { background: #d97941; }
-.score-e { background: #d83939; }
-
-.score-num {
-  font-size: 1.9rem;
-  font-weight: 800;
+.ring-num {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
-  font-variant-numeric: tabular-nums;
+}
+.ring-grade {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--c);
+}
+.ring.lg {
+  --hole: #000;
+  width: 64px;
+  height: 64px;
+}
+.ring.lg .ring-in {
+  width: 52px;
+  height: 52px;
+}
+.ring.lg .ring-num {
+  font-size: 20px;
 }
 
-.score-grade {
-  font-size: 0.75rem;
-  font-weight: 600;
-  opacity: 0.9;
-}
+/* --- Report (3a) ---------------------------------------------------------- */
 
-.score-meta {
-  font-size: 0.9em;
-  line-height: 1.5;
-  opacity: 0.85;
+.view-report {
+  padding: 14px 16px 16px;
+  gap: 12px;
+  background: var(--main);
+  overflow-y: auto;
 }
-
-.subscores {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
-}
-
-.subscore {
-  display: grid;
-  grid-template-columns: 5.5rem 1fr 2rem;
-  align-items: center;
-  gap: 0.6rem;
-  font-size: 0.85em;
-}
-
-.subscore-label {
-  opacity: 0.8;
-}
-
-.subscore-val {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.7;
-}
-
-.meter {
-  height: 8px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.1);
-  overflow: hidden;
-}
-
-.meter-fill {
-  height: 100%;
-  border-radius: 4px;
-  background: #396cd8;
-}
-
-.tips {
-  margin-bottom: 1rem;
-}
-
-.tips ol {
-  margin: 0.4rem 0 0;
-  padding-left: 1.2rem;
-}
-
-.tips li {
-  margin-bottom: 0.4rem;
-  line-height: 1.45;
-}
-
-.report-charts {
-  display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-}
-
-.report-chart {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.report-chart-box {
-  width: 100%;
-  height: 70px;
-  padding: 0.4rem 0.5rem;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.03);
-}
-
-.report-chart-box.large {
-  height: 150px;
-}
-
-.report-chart-svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-/* Report bar-chart axes: a y-axis column (peak value + unit at top, 0 at the
-   baseline) beside the plot, and an x-axis label under it. */
-.chart-plot {
-  display: flex;
-  align-items: stretch;
-  gap: 0.35rem;
-}
-
-.chart-plot .report-chart-box {
+#report-body {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.y-axis {
+.rep-hero {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: #000;
+  border: 0.5px solid var(--edge-2);
+}
+.rep-title {
+  flex: 1;
+  min-width: 0;
+}
+.rep-title h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.rep-title .sub {
+  font-size: 11px;
+  margin-top: 4px;
+}
+.rep-delta {
+  text-align: right;
+}
+.rep-delta .num {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+.rep-vr {
+  width: 1px;
+  height: 40px;
+  background: var(--edge-2);
+}
+.rep-tip {
+  max-width: 250px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(242, 242, 247, 0.8);
+  text-wrap: pretty;
+}
+
+.up { color: var(--green); }
+.down { color: var(--orange); }
+.flat { color: var(--ink-2); }
+
+.panel {
+  background: var(--card);
+  border: 0.5px solid var(--edge);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+}
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.pace-panel {
+  flex: 0 0 auto;
+  padding: 12px 14px 10px;
+  gap: 6px;
+}
+.legend {
+  display: flex;
+  gap: 14px;
+  font-size: 10px;
+  color: var(--ink-2);
+}
+.pace-grid {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 8px;
+}
+.y-labels {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  height: 150px;
+  font-size: 9px;
+  color: var(--ink-3);
   text-align: right;
-  padding: 0.2rem 0;
-  font-size: 0.62rem;
-  line-height: 1;
-  opacity: 0.55;
-  white-space: nowrap;
+}
+.pace-plot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.pace-plot svg {
+  width: 100%;
+  height: 150px;
+  display: block;
+}
+.marks {
+  position: relative;
+  height: 12px;
+}
+.marks + .marks {
+  border-top: 0.5px solid var(--edge);
+}
+.dot,
+.tick {
+  position: absolute;
+}
+.dot {
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+.tick {
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 1px;
+  background: var(--ink-3);
+}
+.x-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--ink-3);
 }
 
-.x-axis-label {
-  margin-top: 0.15rem;
-  text-align: center;
-  font-size: 0.62rem;
-  opacity: 0.55;
+.tiles {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
 }
-
-.report-bar {
-  fill: #396cd8;
-  opacity: 0.75;
+.tile {
+  background: var(--card);
+  border: 0.5px solid var(--edge);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
 }
-
-.report-chart-svg.trend polyline {
-  stroke: #396cd8;
-  stroke-width: 2;
-  vector-effect: non-scaling-stroke;
+.tile .big {
+  font-size: 22px;
 }
-
-/* Per-point hover targets: invisible until hovered, then a dot appears and the
-   native <title> tooltip shows that second's WPM + filler count. */
-.trend-hit {
-  fill: transparent;
+.tile .card-top {
+  gap: 5px;
 }
-
-.trend-hit:hover {
-  fill: #396cd8;
-}
-
-.wpm-filler-mark {
-  stroke: #d83939;
-  stroke-width: 2;
-  stroke-linecap: round;
-  fill: none;
-  vector-effect: non-scaling-stroke;
-}
-
-.report-chart-svg .axis-label,
-.report-chart-svg .axis-unit {
-  fill: currentColor;
-  opacity: 0.55;
+.tile .delta {
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
-.report-chart-svg .axis-unit {
-  opacity: 0.75;
+.rep-bottom {
+  flex: 1 1 0;
+  min-height: 170px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1.2fr);
+  gap: 10px;
+}
+
+.fw-list {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  overflow-y: auto;
+}
+.fw-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 18px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.fw-bar {
+  height: 8px;
+  border-radius: 2px;
+  background: var(--edge);
+  overflow: hidden;
+}
+.fw-bar div {
+  height: 100%;
+  background: var(--amber);
+  border-radius: 2px;
+}
+.fw-row .n {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--amber);
+}
+.empty {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.hist {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.hist-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+.hist-col .bar {
+  width: 100%;
+  border-radius: 3px 3px 1px 1px;
+  background: rgba(255, 255, 255, 0.16);
+}
+.hist-col.now {
+  color: rgba(242, 242, 247, 0.95);
+}
+.hist-col.now .bar {
+  background: var(--green);
+}
+
+.moments {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+.moment {
+  display: grid;
+  grid-template-columns: 38px 3px 1fr;
+  gap: 10px;
+  align-items: stretch;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.moment .t {
+  font-size: 11px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  padding-top: 1px;
+}
+.moment .bar {
+  border-radius: 2px;
+}
+.moment b {
+  display: block;
+  font-size: 12px;
   font-weight: 600;
 }
-
-.report-chart-svg .axis-grid {
-  stroke: currentColor;
-  opacity: 0.14;
-  stroke-width: 0.5;
-  vector-effect: non-scaling-stroke;
+.moment span.note {
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  margin-top: 2px;
+}
+.moment:hover b {
+  color: var(--blue-2);
 }
 
-.chart-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  font-size: 0.72rem;
-  opacity: 0.8;
-}
+/* --- Tooltip -------------------------------------------------------------- */
 
-.legend-mark {
-  width: 16px;
-  height: 10px;
-  overflow: visible;
-}
-
-.legend-mark line {
-  stroke: #396cd8;
-  stroke-width: 2;
-}
-
-.legend-mark circle {
-  fill: #396cd8;
-}
-
-.legend-mark.filler path {
-  stroke: #d83939;
-  stroke-width: 2;
-  stroke-linecap: round;
-  fill: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #000;
-  }
-
-  .transcript,
-  .stat {
-    background-color: #0f0f0f98;
-  }
-
-  .script-input {
-    background-color: #1f1f1f;
-    color: #f6f6f6;
-    border-color: rgba(255, 255, 255, 0.2);
-  }
-
-  .script-display {
-    background-color: #0f0f0f98;
-  }
-
-  .file-btn {
-    border-color: rgba(255, 255, 255, 0.2);
-  }
-
-  .script-hit {
-    color: #7ee081;
-  }
-
-  .script-miss {
-    color: #ffb3b3;
-    background-color: #6e2020;
-  }
-
-  .script-current {
-    background-color: #8a6d1f;
-    color: #fff6da;
-  }
-
-  .transcript .timestamp {
-    color: #7fa8f0;
-  }
-
-  .transcript .filler {
-    background-color: #8a6d1f;
-    color: #fff6da;
-  }
-
-  .transcript .waveform-bars rect {
-    fill: #7fa8f0;
-    opacity: 0.45;
-  }
-
-  .transcript .waveform-pause {
-    fill: rgba(255, 179, 179, 0.18);
-  }
-
-  .mini-btn {
-    background-color: #1f1f1f;
-    border-color: rgba(255, 255, 255, 0.2);
-  }
-
-  .report {
-    background-color: #0f0f0f98;
-  }
-
-  .report-chart-box {
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .meter {
-    background: rgba(255, 255, 255, 0.12);
-  }
-
-  .report-bar,
-  .trend-hit:hover {
-    fill: #7fa8f0;
-  }
-
-  .report-chart-svg.trend polyline {
-    stroke: #7fa8f0;
-  }
-
-  .legend-mark line {
-    stroke: #7fa8f0;
-  }
-
-  .legend-mark circle {
-    fill: #7fa8f0;
-  }
-
-  .meter-fill {
-    background: #7fa8f0;
-  }
-
-  /* Brighter green for the "corrected" state so it reads on the dark panel. */
-  .transcript .segment.corrected {
-    border-left-color: #7ee081;
-  }
-
-  .transcript .segment.corrected::after {
-    color: #7ee081;
-  }
-
-  .legend-corrected {
-    background-color: #7ee081;
-  }
-
-  @keyframes correctedFlash {
-    from {
-      background-color: rgba(126, 224, 129, 0.18);
-    }
-    to {
-      background-color: transparent;
-    }
-  }
+.tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 110ms ease;
+  max-width: 280px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: rgba(38, 38, 42, 0.94);
+  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--ink);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }

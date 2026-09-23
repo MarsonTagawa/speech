@@ -8,95 +8,156 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
-  <body>
-    <canvas id="ribbon" class="ribbon" aria-hidden="true"></canvas>
+  <body data-view="live">
+    <div class="app">
+      <!-- Left rail: window controls, transport, level meter. The titlebar is
+           gone (decorations off), so the rail doubles as the drag region. -->
+      <aside class="rail" data-tauri-drag-region>
+        <div class="lights">
+          <button id="win-close" class="light light-close" aria-label="Close" data-tip="Close"></button>
+          <button id="win-min" class="light light-min" aria-label="Minimize" data-tip="Minimize"></button>
+          <button id="win-max" class="light light-max" aria-label="Maximize" data-tip="Maximize"></button>
+        </div>
+        <div class="rail-rule"></div>
 
-    <main class="container">
-      <h1>Speech</h1>
+        <div class="rail-live">
+          <div class="rec-group">
+            <button id="record-btn" class="rec-btn" aria-label="Start recording" data-tip="Start recording"></button>
+            <span id="rec-label" class="rec-label">REC</span>
+          </div>
+          <div class="rail-btns">
+            <button id="reset-btn" class="rail-btn" type="button" data-tip="Reset — clears the transcript and all metrics for this session">
+              <span class="rst-icon"></span>RST
+            </button>
+            <button id="drill-btn" class="rail-btn" type="button" data-tip="60-second drill — a random prompt and a timed run">60s</button>
+            <button id="ff-btn" class="rail-btn rail-ff" type="button" aria-pressed="false" data-tip="Filler-free mode — flashes the screen whenever a filler lands">FF</button>
+            <button id="script-btn" class="rail-btn" type="button" aria-pressed="false" data-tip="Script read-along — paste a script and track your words against it">SCR</button>
+            <button id="stats-btn" class="rail-btn" type="button" disabled data-tip="Session report">STATS</button>
+          </div>
+        </div>
 
-      <div class="record-row">
-        <button id="record-btn" class="record-btn">Start recording</button>
-        <button id="reset-btn" class="mini-btn" type="button">Reset</button>
-        <span id="status" class="status">Idle</span>
-      </div>
+        <div class="rail-report">
+          <div class="rail-btns">
+            <button id="live-btn" class="rail-btn" type="button" data-tip="Back to the live session">
+              <span class="live-dot"></span>LIVE
+            </button>
+            <button class="rail-btn rail-active" type="button" data-tip="Session report — you are here">STATS</button>
+          </div>
+        </div>
 
-      <div class="legend" aria-label="Transcription status legend">
-        <span class="legend-item"><span class="legend-swatch legend-fast"></span>fast draft</span>
-        <span class="legend-item"><span class="legend-swatch legend-corrected"></span>corrected</span>
-      </div>
+        <div class="rail-spacer" data-tauri-drag-region></div>
+        <div class="lvl" data-tip="Input level — live and peak">
+          <span class="lvl-label">LVL</span>
+          <div class="lvl-bars">
+            <div class="lvl-bar"><div id="lvl-live" class="lvl-fill"></div></div>
+            <div class="lvl-bar"><div id="lvl-peak" class="lvl-fill lvl-dim"></div></div>
+          </div>
+        </div>
+      </aside>
 
-      <div class="practice">
-        <div class="practice-controls">
-          <button id="prompt-btn" class="mini-btn" type="button">Random prompt</button>
-          <button id="drill-btn" class="mini-btn" type="button">Start 60s drill</button>
-          <label class="toggle">
-            <input id="filler-free" type="checkbox" />
-            Filler-free mode
-          </label>
-        </div>
-        <p id="practice-prompt" class="practice-prompt"></p>
-      </div>
+      <!-- 2a: live session -->
+      <main class="view view-live">
+        <section class="scope">
+          <canvas id="ribbon" class="ribbon" aria-hidden="true" data-tauri-drag-region></canvas>
+          <div class="scope-grid"></div>
+          <div class="scope-tl">
+            <div id="status-pill" class="pill">
+              <span class="pill-dot"></span>
+              <span id="status" data-tip="Transcribed on device as you speak">Idle</span>
+            </div>
+            <div>
+              <div class="brand">Speech</div>
+              <div id="session-label" class="sub">Session 1</div>
+            </div>
+          </div>
+          <div class="scope-tr">
+            <div id="clock" class="clock" data-tip="Elapsed session time">0:00</div>
+            <div id="rms-label" class="sub" data-tip="Current mic signal level (RMS) and model sample rate">rms 0.00 · 16 kHz</div>
+          </div>
+          <div class="scope-bl sub">
+            <span data-tip="Model chain — tiny.en streams text instantly, medium.en re-decodes it for accuracy">tiny.en → medium.en</span>
+            <span class="gpu" data-tip="Running on the local GPU — audio never leaves this machine"><i></i>GPU · on-device</span>
+          </div>
+          <div id="preset-seg" class="seg scope-br" role="radiogroup" aria-label="Speaking context">
+            <button type="button" role="radio" data-preset="conversation" data-tip="Conversation — scores for a relaxed 120–160 wpm range">Conversation</button>
+            <button type="button" role="radio" data-preset="presentation" data-tip="Presentation — slower 100–140 wpm target">Presentation</button>
+            <button type="button" role="radio" data-preset="interview" data-tip="Interview — 120–155 wpm target">Interview</button>
+          </div>
+        </section>
 
-      <div class="script-section">
-        <div class="script-head">
-          <span class="mode-label">Script</span>
-          <label class="file-btn">
-            Load .txt
-            <input id="script-file" type="file" accept=".txt,text/plain" hidden />
-          </label>
-        </div>
-        <textarea
-          id="script-input"
-          class="script-input"
-          rows="3"
-          spellcheck="false"
-          placeholder="Paste a script to read aloud, or load a .txt. As you speak, your words are matched against it in real time."
-        ></textarea>
-        <div id="script-display" class="script-display" hidden></div>
-        <div id="script-progress" class="script-progress" hidden></div>
-      </div>
+        <section class="tpane">
+          <div class="tfade"></div>
+          <p id="practice-prompt" class="practice-prompt" hidden></p>
+          <div id="transcript" class="transcript">
+            <p class="placeholder">Your transcript will appear here as you speak.</p>
+          </div>
+          <div id="script-pane" class="script-pane" hidden>
+            <div class="script-head">
+              <span class="label">Script</span>
+              <label class="file-btn">
+                Load .txt
+                <input id="script-file" type="file" accept=".txt,text/plain" hidden />
+              </label>
+            </div>
+            <textarea
+              id="script-input"
+              class="script-input"
+              rows="3"
+              spellcheck="false"
+              placeholder="Paste a script to read aloud, or load a .txt. As you speak, your words are matched against it in real time."
+            ></textarea>
+            <div id="script-display" class="script-display" hidden></div>
+            <div id="script-progress" class="script-progress" hidden></div>
+          </div>
+        </section>
 
-      <div id="stats" class="stats">
-        <div class="stat">
-          <span class="stat-value" id="stat-wpm">0</span>
-          <span class="stat-label">WPM</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="stat-words">0</span>
-          <span class="stat-label">words</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="stat-fillers">0</span>
-          <span class="stat-label">fillers</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="stat-pauses">0</span>
-          <span class="stat-label">pauses</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="stat-time">0:00</span>
-          <span class="stat-label">speaking</span>
-        </div>
-      </div>
+        <section class="dock">
+          <div class="card">
+            <div class="card-top"><span id="stat-wpm" class="big">0</span><span class="unit" data-tip="Speaking rate in words per minute, over voiced time">wpm</span></div>
+            <div class="track">
+              <div id="wpm-band" class="wpm-band"></div>
+              <div id="wpm-mark" class="wpm-mark"></div>
+            </div>
+            <div id="wpm-sub" class="card-sub">target 120–160</div>
+          </div>
+          <div class="card">
+            <div class="card-top"><span id="stat-fpm" class="big amber">0.0</span><span class="unit" data-tip="Filler words per minute — um, uh, like, you know">fillers/min</span></div>
+            <div class="track"><div id="fpm-bar" class="fill amber-bg"></div></div>
+            <div id="fpm-sub" class="card-sub">0 total · aim &lt;3</div>
+          </div>
+          <div class="card">
+            <div class="card-top"><span id="stat-pauses" class="big">0</span><span class="unit" data-tip="Silences longer than 0.6 s — ticks show where they landed">pauses</span></div>
+            <div id="pause-pips" class="pips"></div>
+            <div id="pause-sub" class="card-sub">0.0 / min</div>
+          </div>
+          <div class="card">
+            <div class="card-top"><span id="stat-pitch" class="big">0.0</span><span class="unit" data-tip="Pitch range per sentence — under 3 semitones reads as flat">semitones</span></div>
+            <div class="track"><div id="pitch-bar" class="fill purple-bg"></div></div>
+            <div id="pitch-sub" class="card-sub">inflection</div>
+          </div>
+          <div class="card">
+            <div class="card-top"><span id="stat-words" class="big">0</span><span class="unit" data-tip="Total words spoken">words</span></div>
+            <div class="track"><div id="words-bar" class="fill ink-bg"></div></div>
+            <div id="words-sub" class="card-sub">0:00 speaking</div>
+          </div>
+          <div class="card card-pace">
+            <div class="pace-col">
+              <div class="card-head"><span class="label">Pace</span><span id="peak-label" class="card-sub" data-tip="Fastest five-second stretch this session">peak 0</span></div>
+              <svg id="pace-spark" class="spark" viewBox="0 0 240 44" preserveAspectRatio="none" data-tip="Pace over time — blue line is words per minute, green band the target range, amber crosses are fillers"></svg>
+            </div>
+            <div id="live-ring" class="ring" data-tip="Delivery score so far">
+              <div class="ring-in"><span id="live-score" class="ring-num">–</span><span id="live-grade" class="ring-grade"></span></div>
+            </div>
+          </div>
+        </section>
+      </main>
 
-      <section id="report" class="report" hidden>
-        <div class="report-head">
-          <span class="mode-label">Session report</span>
-          <label class="context-select">
-            Context
-            <select id="report-preset">
-              <option value="conversation">Conversation</option>
-              <option value="presentation">Presentation</option>
-              <option value="interview">Interview</option>
-            </select>
-          </label>
-        </div>
+      <!-- 3a: session report -->
+      <main id="report" class="view view-report">
         <div id="report-body"></div>
-      </section>
+      </main>
+    </div>
 
-      <div id="transcript" class="transcript">
-        <p class="placeholder">Your transcript will appear here as you speak.</p>
-      </div>
-    </main>
+    <div id="tip" class="tip"></div>
   </body>
 </html>

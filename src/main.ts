@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/400-italic.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
+import "@fontsource/ibm-plex-mono/700.css";
 import { Ribbon } from "./ribbon";
 
 let ribbon: Ribbon | null = null;
@@ -51,11 +57,12 @@ let recording = false;
 let recordBtn: HTMLButtonElement | null;
 let statusEl: HTMLElement | null;
 let transcriptEl: HTMLElement | null;
-let wpmEl: HTMLElement | null;
-let wordsEl: HTMLElement | null;
-let fillersEl: HTMLElement | null;
-let pausesEl: HTMLElement | null;
-let timeEl: HTMLElement | null;
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
+function setText(id: string, text: string) {
+  const el = $(id);
+  if (el) el.textContent = text;
+}
 
 // One <p> per utterance index, so interim decodes update a line in place and
 // the final decode commits it. `finalized` guards against a slow interim
@@ -83,6 +90,8 @@ let totalFillers = 0;
 let speakingMs = 0;
 const wordsByIndex = new Map<number, number>();
 const fillersByIndex = new Map<number, number>();
+// The flagged filler words themselves (lowercased), for the report's breakdown.
+const fillerWordsByIndex = new Map<number, string[]>();
 const timedIndices = new Set<number>();
 
 // Per-utterance acoustic analysis keyed by index, for the waveform under each
@@ -158,7 +167,8 @@ function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // Wraps the given character ranges in highlight spans, escaping everything.
@@ -306,7 +316,7 @@ async function reviewFillers(
   if (reviewSession !== sessionId || !entry.isConnected) return;
 
   if (ranges.length > 0) {
-    entry.innerHTML = `<span class="timestamp">${formatTimestamp(startMs)}</span> ${renderHighlighted(text, ranges)}`;
+    entry.innerHTML = segmentHtml(startMs, renderHighlighted(text, ranges));
     refreshWaveform(index); // innerHTML rewrite wiped it
     // Practice: in filler-free mode, flag any newly counted fillers on this line.
     if (fillerFreeMode && ranges.length > (fillersByIndex.get(index) ?? 0)) flashFillerAlert();
@@ -315,6 +325,7 @@ async function reviewFillers(
   // corrected line replaces its earlier filler count rather than stacking on it.
   totalFillers += ranges.length - (fillersByIndex.get(index) ?? 0);
   fillersByIndex.set(index, ranges.length);
+  fillerWordsByIndex.set(index, ranges.map((r) => text.slice(r.start, r.end).toLowerCase()));
   renderStats();
 }
 
@@ -324,6 +335,7 @@ function resetStats() {
   speakingMs = 0;
   wordsByIndex.clear();
   fillersByIndex.clear();
+  fillerWordsByIndex.clear();
   timedIndices.clear();
   analysisByIndex.clear();
   timingByIndex.clear();
@@ -346,16 +358,132 @@ function countPauses(): number {
   return count;
 }
 
+// Live metrics dock (2a). Recomputed from the summary on every change; cheap
+// enough (a pass over this session's utterances) to run per segment.
 function renderStats() {
-  const speakingMinutes = speakingMs / 60000;
-  const wpm = speakingMinutes > 0 ? Math.round(totalWords / speakingMinutes) : 0;
-  if (wpmEl) wpmEl.textContent = String(wpm);
-  if (wordsEl) wordsEl.textContent = String(totalWords);
-  if (fillersEl) fillersEl.textContent = String(totalFillers);
-  if (pausesEl) pausesEl.textContent = String(countPauses());
-  if (timeEl) timeEl.textContent = formatTimestamp(speakingMs);
+  const s = computeSummary();
+  const preset = PRESETS[currentPreset];
+
+  // WPM track: the preset's target band sits in the middle 40% of the scale.
+  const span = preset.wpmHigh - preset.wpmLow;
+  const lo = preset.wpmLow - span * 0.75;
+  const hi = preset.wpmHigh + span * 0.75;
+  const at = (v: number) => Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
+  setText("stat-wpm", String(s.wpm));
+  const band = $("wpm-band");
+  if (band) {
+    band.style.left = `${at(preset.wpmLow)}%`;
+    band.style.width = `${at(preset.wpmHigh) - at(preset.wpmLow)}%`;
+  }
+  const mark = $("wpm-mark");
+  if (mark) {
+    mark.style.left = `${at(s.wpm)}%`;
+    const inBand = s.wpm >= preset.wpmLow && s.wpm <= preset.wpmHigh;
+    mark.className = `wpm-mark${s.wpm === 0 ? "" : inBand ? " in" : " out"}`;
+  }
+  setText("wpm-sub", `target ${preset.wpmLow}–${preset.wpmHigh}`);
+
+  setText("stat-fpm", s.fillersPerMin.toFixed(1));
+  setWidth("fpm-bar", s.fillersPerMin / 12); // 12/min scores 0 (computeSummary)
+  setText("fpm-sub", `${s.fillers} total · aim <3`);
+
+  // Pauses: six time bins across the session, lit where a pause landed.
+  setText("stat-pauses", String(s.pauses));
+  const pips = $("pause-pips");
+  if (pips) {
+    if (pips.childElementCount === 0) pips.innerHTML = "<div></div>".repeat(6);
+    const end = sessionEndMs();
+    const lit = new Set(pauseTimesMs().map((ms) => Math.min(5, Math.floor((ms / Math.max(1, end)) * 6))));
+    [...pips.children].forEach((d, i) => d.classList.toggle("on", lit.has(i)));
+  }
+  setText("pause-sub", `${s.pausesPerMin.toFixed(1)} / min`);
+
+  setText("stat-pitch", s.pitchRange.toFixed(1));
+  setWidth("pitch-bar", s.pitchRange / 5); // 5 st scores 100
+  setText("pitch-sub", s.pitchRange === 0 ? "inflection" : s.pitchRange < 3 ? "inflection · flat" : "inflection · varied");
+
+  // Words bar: share of the session spent actually speaking.
+  setText("stat-words", String(s.words));
+  setWidth("words-bar", speakingMs / Math.max(1, sessionEndMs()));
+  setText("words-sub", `${formatTimestamp(speakingMs)} speaking`);
+
+  const series = perSecondPace();
+  const spark = $("pace-spark");
+  if (spark) spark.innerHTML = sparkSvg(series, preset);
+  setText("peak-label", `peak ${Math.max(0, ...series.map((p) => p.wpm))}`);
+  setLiveRing(s.words > 0 ? s.scores.overall : null);
+
   // Keep the report in sync as deferred corrections/analyses trickle in after stop.
   if (reportVisible) renderReport();
+}
+
+function setWidth(id: string, frac: number) {
+  const el = $(id);
+  if (el) el.style.width = `${Math.max(0, Math.min(1, frac)) * 100}%`;
+}
+
+// Latest end time across committed utterances: the session's length so far.
+function sessionEndMs(): number {
+  let end = 0;
+  for (const t of timingByIndex.values()) end = Math.max(end, t.end);
+  return end;
+}
+
+// Session-relative start of every counted pause (the same set countPauses
+// tallies), for the pip bins and the report's pause timeline.
+function pauseTimesMs(): number[] {
+  const out: number[] = [];
+  for (const [i, a] of analysisByIndex) {
+    const t = timingByIndex.get(i);
+    if (t) for (const p of a.pauses) out.push(t.start + p.start_ms);
+  }
+  const idx = [...timingByIndex.keys()].sort((a, b) => a - b);
+  for (let k = 1; k < idx.length; k++) {
+    const prev = timingByIndex.get(idx[k - 1])!;
+    if (timingByIndex.get(idx[k])!.start - prev.end >= INTER_PAUSE_MS) out.push(prev.end);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+// Shared WPM axis for both pace charts: 80 at the floor, 200 (or the next 40
+// above the peak) at the top.
+function wpmAxis(peak: number): [number, number] {
+  return [80, Math.max(200, Math.ceil(peak / 40) * 40)];
+}
+
+// Contents of the dock's pace sparkline (viewBox 240×44): target band, WPM
+// line, a dot at "now" and an amber × at each filler onset.
+function sparkSvg(series: SecondPace[], preset: Preset): string {
+  if (series.length < 2) return "";
+  const W = 240;
+  const H = 44;
+  const [lo, hi] = wpmAxis(Math.max(...series.map((p) => p.wpm)));
+  const x = (sec: number) => (sec / (series.length - 1)) * W;
+  const y = (v: number) => H - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * H;
+  const pts = series.map((p, sec) => `${x(sec).toFixed(1)},${y(p.wpm).toFixed(1)}`).join(" ");
+  const last = series.length - 1;
+  const crosses = series
+    .map((p, sec) => (p.fillerHere ? `M${(x(sec) - 2.5).toFixed(1)},${(y(p.wpm) - 2.5).toFixed(1)} l5,5 m0,-5 l-5,5` : ""))
+    .join(" ");
+  return (
+    `<rect x="0" y="${y(preset.wpmHigh).toFixed(1)}" width="${W}" height="${(y(preset.wpmLow) - y(preset.wpmHigh)).toFixed(1)}" fill="rgba(48,209,88,0.12)" />` +
+    `<polyline points="${pts}" fill="none" stroke="#0a84ff" stroke-width="1.5" vector-effect="non-scaling-stroke" />` +
+    `<circle cx="${x(last).toFixed(1)}" cy="${y(series[last].wpm).toFixed(1)}" r="2.5" fill="#0a84ff" />` +
+    (crosses.trim() ? `<path d="${crosses}" stroke="#ffd60a" stroke-width="1.5" stroke-linecap="round" fill="none" vector-effect="non-scaling-stroke" />` : "")
+  );
+}
+
+const GRADE_COLOR: Record<string, string> = { A: "#30d158", B: "#30d158", C: "#ffd60a", D: "#ff9f0a", E: "#ff453a" };
+
+function setLiveRing(score: number | null) {
+  const ring = $("live-ring");
+  if (!ring) return;
+  const g = score === null ? "" : grade(score);
+  ring.style.setProperty("--p", String(score ?? 0));
+  ring.style.setProperty("--c", g ? GRADE_COLOR[g] : "#30d158");
+  setText("live-score", score === null ? "–" : String(score));
+  setText("live-grade", g);
+  ring.dataset.tip = score === null ? "Delivery score — appears once you start speaking" : `Delivery score — ${score} of 100 so far, grade ${g}`;
 }
 
 // --- Per-utterance waveform --------------------------------------------------
@@ -396,7 +524,7 @@ function refreshWaveform(index: number) {
   entry.querySelector(".waveform")?.remove();
   const analysis = analysisByIndex.get(index);
   if (!analysis || analysis.envelope.length === 0) return;
-  entry.insertAdjacentHTML("beforeend", buildWaveformSvg(analysis));
+  entry.querySelector(".seg-body")?.insertAdjacentHTML("beforeend", buildWaveformSvg(analysis));
 }
 
 // --- Pace-over-time data -----------------------------------------------------
@@ -457,6 +585,12 @@ function perSecondPace(): SecondPace[] {
   return out;
 }
 
+
+// Inner markup of one transcript line; the pass-state label comes from the
+// line's class via CSS, so re-renders (filler review) don't need to know it.
+function segmentHtml(startMs: number, textHtml: string): string {
+  return `<div class="seg-body"><div class="seg-meta"><span class="seg-ts">${formatTimestamp(startMs)}</span><span class="seg-state"></span></div><p class="seg-text">${textHtml}</p></div>`;
+}
 
 function formatTimestamp(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -816,7 +950,7 @@ function upsertSegment(segment: TranscriptSegment) {
 
   let entry = segmentEls.get(segment.index);
   if (!entry) {
-    entry = document.createElement("p");
+    entry = document.createElement("div");
     entry.className = "segment";
     transcriptEl.appendChild(entry);
     segmentEls.set(segment.index, entry);
@@ -837,7 +971,7 @@ function upsertSegment(segment: TranscriptSegment) {
   // Tier-1 render: plain text, no filler flags. This paints immediately; all
   // filler flagging happens in the deferred review below, so the text always
   // appears before any flagging.
-  entry.innerHTML = `<span class="timestamp">${formatTimestamp(segment.start_ms)}</span> ${escapeHtml(segment.text)}`;
+  entry.innerHTML = segmentHtml(segment.start_ms, escapeHtml(segment.text));
   // Re-attach the waveform: innerHTML above wiped it, and this also covers the
   // correction rewriting a committed line. No-op until the analysis has arrived.
   refreshWaveform(segment.index);
@@ -888,6 +1022,57 @@ function appendError(message: string) {
 
 function setStatus(text: string) {
   if (statusEl) statusEl.textContent = text;
+  const pill = $("status-pill");
+  pill?.classList.toggle("recording", text === "Recording");
+  pill?.classList.toggle("error", text === "Error");
+}
+
+function setRecordingUi(on: boolean) {
+  if (!recordBtn) return;
+  recordBtn.classList.toggle("recording", on);
+  const label = on ? "Stop recording — ends the session and finalizes the transcript" : "Start recording";
+  recordBtn.setAttribute("aria-label", on ? "Stop recording" : "Start recording");
+  recordBtn.dataset.tip = label;
+  $("rec-label")?.classList.toggle("on", on);
+}
+
+// Wall-clock session timer on the scope; also counts the drill button down.
+let clockTimer = 0;
+let recordStartedAt = 0;
+let drillEndsAt = 0;
+
+function tickClock() {
+  const now = performance.now();
+  setText("clock", formatTimestamp(recordStartedAt ? now - recordStartedAt : 0));
+  const drill = $("drill-btn");
+  if (drill) {
+    const left = drillEndsAt - now;
+    drill.textContent = left > 0 ? `${Math.ceil(left / 1000)}s` : "60s";
+    drill.classList.toggle("drilling", left > 0);
+  }
+}
+
+function startClock() {
+  recordStartedAt = performance.now();
+  clearInterval(clockTimer);
+  clockTimer = window.setInterval(tickClock, 250);
+  tickClock();
+}
+
+function stopClock() {
+  clearInterval(clockTimer);
+  drillEndsAt = 0;
+  tickClock();
+}
+
+// Input level meter in the rail: live level plus a slowly falling peak.
+let peakLevel = 0;
+function setLevelMeter(level: number) {
+  peakLevel = Math.max(level, peakLevel * 0.97);
+  const live = $("lvl-live");
+  const peak = $("lvl-peak");
+  if (live) live.style.height = `${level * 100}%`;
+  if (peak) peak.style.height = `${peakLevel * 100}%`;
 }
 
 async function toggleRecording() {
@@ -904,26 +1089,35 @@ async function toggleRecording() {
       tokensByIndex.clear();
       renderScriptMatch(); // reset read-along highlights to the start
       resetStats();
-      // Clear the previous session's report; it's rebuilt on stop.
       reportVisible = false;
-      document.querySelector("#report")?.setAttribute("hidden", "");
+      const statsBtn = $<HTMLButtonElement>("stats-btn");
+      if (statsBtn) statsBtn.disabled = true;
       await invoke("start_recording");
       recording = true;
-      recordBtn.textContent = "Stop recording";
-      recordBtn.classList.add("recording");
+      sessionStartTs = Date.now();
+      renderSessionLabel();
+      startClock();
+      showView("live");
+      setRecordingUi(true);
       ribbon?.setMode("listening");
-      setStatus("Recording…");
+      setStatus("Recording");
     } else {
       await invoke("stop_recording");
       recording = false;
-      recordBtn.textContent = "Start recording";
-      recordBtn.classList.remove("recording");
+      stopClock();
+      setRecordingUi(false);
       ribbon?.setMode("idle");
       ribbon?.setLevel(0); // no more level events once stopped; settle to rest
+      peakLevel = 0;
+      setLevelMeter(0);
       setStatus("Idle");
-      // Build the report. It keeps refreshing via renderStats as any trailing
-      // corrections land.
+      // Build the report and switch to it. It keeps refreshing via renderStats
+      // as any trailing corrections land.
       renderReport();
+      if (reportVisible) {
+        showView("report");
+        void saveSession();
+      }
     }
   } catch (e) {
     setStatus("Error");
@@ -943,12 +1137,45 @@ function resetSession() {
   tokensByIndex.clear();
   renderScriptMatch();
   resetStats();
-  reportVisible = false;
-  document.querySelector("#report")?.setAttribute("hidden", "");
+  renderReport(); // no words → disables STATS and returns to live
+  recordStartedAt = 0;
+  tickClock();
+  $("practice-prompt")?.setAttribute("hidden", "");
   if (transcriptEl)
     transcriptEl.innerHTML =
       '<p class="placeholder">Your transcript will appear here as you speak.</p>';
   setStatus("Idle");
+}
+
+function toggleScript(open?: boolean) {
+  const pane = $("script-pane");
+  if (!pane) return;
+  const show = open ?? pane.hidden;
+  pane.hidden = !show;
+  $("script-btn")?.setAttribute("aria-pressed", String(show));
+}
+
+// Styled hover tips for anything with data-tip (the design's tooltip).
+function initTooltips() {
+  const tip = $("tip");
+  if (!tip) return;
+  document.addEventListener("mousemove", (e) => {
+    const el = (e.target as Element | null)?.closest?.("[data-tip]");
+    const text = el?.getAttribute("data-tip");
+    if (!text) {
+      tip.style.opacity = "0";
+      return;
+    }
+    if (tip.textContent !== text) tip.textContent = text;
+    const w = tip.offsetWidth;
+    const h = tip.offsetHeight;
+    const right = e.clientX + 14 + w < window.innerWidth;
+    const below = e.clientY + 18 + h < window.innerHeight;
+    tip.style.left = `${right ? e.clientX + 14 : e.clientX - 14 - w}px`;
+    tip.style.top = `${below ? e.clientY + 18 : e.clientY - 12 - h}px`;
+    tip.style.opacity = "1";
+  });
+  document.addEventListener("mouseleave", () => (tip.style.opacity = "0"));
 }
 
 // --- Scoring, report, practice -----------------------------------------------
@@ -1003,13 +1230,6 @@ interface SessionSummary {
 
 function mean(xs: number[]): number {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
-}
-
-// Analyses ordered by utterance index, for the per-sentence report charts.
-function orderedAnalyses(): UtteranceAnalysis[] {
-  return [...analysisByIndex.keys()]
-    .sort((a, b) => a - b)
-    .map((i) => analysisByIndex.get(i)!);
 }
 
 // End-of-sentence volume decay: mean of the last ~20% of the envelope vs the
@@ -1111,7 +1331,7 @@ function computeSummary(): SessionSummary {
 
   const scores: Scores = { pace, fillers, pauses: pausesScore, pitch, volume, articulation, overall };
   return {
-    ts: Date.now(),
+    ts: sessionStartTs,
     durationMs: speakingMs,
     words: totalWords,
     wpm,
@@ -1179,227 +1399,264 @@ function grade(n: number): string {
   return "E";
 }
 
-// Generic per-sentence/per-session bar chart as an inline SVG string. Reused for
-// the pace, pitch and volume report charts (the live WPM chart stays its own).
-function barChartSvg(values: number[], title: (i: number, v: number) => string): string {
-  const W = 300;
-  const H = 70;
-  const n = values.length;
-  if (n === 0) return `<svg viewBox="0 0 ${W} ${H}" class="report-chart-svg"></svg>`;
-  const max = Math.max(...values, 1);
-  const slot = W / n;
-  const barW = slot * 0.7;
-  let bars = "";
-  values.forEach((v, i) => {
-    const h = (v / max) * H;
-    const x = i * slot + (slot - barW) / 2;
-    bars += `<rect class="report-bar" x="${x.toFixed(2)}" y="${(H - h).toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(0.5, h).toFixed(2)}"><title>${title(i, v)}</title></rect>`;
-  });
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="report-chart-svg">${bars}</svg>`;
+// --- Session report (3a) -----------------------------------------------------
+
+// Saved sessions (history.rs), oldest first. Loaded at startup and replaced by
+// save_session's reply. The report compares against those saved before
+// `sessionStartTs`, so this session's own saved copy is never its baseline.
+let history: SessionSummary[] = [];
+let sessionStartTs = Date.now();
+
+function parseHistory(json: string): SessionSummary[] {
+  try {
+    const arr = JSON.parse(json);
+    return Array.isArray(arr)
+      ? arr.filter((h) => typeof h?.ts === "number" && typeof h?.scores?.overall === "number")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
-// A point on the WPM line. `x01` is its position along the x-axis in [0,1];
-// `filler` marks a filler onset (drawn as a red ×); `title` is the hover text.
-interface LinePoint {
-  x01: number;
-  wpm: number;
-  filler: boolean;
+const priorSessions = () => history.filter((h) => h.ts < sessionStartTs);
+
+function fmtDate(ts: number): string {
+  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function renderSessionLabel() {
+  setText("session-label", `Session ${priorSessions().length + 1} · ${fmtDate(sessionStartTs)}`);
+}
+
+// ponytail: saved once at stop; corrections landing after stop refresh the
+// on-screen report but not the saved record.
+async function saveSession() {
+  try {
+    history = parseHistory(await invoke<string>("save_session", { session: JSON.stringify(computeSummary()) }));
+  } catch (e) {
+    appendError(`Couldn't save session: ${e}`);
+  }
+}
+
+// "+4", "−1.2", "±0" — typographic minus to match the design.
+function signed(n: number, digits = 0): string {
+  const v = Number(n.toFixed(digits));
+  if (v === 0) return "±0";
+  return (v > 0 ? "+" : "−") + Math.abs(v).toFixed(digits);
+}
+
+function ringHtml(score: number, tip: string): string {
+  const g = grade(score);
+  return `<div class="ring lg" style="--p:${score};--c:${GRADE_COLOR[g]}" data-tip="${escapeHtml(tip)}"><div class="ring-in"><span class="ring-num">${score}</span><span class="ring-grade">${g}</span></div></div>`;
+}
+
+interface Moment {
+  ms: number;
+  index: number;
+  color: string;
   title: string;
-}
-interface XTick {
-  at01: number;
-  label: string;
-  anchor: "start" | "middle" | "end";
+  note: string;
 }
 
-// A "nice" tick spacing (1/2/5 × 10^k) so an axis lands ~targetTicks round marks
-// that adapt to the data range, rather than a fixed peak/0 pair.
-function niceStep(range: number, targetTicks: number): number {
-  const raw = Math.max(range, 1) / Math.max(1, targetTicks);
-  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
-  const norm = raw / pow;
-  return (norm >= 5 ? 5 : norm >= 2 ? 2 : 1) * pow;
-}
+// Up to three jump-to points: the densest filler line, the fastest stretch,
+// and the longest filler-free run.
+function keyMoments(preset: Preset): Moment[] {
+  const idx = [...timingByIndex.keys()].sort((a, b) => a - b);
+  if (idx.length === 0) return [];
+  const start = (i: number) => timingByIndex.get(i)!.start;
+  const out: Moment[] = [];
 
-// Monkeytype-style WPM line graph: a continuous polyline through `points` with
-// adaptive gridline ticks on both axes (y = WPM in round steps, x from the
-// caller). Every point carries a transparent hover target with its `title`;
-// filler onsets also draw a visible red ×.
-function lineGraphSvg(points: LinePoint[], dataMax: number, xTicks: XTick[]): string {
-  const W = 600;
-  const H = 150;
-  const PAD_L = 40; // y-axis tick labels
-  const PAD_T = 22; // "WPM" unit + headroom
-  const PAD_B = 26; // x-axis labels
-  if (points.length === 0) return `<svg viewBox="0 0 ${W} ${H}" class="report-chart-svg"></svg>`;
-  const top = PAD_T;
-  const bottom = H - PAD_B;
-  const plotW = W - PAD_L - 4;
-  const yStep = niceStep(dataMax, 4);
-  const axisMax = Math.max(yStep, Math.ceil(dataMax / yStep) * yStep);
-  const X = (x01: number) => PAD_L + Math.max(0, Math.min(1, x01)) * plotW;
-  const Y = (v: number) => bottom - (v / axisMax) * (bottom - top);
-  const pts = points.map((p) => `${X(p.x01).toFixed(2)},${Y(p.wpm).toFixed(2)}`).join(" ");
-
-  // Adaptive y-axis: a gridline + WPM value at each round step.
-  let yAxis = "";
-  for (let v = 0; v <= axisMax + 1e-6; v += yStep) {
-    const y = Y(v).toFixed(2);
-    yAxis +=
-      `<line class="axis-grid" x1="${PAD_L}" y1="${y}" x2="${W - 2}" y2="${y}" />` +
-      `<text class="axis-label" x="${PAD_L - 5}" y="${(Y(v) + 3.5).toFixed(2)}" text-anchor="end">${v}</text>`;
+  let worst = -1;
+  for (const i of idx) {
+    const n = fillersByIndex.get(i) ?? 0;
+    if (n >= 2 && (worst < 0 || n > fillersByIndex.get(worst)!)) worst = i;
   }
-  // Adaptive x-axis: a short tick + label at each caller-supplied mark.
-  const xAxis = xTicks
-    .map((t) => {
-      const x = X(t.at01).toFixed(2);
-      return (
-        `<line class="axis-grid" x1="${x}" y1="${bottom}" x2="${x}" y2="${bottom + 3}" />` +
-        `<text class="axis-label" x="${x}" y="${H - 6}" text-anchor="${t.anchor}">${escapeHtml(t.label)}</text>`
-      );
-    })
-    .join("");
+  if (worst >= 0)
+    out.push({
+      ms: start(worst),
+      index: worst,
+      color: "#ffd60a",
+      title: `${fillersByIndex.get(worst)} fillers in one sentence`,
+      note: (fillerWordsByIndex.get(worst) ?? []).join(" → "),
+    });
 
-  const r = 5;
-  const fillerMarks = points
-    .filter((p) => p.filler)
-    .map((p) => {
-      const x = X(p.x01);
-      const y = Y(p.wpm);
-      return (
-        `<path class="wpm-filler-mark" d="M${(x - r).toFixed(2)},${(y - r).toFixed(2)} ` +
-        `l${(2 * r).toFixed(2)},${(2 * r).toFixed(2)} M${(x + r).toFixed(2)},${(y - r).toFixed(2)} ` +
-        `l${(-2 * r).toFixed(2)},${(2 * r).toFixed(2)}" />`
-      );
-    })
-    .join("");
-  // One hover target per point: transparent, reveals a dot on hover (CSS) and
-  // shows the point's WPM + fillers as a native tooltip.
-  const hits = points
-    .map((p) => `<circle class="trend-hit" cx="${X(p.x01).toFixed(2)}" cy="${Y(p.wpm).toFixed(2)}" r="4"><title>${escapeHtml(p.title)}</title></circle>`)
-    .join("");
-
-  return (
-    `<svg viewBox="0 0 ${W} ${H}" class="report-chart-svg trend">` +
-    yAxis +
-    `<text class="axis-unit" x="2" y="14">WPM</text>` +
-    `<polyline points="${pts}" fill="none" />` +
-    fillerMarks +
-    `<g class="trend-hits">${hits}</g>` +
-    xAxis +
-    `</svg>`
-  );
-}
-
-// Per-session pace: WPM sampled every second over the session's elapsed time
-// (x = 0:00 → end, adaptive time ticks). Hover any second for its WPM + running
-// filler count; filler onsets mark as ×.
-function paceLineSvg(): string {
   const series = perSecondPace();
-  if (series.length === 0) return `<svg viewBox="0 0 600 150" class="report-chart-svg"></svg>`;
-  const totalSec = series.length - 1;
-  const at01 = (sec: number) => (totalSec > 0 ? sec / totalSec : 0.5);
-  const yMax = Math.max(...series.map((s) => s.wpm), 1);
-  const points: LinePoint[] = series.map((s, sec) => ({
-    x01: at01(sec),
-    wpm: s.wpm,
-    filler: s.fillerHere,
-    title: `${formatTimestamp(sec * 1000)} · ${s.wpm} WPM · ${s.fillersCum} filler${s.fillersCum === 1 ? "" : "s"}`,
-  }));
-  const xStep = Math.max(1, Math.round(niceStep(totalSec, 4)));
-  const xTicks: XTick[] = [];
-  for (let sec = 0; sec <= totalSec; sec += xStep)
-    xTicks.push({ at01: at01(sec), label: formatTimestamp(sec * 1000), anchor: sec === 0 ? "start" : "middle" });
-  return lineGraphSvg(points, yMax, xTicks);
-}
-
-// A titled chart with caption. Pass `axis` to frame the plot with a y-axis
-// (peak value + unit at top, 0 at bottom) and an x-axis label — used by the
-// report bar charts so each has readable ticks/units.
-function chartBlock(
-  label: string,
-  svg: string,
-  caption: string,
-  axis?: { max: number; unit: string; xLabel: string },
-): string {
-  let plot = `<div class="report-chart-box">${svg}</div>`;
-  if (axis) {
-    const unit = axis.unit ? ` ${axis.unit}` : "";
-    plot =
-      `<div class="chart-plot">` +
-      `<div class="y-axis"><span>${axis.max}${escapeHtml(unit)}</span><span>0</span></div>` +
-      plot +
-      `</div><div class="x-axis-label">${escapeHtml(axis.xLabel)}</div>`;
+  let ps = 0;
+  series.forEach((p, sec) => {
+    if (p.wpm > series[ps].wpm) ps = sec;
+  });
+  const peak = series[ps]?.wpm ?? 0;
+  if (peak > 0) {
+    // The peak second closes a trailing window; point at its middle.
+    const ms = Math.max(0, ps * 1000 - PACE_WINDOW_MS / 2);
+    const at = idx.filter((i) => start(i) <= ms).pop() ?? idx[0];
+    out.push({
+      ms,
+      index: at,
+      color: "#0a84ff",
+      title: `Peak pace, ${peak} wpm`,
+      note: peak > preset.wpmHigh ? `${peak - preset.wpmHigh} over target — breathe between phrases` : "Still inside your target range",
+    });
   }
-  return `<div class="report-chart"><span class="mode-label">${label}</span>${plot}<div class="chart-caption">${escapeHtml(caption)}</div></div>`;
+
+  let best = { from: -1, ms: 0 };
+  let runStart = -1;
+  for (let k = 0; k < idx.length; k++) {
+    if ((fillersByIndex.get(idx[k]) ?? 0) > 0) {
+      runStart = -1;
+      continue;
+    }
+    if (runStart < 0) runStart = k;
+    const ms = timingByIndex.get(idx[k])!.end - start(idx[runStart]);
+    if (ms > best.ms) best = { from: runStart, ms };
+  }
+  if (best.ms >= 5000 && totalFillers > 0)
+    out.push({
+      ms: start(idx[best.from]),
+      index: idx[best.from],
+      color: "#30d158",
+      title: "Cleanest stretch",
+      note: `${Math.round(best.ms / 1000)} s with no fillers`,
+    });
+
+  return out.sort((a, b) => a.ms - b.ms);
 }
 
 function renderReport() {
-  const body = document.querySelector("#report-body");
-  const section = document.querySelector("#report");
-  if (!body || !section) return;
+  const body = $("report-body");
+  const statsBtn = $<HTMLButtonElement>("stats-btn");
+  if (!body) return;
   if (totalWords === 0) {
-    section.setAttribute("hidden", "");
     reportVisible = false;
+    if (statsBtn) statsBtn.disabled = true;
+    if (document.body.dataset.view === "report") showView("live");
     return;
   }
   reportVisible = true;
-  section.removeAttribute("hidden");
+  if (statsBtn) statsBtn.disabled = false;
 
   const s = computeSummary();
   const c = s.scores;
-  const subscore = (label: string, v: number) =>
-    `<div class="subscore"><span class="subscore-label">${label}</span><div class="meter"><div class="meter-fill" style="width:${v}%"></div></div><span class="subscore-val">${v}</span></div>`;
+  const preset = PRESETS[s.preset];
+  const prior = priorSessions();
+  const prev = prior[prior.length - 1];
+  const num = prior.length + 1;
 
-  const subs = [
-    subscore("Pace", c.pace),
-    subscore("Fillers", c.fillers),
-    subscore("Pauses", c.pauses),
-    subscore("Pitch", c.pitch),
-    subscore("Volume", c.volume),
-    ...(c.articulation !== null ? [subscore("Articulation", c.articulation)] : []),
-  ].join("");
-
-  const ordered = orderedAnalyses();
-  const pitchData = ordered.map((a) => Number(a.f0_range_semitones.toFixed(1)));
-  const volumeData = ordered.map((a) => Math.round(a.rms_level * 1000));
-
-  // Headline chart: continuous WPM-over-time line for the session (Monkeytype
-  // style), followed by the per-sentence pitch/volume bars.
-  const paceBlock =
-    `<div class="report-chart">` +
-    `<span class="mode-label">Pace over time (WPM)</span>` +
-    `<div class="report-chart-box large">${paceLineSvg()}</div>` +
-    `<div class="chart-legend">` +
-    `<span class="legend-item"><svg class="legend-mark" viewBox="0 0 16 10" aria-hidden="true"><line x1="0" y1="5" x2="16" y2="5" /><circle cx="8" cy="5" r="2.2" /></svg>WPM</span>` +
-    `<span class="legend-item"><svg class="legend-mark filler" viewBox="0 0 16 10" aria-hidden="true"><path d="M5,1 L11,9 M11,1 L5,9" /></svg>filler used</span>` +
-    `</div>` +
-    `<div class="chart-caption">${escapeHtml(`avg ${s.wpm} WPM · target ${PRESETS[s.preset].wpmLow}–${PRESETS[s.preset].wpmHigh}`)}</div>` +
+  // Hero: score ring, title, delta vs last session, the top tip.
+  const d = prev ? c.overall - prev.scores.overall : null;
+  const tone = (v: number) => (v > 0 ? "up" : v < 0 ? "down" : "flat");
+  const hero =
+    `<div class="rep-hero">` +
+    ringHtml(c.overall, `Delivery score — ${c.overall} of 100, grade ${grade(c.overall)}`) +
+    `<div class="rep-title"><h2>Session ${num} report</h2><div class="sub">${fmtDate(s.ts)} · ${formatTimestamp(sessionEndMs())} · ${preset.name} · medium.en</div></div>` +
+    (d === null
+      ? ""
+      : `<div class="rep-delta" data-tip="Score change since session ${num - 1}"><div class="num ${tone(d)}">${signed(d)}</div><div class="sub">vs session ${num - 1}</div></div>`) +
+    `<div class="rep-vr"></div>` +
+    `<div class="rep-tip" data-tip="The single change that would lift the score most">${escapeHtml(generateTips(s)[0])}</div>` +
     `</div>`;
 
-  const peak = (d: number[]) => Math.max(...d, 1);
-  const charts =
-    paceBlock +
-    chartBlock("Pitch inflection per sentence (semitones)", barChartSvg(pitchData, (i, v) => `Sentence ${i + 1}: ${v} st`), `avg ${s.pitchRange.toFixed(1)} st${s.pitchRange < 3 ? " · monotone" : ""}`, { max: peak(pitchData), unit: "st", xLabel: "sentence →" }) +
-    chartBlock("Volume per sentence", barChartSvg(volumeData, (i) => `Sentence ${i + 1}`), s.trailingOff < 0.7 ? `trails off to ${Math.round(s.trailingOff * 100)}% at ends` : "steady", { max: peak(volumeData), unit: "", xLabel: "sentence →" });
+  // Pace across the session, with filler dots and pause ticks on shared time.
+  const series = perSecondPace();
+  const totalSec = Math.max(1, series.length - 1);
+  const [lo, hi] = wpmAxis(Math.max(0, ...series.map((p) => p.wpm)));
+  const W = 960;
+  const H = 160;
+  const y = (v: number) => H - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * H;
+  const pts = series.map((p, sec) => `${((sec / totalSec) * W).toFixed(1)},${y(p.wpm).toFixed(1)}`).join(" ");
+  const pct = (sec: number) => `${Math.min(100, (sec / totalSec) * 100).toFixed(1)}%`;
+  const dots = series.map((p, sec) => (p.fillerHere ? `<div class="dot" style="left:${pct(sec)}"></div>` : "")).join("");
+  const pauses = pauseTimesMs();
+  const ticks = pauses.map((ms) => `<div class="tick" style="left:${pct(ms / 1000)}"></div>`).join("");
+  const yLabels = [0, 1, 2, 3].map((k) => `<span>${Math.round(hi - ((hi - lo) * k) / 3)}</span>`).join("");
+  const xLabels = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${formatTimestamp(f * sessionEndMs())}</span>`).join("");
+  const pace =
+    `<div class="panel pace-panel">` +
+    `<div class="panel-head"><span class="label">Pace across session</span><div class="legend"><span style="color:#4aa8ff">— wpm</span><span style="color:#30d158">▮ target ${preset.wpmLow}–${preset.wpmHigh}</span><span style="color:#ffd60a">● filler</span><span>| pause</span></div></div>` +
+    `<div class="pace-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot">` +
+    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" data-tip="Words per minute over the full session — green band is the target range">` +
+    `<line x1="0" y1="0.5" x2="${W}" y2="0.5" stroke="rgba(255,255,255,0.06)" />` +
+    `<line x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}" stroke="rgba(255,255,255,0.1)" />` +
+    `<rect x="0" y="${y(preset.wpmHigh).toFixed(1)}" width="${W}" height="${(y(preset.wpmLow) - y(preset.wpmHigh)).toFixed(1)}" fill="rgba(48,209,88,0.12)" />` +
+    `<polygon points="0,${H} ${pts} ${W},${H}" fill="rgba(10,132,255,0.12)" />` +
+    `<polyline points="${pts}" fill="none" stroke="#0a84ff" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
+    `</svg>` +
+    `<div class="marks" data-tip="Filler words — ${s.fillers} across the session">${dots}</div>` +
+    `<div class="marks" data-tip="Pauses — ${pauses.length} across the session">${ticks}</div>` +
+    `<div class="x-labels">${xLabels}</div>` +
+    `</div></div></div>`;
 
-  const tips = generateTips(s).map((t) => `<li>${escapeHtml(t)}</li>`).join("");
+  // Headline numbers, each with its change vs the last session, colored by
+  // whether that dimension's sub-score went up or down.
+  const vs = (cur: number, old: number | undefined, digits: number, key: keyof Scores): [string, string] => {
+    if (!prev || typeof old !== "number") return ["first session", "flat"];
+    return [`${signed(cur - old, digits)} vs last`, tone((c[key] ?? 0) - (prev.scores[key] ?? 0))];
+  };
+  const tile = (value: string, unit: string, [delta, cls]: [string, string], tip: string) =>
+    `<div class="tile" data-tip="${escapeHtml(tip)}"><div class="card-top"><span class="big">${value}</span><span class="unit">${unit}</span></div><span class="delta ${cls}">${delta}</span></div>`;
+  const tiles =
+    `<div class="tiles">` +
+    tile(String(s.wpm), "wpm", vs(s.wpm, prev?.wpm, 0, "pace"), `Average pace — target ${preset.wpmLow}–${preset.wpmHigh}`) +
+    tile(s.fillersPerMin.toFixed(1), "fillers/min", vs(s.fillersPerMin, prev?.fillersPerMin, 1, "fillers"), "Fillers per minute — aim under 3") +
+    tile(s.pausesPerMin.toFixed(1), "pauses/min", vs(s.pausesPerMin, prev?.pausesPerMin, 1, "pauses"), "Hesitation pauses per minute") +
+    tile(s.pitchRange.toFixed(1), "semitones", vs(s.pitchRange, prev?.pitchRange, 1, "pitch"), "Pitch range per sentence — under 3 reads as flat") +
+    tile(String(s.words), "words", [`${formatTimestamp(s.durationMs)} speaking`, "flat"], `Words spoken across ${formatTimestamp(s.durationMs)} of speech`) +
+    `</div>`;
 
-  body.innerHTML = `
-    <div class="score-hero">
-      <div class="score-ring score-${grade(c.overall).toLowerCase()}">
-        <span class="score-num">${c.overall}</span>
-        <span class="score-grade">${grade(c.overall)}</span>
-      </div>
-      <div class="score-meta">
-        <div>${s.words} words · ${formatTimestamp(s.durationMs)} speaking · ${s.wpm} WPM</div>
-        <div>${s.fillers} fillers · ${s.pauses} pauses${s.script ? ` · ${s.script.accuracy}% script` : ""}</div>
-      </div>
-    </div>
-    <div class="subscores">${subs}</div>
-    <div class="tips"><span class="mode-label">What to work on</span><ol>${tips}</ol></div>
-    <div class="report-charts">${charts}</div>
-  `;
+  // Filler breakdown by word.
+  const counts = new Map<string, number>();
+  for (const ws of fillerWordsByIndex.values()) for (const w of ws) counts.set(w, (counts.get(w) ?? 0) + 1);
+  const rows = [...counts].sort((a, b) => b[1] - a[1]);
+  const topN = rows[0]?.[1] ?? 1;
+  const fillerRows = rows.length
+    ? rows
+        .map(([w, n]) => `<div class="fw-row" data-tip="“${escapeHtml(w)}” — ${n} of ${s.fillers} fillers this session"><span>${escapeHtml(w)}</span><div class="fw-bar"><div style="width:${(n / topN) * 100}%"></div></div><span class="n">${n}</span></div>`)
+        .join("")
+    : `<div class="empty">No fillers — clean session.</div>`;
+
+  // Score trend: up to nine saved sessions plus this one.
+  const shownPrior = prior.slice(-9);
+  const bars = [
+    ...shownPrior.map((h, i) => ({ n: prior.length - shownPrior.length + i + 1, score: h.scores.overall, now: false })),
+    { n: num, score: c.overall, now: true },
+  ];
+  const trend = bars.length > 1 ? `<span class="${tone(c.overall - bars[0].score)}">${signed(c.overall - bars[0].score)} since ${bars[0].n}</span>` : "";
+  const hist = bars
+    .map((b) => `<div class="hist-col${b.now ? " now" : ""}" data-tip="Session ${b.n} — score ${b.score}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
+    .join("");
+
+  const moments = keyMoments(preset);
+  const momentsHtml = moments.length
+    ? moments
+        .map((m) => `<button type="button" class="moment" data-index="${m.index}" data-tip="Jump to ${formatTimestamp(m.ms)} in the transcript"><span class="t">${formatTimestamp(m.ms)}</span><span class="bar" style="background:${m.color}"></span><span><b>${escapeHtml(m.title)}</b><span class="note">${escapeHtml(m.note)}</span></span></button>`)
+        .join("")
+    : `<div class="empty">Speak a little longer for highlights.</div>`;
+
+  body.innerHTML =
+    hero +
+    pace +
+    tiles +
+    `<div class="rep-bottom">` +
+    `<div class="panel"><span class="label">Fillers · ${s.fillers}</span><div class="fw-list">${fillerRows}</div></div>` +
+    `<div class="panel"><div class="panel-head"><span class="label">Score · last ${bars.length}</span>${trend}</div><div class="hist">${hist}</div></div>` +
+    `<div class="panel"><span class="label">Key moments</span><div class="moments">${momentsHtml}</div></div>` +
+    `</div>`;
+}
+
+function showView(view: "live" | "report") {
+  document.body.dataset.view = view;
+}
+
+// Report → transcript: switch back to the live view and flash the line.
+function jumpToLine(index: number) {
+  showView("live");
+  toggleScript(false);
+  const el = segmentEls.get(index);
+  if (!el) return;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.remove("flash");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("flash");
 }
 
 // --- Practice ----------------------------------------------------------------
@@ -1432,22 +1689,32 @@ window.addEventListener("DOMContentLoaded", () => {
   const ribbonCanvas = document.querySelector<HTMLCanvasElement>("#ribbon");
   if (ribbonCanvas) ribbon = new Ribbon(ribbonCanvas, "idle");
 
-  recordBtn = document.querySelector("#record-btn");
-  statusEl = document.querySelector("#status");
-  transcriptEl = document.querySelector("#transcript");
-  wpmEl = document.querySelector("#stat-wpm");
-  wordsEl = document.querySelector("#stat-words");
-  fillersEl = document.querySelector("#stat-fillers");
-  pausesEl = document.querySelector("#stat-pauses");
-  timeEl = document.querySelector("#stat-time");
+  recordBtn = $<HTMLButtonElement>("record-btn");
+  statusEl = $("status");
+  transcriptEl = $("transcript");
 
   scriptInput = document.querySelector("#script-input");
   scriptFile = document.querySelector("#script-file");
   scriptDisplay = document.querySelector("#script-display");
   scriptProgress = document.querySelector("#script-progress");
 
+  initTooltips();
+
+  // Titlebar is gone (decorations off); the rail's traffic lights drive the window.
+  const win = getCurrentWindow();
+  $("win-close")?.addEventListener("click", () => void win.close());
+  $("win-min")?.addEventListener("click", () => void win.minimize());
+  $("win-max")?.addEventListener("click", () => void win.toggleMaximize());
+
   recordBtn?.addEventListener("click", toggleRecording);
-  document.querySelector("#reset-btn")?.addEventListener("click", resetSession);
+  $("reset-btn")?.addEventListener("click", resetSession);
+  $("script-btn")?.addEventListener("click", () => toggleScript());
+  $("stats-btn")?.addEventListener("click", () => showView("report"));
+  $("live-btn")?.addEventListener("click", () => showView("live"));
+  $("report-body")?.addEventListener("click", (e) => {
+    const m = (e.target as Element).closest<HTMLElement>(".moment");
+    if (m) jumpToLine(Number(m.dataset.index));
+  });
 
   scriptInput?.addEventListener("input", () => setScript(scriptInput?.value ?? ""));
   scriptFile?.addEventListener("change", async () => {
@@ -1469,38 +1736,57 @@ window.addEventListener("DOMContentLoaded", () => {
     // storage unavailable; no script to restore
   }
 
-  // Context preset selector (re-scores the currently shown report on change).
-  const presetSelect = document.querySelector<HTMLSelectElement>("#report-preset");
+  // Context preset (segmented control on the scope). Re-scores the live dock
+  // and, if shown, the report.
   try {
     const savedPreset = localStorage.getItem(PRESET_KEY);
     if (savedPreset && PRESETS[savedPreset]) currentPreset = savedPreset;
   } catch {
     // storage unavailable; default preset stands
   }
-  if (presetSelect) {
-    presetSelect.value = currentPreset;
-    presetSelect.addEventListener("change", () => {
-      currentPreset = presetSelect.value;
+  const presetButtons = [...document.querySelectorAll<HTMLButtonElement>("#preset-seg button")];
+  const syncPreset = () =>
+    presetButtons.forEach((b) => b.setAttribute("aria-checked", String(b.dataset.preset === currentPreset)));
+  presetButtons.forEach((b) =>
+    b.addEventListener("click", () => {
+      currentPreset = b.dataset.preset ?? currentPreset;
       try {
         localStorage.setItem(PRESET_KEY, currentPreset);
       } catch {
         // ignore
       }
-      if (reportVisible) renderReport();
-    });
-  }
+      syncPreset();
+      renderStats();
+    }),
+  );
+  syncPreset();
+  renderStats();
 
-  // Practice: random prompt + timed drill + filler-free mode.
-  const promptEl = document.querySelector("#practice-prompt");
+  // Session numbering and "vs last" come from the saved history.
+  renderSessionLabel();
+  invoke<string>("list_sessions")
+    .then((json) => {
+      history = parseHistory(json);
+      renderSessionLabel();
+    })
+    .catch(() => {
+      // no history available; numbering starts at 1
+    });
+
+  // Practice: timed drill (with a random prompt) + filler-free mode.
+  const promptEl = $("practice-prompt");
   const showPrompt = () => {
-    if (promptEl) promptEl.textContent = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
+    if (!promptEl) return;
+    promptEl.textContent = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
+    promptEl.removeAttribute("hidden");
   };
-  document.querySelector("#prompt-btn")?.addEventListener("click", showPrompt);
-  document.querySelector("#drill-btn")?.addEventListener("click", () => {
+  $("drill-btn")?.addEventListener("click", () => {
     showPrompt();
     if (!recording) {
       const drillSession = sessionId + 1; // resetStats (in toggleRecording) bumps to this
-      void toggleRecording();
+      void toggleRecording().then(() => {
+        if (recording && sessionId === drillSession) drillEndsAt = performance.now() + DRILL_MS;
+      });
       // Auto-stop after the drill window, unless the user already stopped or
       // started another session.
       setTimeout(() => {
@@ -1508,8 +1794,10 @@ window.addEventListener("DOMContentLoaded", () => {
       }, DRILL_MS);
     }
   });
-  document.querySelector<HTMLInputElement>("#filler-free")?.addEventListener("change", (e) => {
-    fillerFreeMode = (e.target as HTMLInputElement).checked;
+  const ffBtn = $("ff-btn");
+  ffBtn?.addEventListener("click", () => {
+    fillerFreeMode = !fillerFreeMode;
+    ffBtn.setAttribute("aria-pressed", String(fillerFreeMode));
   });
 
   listen<TranscriptSegment>("transcript_segment", (event) => {
@@ -1528,11 +1816,15 @@ window.addEventListener("DOMContentLoaded", () => {
     appendError(event.payload);
   });
 
-  // Mic RMS → 0..1 ribbon drive. Speech RMS is small (~0.02–0.1) so a plain
-  // multiply barely moves the quiet end; sqrt is a perceptual curve that lifts
-  // soft speech into a visible range. Bump the gain if it still reacts weakly.
+  // Mic RMS → 0..1 drive for the ribbon and the rail's level meter. Speech RMS
+  // is small (~0.02–0.1) so a plain multiply barely moves the quiet end; sqrt is
+  // a perceptual curve that lifts soft speech into a visible range. Bump the
+  // gain if it still reacts weakly.
   listen<number>("audio_level", (event) => {
-    ribbon?.setLevel(Math.sqrt(event.payload * RIBBON_LEVEL_GAIN));
+    const level = Math.min(1, Math.sqrt(event.payload * RIBBON_LEVEL_GAIN));
+    ribbon?.setLevel(level);
+    setLevelMeter(level);
+    setText("rms-label", `rms ${event.payload.toFixed(2)} · 16 kHz`);
   });
 });
 
