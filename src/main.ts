@@ -7,6 +7,7 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
 import { Ribbon } from "./ribbon";
+import { Shards } from "./shards";
 
 let ribbon: Ribbon | null = null;
 
@@ -1688,6 +1689,8 @@ const DRILL_MS = 60_000;
 window.addEventListener("DOMContentLoaded", () => {
   const ribbonCanvas = document.querySelector<HTMLCanvasElement>("#ribbon");
   if (ribbonCanvas) ribbon = new Ribbon(ribbonCanvas, "idle");
+  const shardsCanvas = document.querySelector<HTMLCanvasElement>("#shards");
+  if (shardsCanvas) new Shards(shardsCanvas, shardsCanvas.parentElement!);
 
   recordBtn = $<HTMLButtonElement>("record-btn");
   statusEl = $("status");
