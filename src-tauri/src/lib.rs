@@ -33,7 +33,11 @@ pub fn run() {
                 let path = app.path().resolve(resource, tauri::path::BaseDirectory::Resource)?;
                 let mut params = WhisperContextParameters::default();
                 params.use_gpu(use_gpu);
-                params.flash_attn(true);
+                // Flash attention OFF: on this Vulkan iGPU (Radeon RENOIR, no
+                // matrix cores) it takes a slow fallback path — medium took 13.1s
+                // on an 11s clip with it vs 1.6s without, tiny 0.94s vs 0.17s,
+                // with identical text.
+                params.flash_attn(false);
                 let ctx = WhisperContext::new_with_params(&path.to_string_lossy(), params)?;
                 Ok(ctx.create_state()?)
             };
@@ -41,9 +45,9 @@ pub fn run() {
             // Both models run on the GPU (Vulkan). They can't decode at the same
             // time — ggml shares one Vulkan device/queue across contexts and
             // concurrent `state.full` calls abort the process — but that's handled
-            // downstream: whisper::GPU_LOCK serializes decodes, and the correction
-            // worker defers to speech gaps so the fast path effectively owns the
-            // GPU while the user is talking (see AccurateModel / audio.rs).
+            // downstream: whisper::GPU_LOCK serializes decodes, and corrections
+            // only run after recording stops, so the fast path owns the GPU
+            // while the user is talking (see AccurateModel / audio.rs).
             //
             //   Fast model — English-only tiny (q5_1). Language is pinned to "en"
             //   in whisper::run so the multilingual heads are dead weight; tiny on
@@ -52,8 +56,8 @@ pub fn run() {
             //   re-decodes and replaces this draft (see AccurateModel).
             app.manage(WhisperModel(Mutex::new(load_model("resources/ggml-tiny.en-q5_1.bin", true)?)));
 
-            //   Accurate model — English-only medium (q5_0). Slower (~2.7s/3s clip
-            //   on GPU) but far more accurate; runs the deferred correction pass.
+            //   Accurate model — English-only medium (q5_0). Slower (~1.6s for an
+            //   11s clip on GPU) but far more accurate; runs the deferred correction pass.
             app.manage(AccurateModel(Mutex::new(load_model("resources/ggml-medium.en-q5_0.bin", true)?)));
 
             // Warm both models up on a background thread. The first decode after

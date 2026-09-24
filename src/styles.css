@@ -540,6 +540,29 @@ body[data-view="settings"] .view-settings {
   text-transform: uppercase;
   color: var(--tone);
 }
+/* Per-line countdown to the medium correction (after Stop; see main.ts). */
+.seg-countdown {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+.draft.counting .seg-countdown { display: inline-flex; }
+.seg-countdown .bar {
+  width: 56px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.seg-countdown i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--green);
+}
 .partial .seg-state::before { content: "live"; }
 .draft .seg-state::before { content: "draft"; }
 .corrected .seg-state::before { content: "corrected"; }

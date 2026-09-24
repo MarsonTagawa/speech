@@ -35,16 +35,13 @@ const MAX_UTTERANCE_MS: u64 = 15_000;
 const PARTIAL_INTERVAL_SAMPLES: usize = (TARGET_SAMPLE_RATE as usize / 1000) * 500;
 /// Interim decodes keep no state across calls (Whisper re-transcribes from
 /// scratch), so decoding the whole in-progress utterance makes each partial cost
-/// grow with the utterance: a long, pause-free stretch re-decodes its entire
-/// buffer every `PARTIAL_INTERVAL_SAMPLES`, and the live preview stalls while
-/// that ever-longer decode runs. Interim decodes instead transcribe only this
-/// trailing window of the utterance, bounding every partial to a fixed cost (and,
-/// via the audio-context scaling in `whisper::run`, a fixed encoder pass too).
-/// The final (commit) decode still runs on the full utterance, so committed text
-/// is complete; the trade-off is that on utterances longer than the window the
-/// partial preview shows only the most recent words until commit fills the rest.
-/// Kept to a short 5s window so each interim decode stays cheap and the preview
-/// lands fast.
+/// grow with the utterance (tiny takes ~2.6s on 11s here) and the live preview
+/// stalls. Instead the utterance is previewed in chunks of at most this length:
+/// interims decode only the current chunk, and once it outgrows the window it is
+/// *sealed* — decoded one last time up to a quiet cut point (see `quietest_cut`)
+/// — and the UI keeps that text as a fixed prefix while the next chunk grows. So
+/// every partial stays cheap, yet earlier words never drop out of the preview.
+/// The final (commit) decode still runs on the full utterance.
 const PARTIAL_WINDOW_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 5;
 
 /// Shortest below-threshold run *inside* an utterance that counts as a
@@ -74,6 +71,9 @@ pub struct TranscriptSegment {
     /// the UI overwrite the earlier fast final (which it otherwise locks) and
     /// re-tally its stats for the corrected text.
     pub refined: bool,
+    /// Which preview chunk of the utterance an interim covers (see
+    /// `PARTIAL_WINDOW_SAMPLES`); the UI joins chunks in order. 0 for finals.
+    pub chunk: u32,
 }
 
 /// A silent gap detected *within* a committed utterance (a hesitation pause).
@@ -175,22 +175,14 @@ pub fn start_recording(app: AppHandle) -> Result<(), String> {
     let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
-    // Set true while the user is mid-utterance (VAD triggered). Both models share
-    // the one GPU, so the correction worker watches this and only decodes during
-    // speech gaps — letting live interims own the GPU while the user is talking.
-    let speaking = Arc::new(AtomicBool::new(false));
-
     // Accurate-model correction worker. It owns the receiving end; the sender
     // lives in the processing loop, so when capture stops (loop returns, sender
-    // dropped) the worker drains its backlog and exits on its own — no join, so
-    // stopping is instant even if a medium decode is still in flight.
+    // dropped) the worker runs the whole backlog and exits on its own — no join,
+    // so stopping is instant even while corrections are still decoding.
     let (correction_tx, correction_rx) = std::sync::mpsc::channel::<CorrectionJob>();
     {
         let worker_app = app.clone();
-        let worker_speaking = speaking.clone();
-        std::thread::spawn(move || {
-            run_correction_worker(worker_app, correction_rx, generation, worker_speaking)
-        });
+        std::thread::spawn(move || run_correction_worker(worker_app, correction_rx, generation));
     }
 
     let capture_thread = std::thread::spawn(move || {
@@ -205,7 +197,7 @@ pub fn start_recording(app: AppHandle) -> Result<(), String> {
 
     let app_handle = app.clone();
     let processing_thread = std::thread::spawn(move || {
-        run_processing_loop(app_handle, audio_rx, sample_rate, correction_tx, speaking)
+        run_processing_loop(app_handle, audio_rx, sample_rate, correction_tx)
     });
 
     *guard = Some(RecordingHandle {
@@ -404,6 +396,16 @@ fn detect_pauses(probs: &[f32]) -> Vec<Pause> {
     pauses
 }
 
+/// Where to seal a preview chunk: the start of the lowest-VAD frame in the last
+/// second — most likely a gap between words, so no word is split across chunks.
+/// `probs` holds one prob per frame, end-aligned with the `len`-sample utterance.
+fn quietest_cut(probs: &[f32], len: usize) -> usize {
+    let n = probs.len();
+    let tail = n.saturating_sub((1000 / FRAME_MS) as usize)..n;
+    let j = tail.min_by(|&a, &b| probs[a].total_cmp(&probs[b])).unwrap_or(n);
+    len.saturating_sub((n - j) * FRAME_SAMPLES)
+}
+
 /// Builds the analysis payload for a committed utterance from its raw buffer
 /// (waveform) and its per-frame VAD trace (pauses).
 fn analyze_utterance(index: u64, audio: &[f32], probs: &[f32]) -> UtteranceAnalysis {
@@ -434,7 +436,6 @@ fn run_processing_loop(
     audio_rx: Receiver<Vec<f32>>,
     native_sample_rate: u32,
     correction_tx: Sender<CorrectionJob>,
-    speaking: Arc<AtomicBool>,
 ) {
     let mut resampler = Resampler::new(native_sample_rate, TARGET_SAMPLE_RATE);
     let mut dc_blocker = DcBlocker::new();
@@ -454,6 +455,10 @@ fn run_processing_loop(
     let mut utterance_start_sample: u64 = 0;
     let mut utterance_index: u64 = 0;
     let mut samples_since_partial: usize = 0;
+    // Preview chunking (see PARTIAL_WINDOW_SAMPLES): where the current chunk
+    // starts in `utterance`, and its id.
+    let mut chunk_start: usize = 0;
+    let mut chunk_id: u32 = 0;
     // Live input level (peak RMS) for the UI ribbon visualizer, emitted ~every
     // other frame (~64ms) so IPC stays cheap; the frontend smooths it.
     let mut level_peak: f32 = 0.0;
@@ -501,8 +506,6 @@ fn run_processing_loop(
             if !triggered {
                 if prob > SPEECH_THRESHOLD {
                     triggered = true;
-                    // Speech started: hold off GPU corrections (see `speaking`).
-                    speaking.store(true, Ordering::Release);
                     silence_run_ms = 0;
                     utterance.clear();
                     utterance.extend(pre_roll.iter().copied());
@@ -513,6 +516,8 @@ fn run_processing_loop(
                     utterance_start_sample = total_samples.saturating_sub(pre_roll.len() as u64);
                     utterance_index += 1;
                     samples_since_partial = 0;
+                    chunk_start = 0;
+                    chunk_id = 0;
                 }
             } else {
                 utterance.extend_from_slice(&frame);
@@ -527,8 +532,6 @@ fn run_processing_loop(
                 let start_ms = utterance_start_sample * 1000 / TARGET_SAMPLE_RATE as u64;
                 if silence_run_ms >= MIN_SILENCE_MS || utterance_ms >= MAX_UTTERANCE_MS {
                     triggered = false;
-                    // Utterance done: a correction may now run in this gap.
-                    speaking.store(false, Ordering::Release);
                     samples_since_partial = 0;
                     let end_ms = start_ms + utterance_ms;
                     let audio = std::mem::take(&mut utterance);
@@ -540,8 +543,7 @@ fn run_processing_loop(
                         "utterance_analysis",
                         analyze_utterance(utterance_index, &audio, &probs),
                     );
-                    // Queue the accurate-model correction before the fast decode:
-                    // it re-decodes the same audio in the background and later
+                    // Queue the accurate-model correction; it runs after Stop and
                     // replaces the fast final.
                     let _ = correction_tx.send(CorrectionJob {
                         index: utterance_index,
@@ -555,6 +557,7 @@ fn run_processing_loop(
                         utterance_index,
                         start_ms,
                         end_ms,
+                        0,
                         true,
                         None,
                     );
@@ -566,18 +569,26 @@ fn run_processing_loop(
                     {
                         samples_since_partial = 0;
                         partial_in_flight.store(true, Ordering::Release);
-                        // Decode only the trailing window (see PARTIAL_WINDOW_SAMPLES).
-                        let partial_audio = if utterance.len() > PARTIAL_WINDOW_SAMPLES {
-                            utterance[utterance.len() - PARTIAL_WINDOW_SAMPLES..].to_vec()
+                        // Decode the current chunk, or seal it once it outgrows the
+                        // window (see PARTIAL_WINDOW_SAMPLES). The seal shares the
+                        // in-flight guard, so partials complete in order and the
+                        // seal's text always lands after its chunk's interims.
+                        let (from, to, chunk) = (chunk_start, utterance.len(), chunk_id);
+                        let to = if to - from > PARTIAL_WINDOW_SAMPLES {
+                            let cut = quietest_cut(&utterance_probs, to).max(from);
+                            chunk_start = cut;
+                            chunk_id += 1;
+                            cut
                         } else {
-                            utterance.clone()
+                            to
                         };
                         spawn_transcription(
                             app.clone(),
-                            partial_audio,
+                            utterance[from..to].to_vec(),
                             utterance_index,
                             start_ms,
                             start_ms + utterance_ms,
+                            chunk,
                             false,
                             Some(partial_in_flight.clone()),
                         );
@@ -588,9 +599,6 @@ fn run_processing_loop(
             total_samples += FRAME_SAMPLES as u64;
         }
     }
-
-    // Capture has stopped; let the correction worker drain its backlog.
-    speaking.store(false, Ordering::Release);
 
     if triggered && !utterance.is_empty() {
         let start_ms = utterance_start_sample * 1000 / TARGET_SAMPLE_RATE as u64;
@@ -611,45 +619,37 @@ fn run_processing_loop(
             utterance_index,
             start_ms,
             end_ms,
+            0,
             true,
             None,
         );
     }
-    // Dropping `correction_tx` here closes the worker's channel, so it drains any
-    // remaining jobs and exits.
+    // Dropping `correction_tx` here closes the worker's channel, which starts the
+    // correction pass.
 }
 
-/// Background correction worker. Serially re-decodes each committed utterance
-/// with the accurate medium model on its own state/mutex — deferring to speech
-/// gaps so it doesn't stall the fast path on the shared GPU — and emits a `refined` segment
-/// that replaces the fast final. Serial (one decode at a time) so a slow medium
-/// pass can't oversubscribe the machine; if speech outruns it, corrections just
-/// trail. Exits when the sender is dropped (capture stopped).
-fn run_correction_worker(
-    app: AppHandle,
-    rx: Receiver<CorrectionJob>,
-    generation: u64,
-    speaking: Arc<AtomicBool>,
-) {
+/// Background correction worker. Once capture stops, serially re-decodes each
+/// committed utterance with the accurate medium model and emits a `refined`
+/// segment that replaces the fast final.
+///
+/// Nothing runs while recording: both models share the GPU (see
+/// `whisper::GPU_LOCK`) and a decode can't be interrupted partway through, so a
+/// correction started mid-session makes live text wait for it (~1.6s for an 11s
+/// clip).
+fn run_correction_worker(app: AppHandle, rx: Receiver<CorrectionJob>, generation: u64) {
     let gen_matches = |app: &AppHandle| app.state::<SessionGen>().0.load(Ordering::Acquire) == generation;
-    while let Ok(job) = rx.recv() {
+    // Blocks until the processing loop drops its sender (capture stopped).
+    let jobs: Vec<CorrectionJob> = rx.iter().collect();
+    for job in jobs {
         // A newer session started: its indices restart from 1 and would collide,
-        // so skip the decode entirely (this also drains a backlog fast on stop).
+        // so skip the decode entirely.
+        // ponytail: a medium decode already in flight still holds the GPU, so
+        // re-recording right after Stop can stall the new session's first text.
         if !gen_matches(&app) {
             continue;
         }
-        // Defer to the live fast path: both models share the one GPU, so wait for
-        // a speech gap before starting a (slow) medium decode. During continuous
-        // speech this backlogs corrections until the user pauses, keeping interim
-        // previews snappy; on stop `speaking` is cleared so the backlog drains.
-        // Once we pass this gate the decode still takes the GPU lock, so if the
-        // user resumes mid-decode one interim may wait — the rare, bounded hitch.
-        while speaking.load(Ordering::Acquire) && gen_matches(&app) {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        if !gen_matches(&app) {
-            continue;
-        }
+        // Drives the per-line countdown bar in the UI.
+        let _ = app.emit("correction_started", job.index);
         let result = app
             .state::<AccurateModel>()
             .0
@@ -672,12 +672,17 @@ fn run_correction_worker(
                         end_ms: job.end_ms,
                         is_final: true,
                         refined: true,
+                        chunk: 0,
                     },
                 );
             }
             Ok(_) => {}
             Err(e) => eprintln!("correction failed: {e}"),
         }
+    }
+    // Tells the UI the transcript is final, so it can save the session.
+    if gen_matches(&app) {
+        let _ = app.emit("corrections_done", ());
     }
 }
 
@@ -691,6 +696,7 @@ fn spawn_transcription(
     index: u64,
     start_ms: u64,
     end_ms: u64,
+    chunk: u32,
     is_final: bool,
     in_flight: Option<Arc<AtomicBool>>,
 ) {
@@ -704,17 +710,13 @@ fn spawn_transcription(
                 .and_then(|mut state| whisper::run(&mut state, &samples, false))
         };
 
-        if let Some(flag) = &in_flight {
-            flag.store(false, Ordering::Release);
-        }
-
         match result {
             // Finals always emit (even when empty) so the UI can commit or drop
             // the line; interim updates only emit once there's something to show.
             Ok(text) if is_final || !text.is_empty() => {
                 let _ = app.emit(
                     "transcript_segment",
-                    TranscriptSegment { index, text, start_ms, end_ms, is_final, refined: false },
+                    TranscriptSegment { index, text, start_ms, end_ms, is_final, refined: false, chunk },
                 );
             }
             Ok(_) => {}
@@ -724,6 +726,11 @@ fn spawn_transcription(
                     let _ = app.emit("transcription_error", e);
                 }
             }
+        }
+
+        // Cleared after the emit so the next partial can't overtake this one.
+        if let Some(flag) = &in_flight {
+            flag.store(false, Ordering::Release);
         }
     });
 }
@@ -774,6 +781,17 @@ mod tests {
         probs.extend(vec![0.1; 9]);
         probs.extend(vec![0.9; 3]);
         assert_eq!(detect_pauses(&probs).len(), 2);
+    }
+
+    #[test]
+    fn cuts_at_quietest_recent_frame() {
+        // 200 frames of speech with a dip 5 frames from the end, plus an older,
+        // deeper dip outside the last second that must be ignored.
+        let mut probs = vec![0.9; 200];
+        probs[50] = 0.0;
+        probs[195] = 0.2;
+        let len = 200 * FRAME_SAMPLES;
+        assert_eq!(quietest_cut(&probs, len), 195 * FRAME_SAMPLES);
     }
 
     #[test]

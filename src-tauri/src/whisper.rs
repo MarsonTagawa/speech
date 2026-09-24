@@ -7,9 +7,9 @@ use std::sync::Mutex;
 /// the process (see [`AccurateModel`] and examples/concurrency.rs). Holding this
 /// lock for the span of each decode guarantees only one runs at a time. It's a
 /// process-global (one GPU), acquired inside [`run`] so every call site — interim,
-/// commit, correction, warmup — serializes automatically. The correction worker
-/// additionally *defers* to speech gaps (see `audio::run_correction_worker`) so
-/// this serialization rarely makes a live interim wait behind a slow medium decode.
+/// commit, correction, warmup — serializes automatically. Corrections only run
+/// after recording stops (see `audio::run_correction_worker`), so a live decode
+/// never waits behind a slow medium decode.
 static GPU_LOCK: Mutex<()> = Mutex::new(());
 
 /// Holds one reusable decode state. It's reused across every interim and final
@@ -29,21 +29,16 @@ pub struct WhisperModel(pub Mutex<WhisperState>);
 /// Both models share the single Vulkan device/queue, which ggml can't drive from
 /// two threads at once (concurrent `state.full` calls abort the process — the
 /// "crashes when I speak" bug; see examples/concurrency.rs). Two things keep that
-/// safe: [`GPU_LOCK`] serializes all decodes, and the correction worker defers to
-/// speech gaps so a slow medium decode almost never blocks a live interim.
+/// safe: [`GPU_LOCK`] serializes all decodes, and corrections only run after
+/// recording stops, so a slow medium decode never blocks a live interim.
 pub struct AccurateModel(pub Mutex<WhisperState>);
 
 /// Transcribes 16kHz mono f32 samples. Shared by the manual `transcribe`
 /// command and the recording pipeline's per-utterance calls.
 ///
-/// `prime_fillers` seeds the decoder with a hesitation-sound prompt so it keeps
-/// "um"/"uh"s instead of cleaning them up (see the prompt below). Only the
-/// accurate (medium) correction pass sets it — that pass produces the text the
-/// filler tally is scored from. The fast (tiny) live preview leaves it off: tiny
-/// is too weak to resist the prompt bias and, primed, collapses a whole spoken
-/// sentence into a string of "um"s. The preview just needs to be legible; the
-/// correction pass re-decodes and re-tallies fillers anyway.
-pub fn run(state: &mut WhisperState, audio: &[f32], prime_fillers: bool) -> Result<String, String> {
+/// `accurate` marks the medium correction pass, which produces the text the
+/// filler tally is finally scored from; it picks the filler prompt (see below).
+pub fn run(state: &mut WhisperState, audio: &[f32], accurate: bool) -> Result<String, String> {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_print_progress(false);
     params.set_print_special(false);
@@ -97,10 +92,10 @@ pub fn run(state: &mut WhisperState, audio: &[f32], prime_fillers: bool) -> Resu
     // still bound any runaway. (suppress_nst already defaults off in whisper.cpp,
     // so non-speech tokens aren't stripped — the prompt is the only lever here.)
     //
-    // Only the accurate pass is primed (see `prime_fillers`): on the tiny fast
-    // model this prompt overwhelms the decode, so a full sentence comes back as
-    // just "um, um". The fast preview stays unprompted and legible.
-    if prime_fillers {
+    // Only the accurate pass is primed: on the tiny fast model any filler prompt
+    // (even a mild one mixed with ordinary words) skews the draft, so it stays
+    // unprompted and legible; the correction pass restores the fillers.
+    if accurate {
         params.set_initial_prompt("Um, uh, hmm, er, um, uh.");
     }
 

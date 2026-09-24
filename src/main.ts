@@ -20,6 +20,8 @@ interface TranscriptSegment {
   // True only for the deferred accurate-model (medium) correction of an already
   // committed line. Lets it overwrite the fast final and re-tally that line.
   refined: boolean;
+  // Preview chunk an interim covers; see withPreviewPrefix. 0 for finals.
+  chunk: number;
 }
 
 // A silent gap within an utterance; offsets are ms relative to the utterance start.
@@ -590,7 +592,69 @@ function perSecondPace(): SecondPace[] {
 // Inner markup of one transcript line; the pass-state label comes from the
 // line's class via CSS, so re-renders (filler review) don't need to know it.
 function segmentHtml(startMs: number, textHtml: string): string {
-  return `<div class="seg-body"><div class="seg-meta"><span class="seg-ts">${formatTimestamp(startMs)}</span><span class="seg-state"></span></div><p class="seg-text">${textHtml}</p></div>`;
+  return `<div class="seg-body"><div class="seg-meta"><span class="seg-ts">${formatTimestamp(startMs)}</span><span class="seg-state"></span><span class="seg-countdown"><span class="bar"><i></i></span><span class="secs"></span></span></div><p class="seg-text">${textHtml}</p></div>`;
+}
+
+// --- Correction countdown ----------------------------------------------------
+// After Stop, the medium model corrects drafts one at a time, in order
+// (audio.rs). Each waiting draft line gets a bar that fills toward its projected
+// correction time — the audio queued ahead of it × `correctionRtf` — resynced on
+// every `correction_started`.
+let correctionRtf = 0.15; // medium decode time ÷ audio length; learned as lines land
+let countdownStart = 0;
+let countdownRaf = 0;
+let lastCorrection: { index: number; at: number } | null = null;
+const etaByIndex = new Map<number, number>(); // projected correction time (performance.now)
+
+function utteranceMs(index: number): number {
+  const t = timingByIndex.get(index);
+  return t ? t.end - t.start : 0;
+}
+
+function onCorrectionStarted(index: number) {
+  const now = performance.now();
+  if (lastCorrection) {
+    // The gap between starts is the previous line's decode time.
+    const ms = utteranceMs(lastCorrection.index);
+    if (ms > 0) correctionRtf = (correctionRtf + (now - lastCorrection.at) / ms) / 2;
+  } else {
+    countdownStart = now;
+  }
+  lastCorrection = { index, at: now };
+  etaByIndex.clear();
+  let eta = now;
+  for (const [i, el] of segmentEls) {
+    const waiting = i >= index && el.classList.contains("draft");
+    el.classList.toggle("counting", waiting);
+    if (!waiting) continue;
+    eta += utteranceMs(i) * correctionRtf;
+    etaByIndex.set(i, eta);
+  }
+  if (!countdownRaf) countdownRaf = requestAnimationFrame(tickCountdown);
+}
+
+function tickCountdown() {
+  const now = performance.now();
+  for (const [i, eta] of etaByIndex) {
+    const el = segmentEls.get(i);
+    // Corrected (or removed): its countdown is over.
+    if (!el?.classList.contains("draft")) {
+      etaByIndex.delete(i);
+      el?.classList.remove("counting");
+      continue;
+    }
+    const frac = Math.min(1, (now - countdownStart) / Math.max(1, eta - countdownStart));
+    el.querySelector<HTMLElement>(".seg-countdown i")?.style.setProperty("width", `${frac * 100}%`);
+    const secs = el.querySelector(".seg-countdown .secs");
+    if (secs) secs.textContent = `~${Math.max(0, Math.ceil((eta - now) / 1000))}s`;
+  }
+  countdownRaf = etaByIndex.size ? requestAnimationFrame(tickCountdown) : 0;
+}
+
+function resetCountdown() {
+  etaByIndex.clear();
+  lastCorrection = null;
+  for (const el of segmentEls.values()) el.classList.remove("counting");
 }
 
 function formatTimestamp(ms: number): string {
@@ -924,6 +988,23 @@ function updateScriptFromSegment(segment: TranscriptSegment) {
   if (scriptTokens.length > 0) renderScriptMatch();
 }
 
+// Long utterances are previewed in chunks (audio.rs PARTIAL_WINDOW_SAMPLES): each
+// interim covers only its chunk, and earlier chunks are sealed. Keep every
+// chunk's latest text so the preview shows the whole utterance so far; the
+// final replaces it with a full-utterance decode.
+const previewChunks = new Map<number, string[]>();
+function withPreviewPrefix(segment: TranscriptSegment): TranscriptSegment {
+  if (segment.is_final) {
+    previewChunks.delete(segment.index);
+    return segment;
+  }
+  if (finalized.has(segment.index)) return segment; // late interim; upsert drops it
+  const chunks = previewChunks.get(segment.index) ?? [];
+  chunks[segment.chunk] = segment.text;
+  previewChunks.set(segment.index, chunks);
+  return { ...segment, text: chunks.filter(Boolean).join(" ") };
+}
+
 function upsertSegment(segment: TranscriptSegment) {
   if (!transcriptEl) return;
 
@@ -969,10 +1050,14 @@ function upsertSegment(segment: TranscriptSegment) {
   } else {
     entry.classList.add("draft");
   }
-  // Tier-1 render: plain text, no filler flags. This paints immediately; all
-  // filler flagging happens in the deferred review below, so the text always
-  // appears before any flagging.
-  entry.innerHTML = segmentHtml(segment.start_ms, escapeHtml(segment.text));
+  // Tier-1 render: hesitation sounds ("um", "uh") are highlighted right away —
+  // including on live partials — since they're a plain string match. Discourse
+  // markers need the POS tagger, so they're flagged (and all fillers counted)
+  // in the deferred review below, which runs on committed lines only.
+  entry.innerHTML = segmentHtml(
+    segment.start_ms,
+    renderHighlighted(segment.text, hesitationRanges(segment.text)),
+  );
   // Re-attach the waveform: innerHTML above wiped it, and this also covers the
   // correction rewriting a committed line. No-op until the analysis has arrived.
   refreshWaveform(segment.index);
@@ -1082,9 +1167,12 @@ async function toggleRecording() {
   recordBtn.disabled = true;
   try {
     if (!recording) {
+      flushSave();
+      resetCountdown();
       // The backend restarts utterance indices each session; drop stale
       // line references so a new session's index 1 starts a fresh line.
       segmentEls.clear();
+      previewChunks.clear();
       finalized.clear();
       refinedIndices.clear();
       tokensByIndex.clear();
@@ -1111,13 +1199,13 @@ async function toggleRecording() {
       ribbon?.setLevel(0); // no more level events once stopped; settle to rest
       peakLevel = 0;
       setLevelMeter(0);
-      setStatus("Idle");
+      setStatus("Correcting…"); // back to Idle on corrections_done
       // Build the report and switch to it. It keeps refreshing via renderStats
       // as any trailing corrections land.
       renderReport();
       if (reportVisible) {
         showView("report");
-        void saveSession();
+        savePending = true;
       }
     }
   } catch (e) {
@@ -1132,7 +1220,10 @@ async function toggleRecording() {
 // — so the next attempt starts clean. Ignored mid-recording.
 function resetSession() {
   if (recording) return;
+  flushSave();
+  resetCountdown();
   segmentEls.clear();
+  previewChunks.clear();
   finalized.clear();
   refinedIndices.clear();
   tokensByIndex.clear();
@@ -1429,8 +1520,15 @@ function renderSessionLabel() {
   setText("session-label", `Session ${priorSessions().length + 1} · ${fmtDate(sessionStartTs)}`);
 }
 
-// ponytail: saved once at stop; corrections landing after stop refresh the
-// on-screen report but not the saved record.
+// The save waits for the post-stop correction pass (corrections_done) so the
+// saved record scores corrected text; flushed early if the user moves on first.
+let savePending = false;
+function flushSave() {
+  if (!savePending) return;
+  savePending = false;
+  void saveSession();
+}
+
 async function saveSession() {
   try {
     history = parseHistory(await invoke<string>("save_session", { session: JSON.stringify(computeSummary()) }));
@@ -2056,8 +2154,9 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   listen<TranscriptSegment>("transcript_segment", (event) => {
-    upsertSegment(event.payload);
-    updateScriptFromSegment(event.payload);
+    const segment = withPreviewPrefix(event.payload);
+    upsertSegment(segment);
+    updateScriptFromSegment(segment);
   });
 
   listen<UtteranceAnalysis>("utterance_analysis", (event) => {
@@ -2065,6 +2164,14 @@ window.addEventListener("DOMContentLoaded", () => {
     analysisByIndex.set(analysis.index, analysis);
     refreshWaveform(analysis.index); // draws now if the line exists, else on commit
     renderStats();
+  });
+
+  listen<number>("correction_started", (event) => onCorrectionStarted(event.payload));
+
+  listen("corrections_done", () => {
+    resetCountdown();
+    flushSave();
+    if (!recording) setStatus("Idle");
   });
 
   listen<string>("transcription_error", (event) => {
