@@ -123,8 +123,9 @@ button {
   gap: 14px;
 }
 body[data-view="live"] .rail-report,
-body[data-view="report"] .rail-live,
-body[data-view="report"] .lvl {
+body:not([data-view="live"]) .rail-live,
+body:not([data-view="live"]) .lvl,
+body:not([data-view="report"]) .rail-here {
   display: none;
 }
 
@@ -203,7 +204,9 @@ body[data-view="report"] .lvl {
   cursor: default;
 }
 .rail-btn[aria-pressed="true"],
-.rail-active {
+.rail-active,
+body[data-view="profile"] #profile-btn,
+body[data-view="settings"] #settings-btn {
   background: rgba(10, 132, 255, 0.18);
   border-color: rgba(10, 132, 255, 0.4);
   color: var(--blue-2);
@@ -274,12 +277,14 @@ body[data-view="report"] .lvl {
 .view {
   flex: 1;
   min-width: 0;
-  display: flex;
+  display: none;
   flex-direction: column;
 }
-body[data-view="live"] .view-report,
-body[data-view="report"] .view-live {
-  display: none;
+body[data-view="live"] .view-live,
+body[data-view="report"] .view-report,
+body[data-view="profile"] .view-profile,
+body[data-view="settings"] .view-settings {
+  display: flex;
 }
 
 /* --- Scope (ribbon) ------------------------------------------------------- */
@@ -849,7 +854,9 @@ body.filler-flash .tpane {
 
 /* --- Report (3a) ---------------------------------------------------------- */
 
-.view-report {
+.view-report,
+.view-profile,
+.view-settings {
   padding: 14px 16px 16px;
   gap: 12px;
   background: var(--main);
@@ -1163,3 +1170,162 @@ body.filler-flash .tpane {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
 }
+
+/* --- Profile & settings --------------------------------------------------- */
+
+/* These views scroll; keep panels at their natural height. */
+.view-profile > *,
+.view-settings > * {
+  flex-shrink: 0;
+}
+.prof-head {
+  gap: 4px;
+}
+.prof-name {
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  background: none;
+  border: none;
+  padding: 0;
+  outline: none;
+}
+#prof-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.prof-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.prof-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.prof-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--ink-3);
+  padding: 0 8px 6px 0;
+}
+.prof-table td {
+  padding: 6px 8px 6px 0;
+  border-top: 0.5px solid var(--edge);
+}
+
+.set-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--ink);
+}
+.set-row .sub {
+  display: block;
+  margin-top: 2px;
+}
+.set-row select,
+.ctl,
+kbd {
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--btn);
+  border: 0.5px solid var(--edge-2);
+  color: var(--ink);
+}
+.set-row input[type="range"] {
+  accent-color: var(--blue);
+  width: 160px;
+}
+
+.trend-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.trend-plot {
+  position: relative;
+  height: 150px;
+}
+.trend-plot svg {
+  position: absolute;
+  inset: 0;
+}
+.pt {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: #0a84ff;
+  box-shadow: 0 0 0 2px var(--card);
+}
+/* Hit target bigger than the mark. */
+.pt::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+.pt:hover {
+  transform: scale(1.4);
+}
+/* Many sessions: the line carries the trend; markers appear on hover only. */
+.dense .pt {
+  opacity: 0;
+}
+.dense .pt:hover {
+  opacity: 1;
+}
+
+.act-months,
+.act-grid {
+  display: grid;
+  grid-template-columns: 24px repeat(53, minmax(0, 1fr));
+  gap: 3px;
+}
+.act-months {
+  font-size: 9px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.act-grid {
+  grid-template-rows: repeat(7, auto);
+  font-size: 9px;
+  color: var(--ink-3);
+}
+.act-grid > span {
+  line-height: 1;
+  align-self: center;
+}
+.day {
+  aspect-ratio: 1;
+  border-radius: 2px;
+}
+.day.l0 { background: rgba(255, 255, 255, 0.06); }
+.day.l1 { background: rgba(10, 132, 255, 0.3); }
+.day.l2 { background: rgba(10, 132, 255, 0.5); }
+.day.l3 { background: rgba(10, 132, 255, 0.75); }
+.day.l4 { background: #0a84ff; }
+.act-grid .day:hover {
+  outline: 1px solid var(--ink-2);
+}
+.act-legend {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  color: var(--ink-3);
+}
+.act-legend .day {
+  width: 10px;
+}
+.act-legend .day:first-of-type { margin-left: 3px; }
+.act-legend .day:last-of-type { margin-right: 3px; }

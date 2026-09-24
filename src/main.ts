@@ -1031,7 +1031,7 @@ function setStatus(text: string) {
 function setRecordingUi(on: boolean) {
   if (!recordBtn) return;
   recordBtn.classList.toggle("recording", on);
-  const label = on ? "Stop recording — ends the session and finalizes the transcript" : "Start recording";
+  const label = on ? "Stop recording — ends the session and finalizes the transcript (Space)" : "Start recording (Space)";
   recordBtn.setAttribute("aria-label", on ? "Stop recording" : "Start recording");
   recordBtn.dataset.tip = label;
   $("rec-label")?.classList.toggle("on", on);
@@ -1048,7 +1048,7 @@ function tickClock() {
   const drill = $("drill-btn");
   if (drill) {
     const left = drillEndsAt - now;
-    drill.textContent = left > 0 ? `${Math.ceil(left / 1000)}s` : "60s";
+    drill.textContent = left > 0 ? `${Math.ceil(left / 1000)}s` : `${drillMs / 1000}s`;
     drill.classList.toggle("drilling", left > 0);
   }
 }
@@ -1644,8 +1644,199 @@ function renderReport() {
     `</div>`;
 }
 
-function showView(view: "live" | "report") {
+function showView(view: "live" | "report" | "profile" | "settings") {
   document.body.dataset.view = view;
+  if (view === "profile") renderProfile();
+}
+
+// --- Profile & settings --------------------------------------------------------
+
+// localStorage can throw (blocked storage); settings then just don't persist.
+function load(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function save(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
+const NAME_KEY = "speech.name";
+const DRILL_KEY = "speech.drillSecs";
+const GAIN_KEY = "speech.levelGain";
+
+// Consecutive calendar days with at least one session, ending today (or
+// yesterday, so the streak survives until you've had a chance to practise today).
+function dayStreak(timestamps: number[], now = Date.now()): number {
+  const days = new Set(timestamps.map((ts) => new Date(ts).toDateString()));
+  const d = new Date(now);
+  if (!days.has(d.toDateString())) d.setDate(d.getDate() - 1);
+  let n = 0;
+  while (days.has(d.toDateString())) {
+    n++;
+    d.setDate(d.getDate() - 1);
+  }
+  return n;
+}
+
+function fmtHours(ms: number): string {
+  if (ms < 3_600_000) return formatTimestamp(ms);
+  const m = Math.round(ms / 60_000);
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+const DAY_MS = 86_400_000;
+
+// Trend chart metrics (profile). `max` pins the y-axis top; otherwise it's the
+// data max rounded up to a nice number. Every axis starts at zero.
+const METRICS: Record<string, { name: string; get: (h: SessionSummary) => number; fmt: (v: number) => string; max?: number }> = {
+  score: { name: "Score", get: (h) => h.scores.overall, fmt: (v) => String(Math.round(v)), max: 100 },
+  wpm: { name: "Pace (wpm)", get: (h) => h.wpm, fmt: (v) => `${Math.round(v)} wpm` },
+  fillers: { name: "Fillers/min", get: (h) => h.fillersPerMin, fmt: (v) => `${v.toFixed(1)}/min` },
+  pauses: { name: "Pauses/min", get: (h) => h.pausesPerMin, fmt: (v) => `${v.toFixed(1)}/min` },
+  pitch: { name: "Pitch range", get: (h) => h.pitchRange, fmt: (v) => `${v.toFixed(1)} st` },
+  speaking: { name: "Speaking time", get: (h) => h.durationMs / 60_000, fmt: (v) => formatTimestamp(v * 60_000) },
+  words: { name: "Words", get: (h) => h.words, fmt: (v) => `${Math.round(v)} words` },
+};
+const RANGES: Array<[string, number]> = [["7D", 7], ["30D", 30], ["90D", 90], ["1Y", 365], ["All", Infinity]];
+let profMetric = "score";
+let profRange = "All";
+
+function niceCeil(v: number): number {
+  if (v <= 0) return 1;
+  const step = 10 ** Math.floor(Math.log10(v));
+  return Math.ceil(v / step) * step;
+}
+
+// All-time chart: one point per session, on a real time axis for the range.
+function trendHtml(): string {
+  const m = METRICS[profMetric];
+  const days = RANGES.find((r) => r[0] === profRange)?.[1] ?? Infinity;
+  const now = Date.now();
+  const pts = history.filter((h) => now - h.ts <= days * DAY_MS);
+  const t0 = days === Infinity ? (pts[0]?.ts ?? now) : now - days * DAY_MS;
+  const span = Math.max(1, now - t0);
+  const hi = m.max ?? niceCeil(Math.max(0, ...pts.map(m.get)));
+  const x = (ts: number) => ((ts - t0) / span) * 100;
+  const y = (v: number) => 100 - (Math.min(v, hi) / hi) * 100;
+  const line = pts.map((h) => `${x(h.ts).toFixed(2)},${y(m.get(h)).toFixed(2)}`).join(" ");
+  const dots = pts
+    .map(
+      (h) =>
+        `<div class="pt" style="left:${x(h.ts).toFixed(2)}%;top:${y(m.get(h)).toFixed(2)}%" data-tip="${fmtDate(h.ts)} · ${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))} — ${m.fmt(m.get(h))}"></div>`,
+    )
+    .join("");
+  const ranges = RANGES.map(([r]) => `<button type="button" role="radio" data-range="${r}" aria-checked="${r === profRange}">${r}</button>`).join("");
+  const opts = Object.entries(METRICS)
+    .map(([k, v]) => `<option value="${k}"${k === profMetric ? " selected" : ""}>${v.name}</option>`)
+    .join("");
+  const yLabels = [hi, hi / 2, 0].map((v) => `<span>${m.fmt(v)}</span>`).join("");
+  const xLabels = [t0, t0 + span / 2, now].map((t) => `<span>${fmtDate(t)}</span>`).join("");
+  const plot = pts.length
+    ? `<div class="pace-grid trend-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot">` +
+      `<div class="trend-plot${pts.length > 60 ? " dense" : ""}"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">` +
+      `<line x1="0" y1="50" x2="100" y2="50" stroke="rgba(255,255,255,0.06)" vector-effect="non-scaling-stroke" />` +
+      `<line x1="0" y1="100" x2="100" y2="100" stroke="rgba(255,255,255,0.1)" vector-effect="non-scaling-stroke" />` +
+      `<polyline points="${line}" fill="none" stroke="#0a84ff" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
+      `</svg>${dots}</div><div class="x-labels">${xLabels}</div></div></div>`
+    : `<div class="empty">No sessions in this range.</div>`;
+  return (
+    `<div class="panel"><div class="panel-head"><span class="label">All time · ${m.name}</span>` +
+    `<div class="trend-filters"><select id="prof-metric" class="ctl" aria-label="Metric">${opts}</select>` +
+    `<div class="seg" role="radiogroup" aria-label="Time frame">${ranges}</div></div></div>${plot}</div>`
+  );
+}
+
+// GitHub-style grid: 53 weeks of days (columns = weeks, rows = Sun–Sat),
+// shaded by speaking time relative to your biggest day.
+function activityHtml(): string {
+  const byDay = new Map<string, { n: number; ms: number }>();
+  for (const h of history) {
+    const k = new Date(h.ts).toDateString();
+    const d = byDay.get(k) ?? { n: 0, ms: 0 };
+    d.n++;
+    d.ms += h.durationMs;
+    byDay.set(k, d);
+  }
+  const maxMs = Math.max(1, ...[...byDay.values()].map((d) => d.ms));
+  const today = new Date();
+  const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay() - 52 * 7);
+  let cells = "";
+  let months = "";
+  let active = 0;
+  for (let i = 0; d <= today; i++, d.setDate(d.getDate() + 1)) {
+    const a = byDay.get(d.toDateString());
+    const col = Math.floor(i / 7) + 2; // column 1 holds the weekday labels
+    const lvl = a ? Math.max(1, Math.ceil((a.ms / maxMs) * 4)) : 0;
+    if (a) active++;
+    const tip = a
+      ? `${fmtDate(d.getTime())} — ${a.n} session${a.n === 1 ? "" : "s"} · ${formatTimestamp(a.ms)} speaking`
+      : `${fmtDate(d.getTime())} — no practice`;
+    cells += `<div class="day l${lvl}" style="grid-area:${d.getDay() + 1}/${col}" data-tip="${tip}"></div>`;
+    if (d.getDate() === 1) months += `<span style="grid-column:${col}">${d.toLocaleDateString(undefined, { month: "short" })}</span>`;
+  }
+  const days = ["Mon", "Wed", "Fri"].map((w, i) => `<span style="grid-area:${i * 2 + 2}/1">${w}</span>`).join("");
+  const legend = [0, 1, 2, 3, 4].map((l) => `<div class="day l${l}"></div>`).join("");
+  return (
+    `<div class="panel"><div class="panel-head"><span class="label">Activity · ${active} day${active === 1 ? "" : "s"} in the last year</span>` +
+    `<div class="act-legend">Less${legend}More</div></div>` +
+    `<div class="act-months">${months}</div><div class="act-grid">${days}${cells}</div></div>`
+  );
+}
+
+function renderProfile() {
+  const body = $("prof-body");
+  if (!body) return;
+  const n = history.length;
+  setText("prof-since", n ? `Practising since ${fmtDate(history[0].ts)} · ${n} session${n === 1 ? "" : "s"}` : "");
+  if (!n) {
+    body.innerHTML = `<div class="panel"><span class="sub">No sessions yet — press Space to record your first.</span></div>`;
+    return;
+  }
+  const scores = history.map((h) => h.scores.overall);
+  const avg = Math.round(mean(scores));
+  const tile = (value: string, unit: string, sub: string, tip: string) =>
+    `<div class="tile" data-tip="${tip}"><div class="card-top"><span class="big">${value}</span><span class="unit">${unit}</span></div><span class="delta flat">${sub}</span></div>`;
+  const speakingMs = history.reduce((a, h) => a + h.durationMs, 0);
+  const words = history.reduce((a, h) => a + h.words, 0);
+  const tiles =
+    `<div class="tiles">` +
+    tile(fmtHours(speakingMs), "speaking", `${formatTimestamp(speakingMs / n)} per session`, "Total time spent actually talking, pauses excluded") +
+    tile(`~${words.toLocaleString()}`, "words", `${Math.round(words / Math.max(1, speakingMs / 60_000))} wpm lifetime`, "Estimated words spoken — counted from the on-device transcript") +
+    tile(String(dayStreak(history.map((h) => h.ts))), "day streak", `${n} sessions`, "Consecutive days with at least one session") +
+    tile(`${avg} ${grade(avg)}`, "avg score", "all sessions", "Mean delivery score across all sessions") +
+    tile(Math.min(...history.map((h) => h.fillersPerMin)).toFixed(1), "fillers/min", "personal best", "Lowest filler rate in a session") +
+    `</div>`;
+  const bests = Object.entries(PRESETS)
+    .map(([key, p]) => {
+      const hs = history.filter((h) => h.preset === key);
+      if (!hs.length) return tile("—", p.name, "no sessions yet", `No ${p.name.toLowerCase()} sessions yet`);
+      const b = hs.reduce((a, h) => (h.scores.overall > a.scores.overall ? h : a));
+      return tile(`${b.scores.overall} ${grade(b.scores.overall)}`, p.name, `best of ${hs.length} · ${fmtDate(b.ts)}`, `Best ${p.name.toLowerCase()} score`);
+    })
+    .join("");
+  const rows = history
+    .slice(-10)
+    .reverse()
+    .map(
+      (h) =>
+        `<tr><td>${fmtDate(h.ts)}</td><td>${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))}</td><td>${formatTimestamp(h.durationMs)}</td>` +
+        `<td>${Math.round(h.wpm)}</td><td>${h.fillersPerMin.toFixed(1)}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
+    )
+    .join("");
+  body.innerHTML =
+    tiles +
+    `<div class="panel"><span class="label">Best by mode</span><div class="prof-tiles">${bests}</div></div>` +
+    activityHtml() +
+    trendHtml() +
+    `<div class="panel"><span class="label">Recent sessions</span><table class="prof-table">` +
+    `<tr><th>Date</th><th>Context</th><th>Speaking</th><th>WPM</th><th>Fillers/min</th><th>Score</th></tr>${rows}</table></div>`;
 }
 
 // Report → transcript: switch back to the live view and flash the line.
@@ -1684,7 +1875,7 @@ function flashFillerAlert() {
   setTimeout(() => document.body.classList.remove("filler-flash"), 350);
 }
 
-const DRILL_MS = 60_000;
+let drillMs = 60_000;
 
 window.addEventListener("DOMContentLoaded", () => {
   const ribbonCanvas = document.querySelector<HTMLCanvasElement>("#ribbon");
@@ -1714,6 +1905,67 @@ window.addEventListener("DOMContentLoaded", () => {
   $("script-btn")?.addEventListener("click", () => toggleScript());
   $("stats-btn")?.addEventListener("click", () => showView("report"));
   $("live-btn")?.addEventListener("click", () => showView("live"));
+  $("profile-btn")?.addEventListener("click", () => showView("profile"));
+  $("settings-btn")?.addEventListener("click", () => showView("settings"));
+
+  // Space starts/stops recording from anywhere except text fields. Blur first so
+  // a focused button doesn't also get "clicked" by the same keypress on keyup.
+  document.addEventListener("keydown", (e) => {
+    if (e.code !== "Space" || e.repeat) return;
+    if ((e.target as Element).closest("input, textarea, select, [contenteditable]")) return;
+    e.preventDefault();
+    (document.activeElement as HTMLElement | null)?.blur();
+    if (!recordBtn?.disabled) void toggleRecording();
+  });
+
+  const profBody = $("prof-body");
+  profBody?.addEventListener("click", (e) => {
+    const r = (e.target as Element).closest<HTMLElement>("[data-range]")?.dataset.range;
+    if (r) {
+      profRange = r;
+      renderProfile();
+    }
+  });
+  profBody?.addEventListener("change", (e) => {
+    const t = e.target as HTMLSelectElement;
+    if (t.id === "prof-metric") {
+      profMetric = t.value;
+      renderProfile();
+    }
+  });
+
+  const nameInput = $<HTMLInputElement>("prof-name");
+  if (nameInput) {
+    nameInput.value = load(NAME_KEY) ?? "";
+    nameInput.addEventListener("input", () => save(NAME_KEY, nameInput.value));
+  }
+
+  const drillSel = $<HTMLSelectElement>("set-drill");
+  const drillSecs = Number(load(DRILL_KEY));
+  if (drillSecs > 0) drillMs = drillSecs * 1000;
+  const syncDrill = () => {
+    if (drillSel) drillSel.value = String(drillMs / 1000);
+    const btn = $("drill-btn");
+    if (btn) btn.dataset.tip = `${drillMs / 1000}-second drill — a random prompt and a timed run`;
+    tickClock();
+  };
+  drillSel?.addEventListener("change", () => {
+    drillMs = Number(drillSel.value) * 1000;
+    save(DRILL_KEY, drillSel.value);
+    syncDrill();
+  });
+  syncDrill();
+
+  const gainInput = $<HTMLInputElement>("set-gain");
+  const savedGain = Number(load(GAIN_KEY));
+  if (savedGain > 0) levelGain = savedGain;
+  if (gainInput) {
+    gainInput.value = String(levelGain);
+    gainInput.addEventListener("input", () => {
+      levelGain = Number(gainInput.value);
+      save(GAIN_KEY, gainInput.value);
+    });
+  }
   $("report-body")?.addEventListener("click", (e) => {
     const m = (e.target as Element).closest<HTMLElement>(".moment");
     if (m) jumpToLine(Number(m.dataset.index));
@@ -1748,20 +2000,20 @@ window.addEventListener("DOMContentLoaded", () => {
     // storage unavailable; default preset stands
   }
   const presetButtons = [...document.querySelectorAll<HTMLButtonElement>("#preset-seg button")];
-  const syncPreset = () =>
+  const presetSel = $<HTMLSelectElement>("set-preset");
+  const syncPreset = () => {
     presetButtons.forEach((b) => b.setAttribute("aria-checked", String(b.dataset.preset === currentPreset)));
-  presetButtons.forEach((b) =>
-    b.addEventListener("click", () => {
-      currentPreset = b.dataset.preset ?? currentPreset;
-      try {
-        localStorage.setItem(PRESET_KEY, currentPreset);
-      } catch {
-        // ignore
-      }
-      syncPreset();
-      renderStats();
-    }),
-  );
+    if (presetSel) presetSel.value = currentPreset;
+  };
+  const setPreset = (p: string | undefined) => {
+    if (!p || !PRESETS[p]) return;
+    currentPreset = p;
+    save(PRESET_KEY, p);
+    syncPreset();
+    renderStats();
+  };
+  presetButtons.forEach((b) => b.addEventListener("click", () => setPreset(b.dataset.preset)));
+  presetSel?.addEventListener("change", () => setPreset(presetSel.value));
   syncPreset();
   renderStats();
 
@@ -1788,13 +2040,13 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!recording) {
       const drillSession = sessionId + 1; // resetStats (in toggleRecording) bumps to this
       void toggleRecording().then(() => {
-        if (recording && sessionId === drillSession) drillEndsAt = performance.now() + DRILL_MS;
+        if (recording && sessionId === drillSession) drillEndsAt = performance.now() + drillMs;
       });
       // Auto-stop after the drill window, unless the user already stopped or
       // started another session.
       setTimeout(() => {
         if (recording && sessionId === drillSession) void toggleRecording();
-      }, DRILL_MS);
+      }, drillMs);
     }
   });
   const ffBtn = $("ff-btn");
@@ -1824,11 +2076,11 @@ window.addEventListener("DOMContentLoaded", () => {
   // a perceptual curve that lifts soft speech into a visible range. Bump the
   // gain if it still reacts weakly.
   listen<number>("audio_level", (event) => {
-    const level = Math.min(1, Math.sqrt(event.payload * RIBBON_LEVEL_GAIN));
+    const level = Math.min(1, Math.sqrt(event.payload * levelGain));
     ribbon?.setLevel(level);
     setLevelMeter(level);
     setText("rms-label", `rms ${event.payload.toFixed(2)} · 16 kHz`);
   });
 });
 
-const RIBBON_LEVEL_GAIN = 8;
+let levelGain = 8;

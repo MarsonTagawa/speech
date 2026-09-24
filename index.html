@@ -22,7 +22,7 @@
 
         <div class="rail-live">
           <div class="rec-group">
-            <button id="record-btn" class="rec-btn" aria-label="Start recording" data-tip="Start recording"></button>
+            <button id="record-btn" class="rec-btn" aria-label="Start recording" data-tip="Start recording (Space)"></button>
             <span id="rec-label" class="rec-label">REC</span>
           </div>
           <div class="rail-btns">
@@ -41,11 +41,15 @@
             <button id="live-btn" class="rail-btn" type="button" data-tip="Back to the live session">
               <span class="live-dot"></span>LIVE
             </button>
-            <button class="rail-btn rail-active" type="button" data-tip="Session report — you are here">STATS</button>
+            <button class="rail-btn rail-active rail-here" type="button" data-tip="Session report — you are here">STATS</button>
           </div>
         </div>
 
         <div class="rail-spacer" data-tauri-drag-region></div>
+        <div class="rail-btns">
+          <button id="profile-btn" class="rail-btn" type="button" data-tip="Profile — your progress across sessions">PROF</button>
+          <button id="settings-btn" class="rail-btn" type="button" data-tip="Settings">SET</button>
+        </div>
         <div class="lvl" data-tip="Input level — live and peak">
           <span class="lvl-label">LVL</span>
           <div class="lvl-bars">
@@ -156,6 +160,48 @@
       <!-- 3a: session report -->
       <main id="report" class="view view-report">
         <div id="report-body"></div>
+      </main>
+
+      <main class="view view-profile">
+        <div class="panel prof-head">
+          <input id="prof-name" class="prof-name" type="text" placeholder="Your name" maxlength="40" spellcheck="false" aria-label="Name" />
+          <div id="prof-since" class="sub"></div>
+        </div>
+        <div id="prof-body"></div>
+      </main>
+
+      <main class="view view-settings">
+        <div class="panel">
+          <span class="label">Practice</span>
+          <label class="set-row">
+            <span>Speaking context<span class="sub">Target pace band used for scoring</span></span>
+            <select id="set-preset">
+              <option value="conversation">Conversation · 120–160</option>
+              <option value="presentation">Presentation · 100–140</option>
+              <option value="interview">Interview · 120–155</option>
+            </select>
+          </label>
+          <label class="set-row">
+            <span>Drill length<span class="sub">Duration of a timed drill</span></span>
+            <select id="set-drill">
+              <option value="30">30 s</option>
+              <option value="60">60 s</option>
+              <option value="90">90 s</option>
+              <option value="120">2 min</option>
+            </select>
+          </label>
+        </div>
+        <div class="panel">
+          <span class="label">Input</span>
+          <label class="set-row">
+            <span>Mic sensitivity<span class="sub">Raise if the level meter barely moves when you speak</span></span>
+            <input id="set-gain" type="range" min="2" max="24" step="1" />
+          </label>
+        </div>
+        <div class="panel">
+          <span class="label">Keyboard</span>
+          <div class="set-row"><span>Start / stop recording</span><kbd>Space</kbd></div>
+        </div>
       </main>
     </div>
 
