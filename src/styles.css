@@ -1,5 +1,5 @@
 /* Speech — "mixer chassis" redesign (2a live session, 3a session report).
-   Dark-only: the ribbon scope is black, so the whole app is built around it. */
+   The ribbon scope is black in every theme; the light theme re-darkens it locally. */
 
 :root {
   --chassis: #121214;
@@ -10,13 +10,14 @@
   --card: #212126;
   --btn: #232327;
   --btn-hover: #2c2c31;
+  --fg: #fff; /* base for translucent overlays: tracks, pips, grid lines */
   --edge: rgba(255, 255, 255, 0.07);
   --edge-2: rgba(255, 255, 255, 0.1);
   --shadow-edge: rgba(0, 0, 0, 0.6);
 
   --ink: #f2f2f7;
-  --ink-2: rgba(242, 242, 247, 0.68);
-  --ink-3: rgba(242, 242, 247, 0.55);
+  --ink-2: color-mix(in srgb, var(--ink) 68%, transparent);
+  --ink-3: color-mix(in srgb, var(--ink) 55%, transparent);
 
   --blue: #0a84ff;
   --blue-2: #4aa8ff;
@@ -26,6 +27,7 @@
   --orange: #ff9f0a;
   --purple: #bf5af2;
 
+  color-scheme: dark;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 13px;
   color: var(--ink);
@@ -33,6 +35,82 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Colorschemes: surfaces, ink and accent (--blue). All dark — the scope stays black. */
+:root[data-theme="midnight"] {
+  --chassis: #0b0f19;
+  --rail: #0f1422;
+  --main: #0d1220;
+  --pane: #111827;
+  --dock: #121a2b;
+  --card: #172033;
+  --btn: #1b2539;
+  --btn-hover: #243049;
+  --ink: #e6ecf7;
+  --blue: #64d2ff;
+  --blue-2: #8fdfff;
+}
+:root[data-theme="nord"] {
+  --chassis: #242933;
+  --rail: #2a303b;
+  --main: #272c36;
+  --pane: #2e3440;
+  --dock: #2f3542;
+  --card: #353c4a;
+  --btn: #3b4252;
+  --btn-hover: #434c5e;
+  --ink: #eceff4;
+  --blue: #88c0d0;
+  --blue-2: #a3d3e0;
+}
+:root[data-theme="rose"] {
+  --chassis: #151320;
+  --rail: #191724;
+  --main: #17151f;
+  --pane: #1f1d2e;
+  --dock: #201e2f;
+  --card: #26233a;
+  --btn: #2a2740;
+  --btn-hover: #332f4d;
+  --ink: #e0def4;
+  --blue: #ebbcba;
+  --blue-2: #f3d3d1;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --chassis: #e6e6eb;
+  --rail: #ececf0;
+  --main: #f1f1f5;
+  --pane: #f5f5f8;
+  --dock: #f3f3f6;
+  --card: #ffffff;
+  --btn: #f0f0f4;
+  --btn-hover: #e4e4ea;
+  --fg: #000;
+  --edge: rgba(0, 0, 0, 0.08);
+  --edge-2: rgba(0, 0, 0, 0.13);
+  --shadow-edge: rgba(0, 0, 0, 0.16);
+  --ink: #1c1c1e;
+  --blue: #007aff;
+  --blue-2: #0062cc;
+  --green: #28a745;
+  --amber: #d9a300;
+  --red: #ff3b30;
+  --orange: #f08300;
+  --purple: #af52de;
+}
+/* The scope and report hero stay black in every theme, so they keep dark ink. */
+:root[data-theme="light"] :is(.scope, .rep-hero) {
+  --fg: #fff;
+  --ink: #f2f2f7;
+  --ink-2: rgba(242, 242, 247, 0.68);
+  --ink-3: rgba(242, 242, 247, 0.55);
+  --edge: rgba(255, 255, 255, 0.07);
+  --edge-2: rgba(255, 255, 255, 0.1);
+  --blue-2: #4aa8ff;
+  color: var(--ink);
 }
 
 * {
@@ -74,7 +152,73 @@ button {
   color: var(--ink-2);
 }
 
-/* --- Rail ----------------------------------------------------------------- */
+/* --- Nav rail -------------------------------------------------------------- */
+
+.nav {
+  width: 60px;
+  flex: 0 0 auto;
+  background: var(--chassis);
+  border-right: 0.5px solid var(--shadow-edge);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 0;
+  gap: 6px;
+  user-select: none;
+}
+
+.nav-btn {
+  width: 46px;
+  height: 44px;
+  border-radius: 8px;
+  background: transparent;
+  border: 0.5px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.nav-btn:hover:not(:disabled) {
+  background: var(--btn);
+}
+.nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.nav-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+body[data-view="live"] #live-btn,
+body[data-view="report"] #stats-btn,
+body[data-view="profile"] #profile-btn,
+body[data-view="settings"] #settings-btn {
+  background: color-mix(in srgb, var(--blue) 18%, transparent);
+  border-color: color-mix(in srgb, var(--blue) 40%, transparent);
+  color: var(--blue-2);
+  font-weight: 600;
+}
+
+.nav-dot {
+  width: 9px;
+  height: 9px;
+  margin: 3px 0;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+/* --- Tool rail (live only) ------------------------------------------------- */
 
 .rail {
   width: 96px;
@@ -84,22 +228,12 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 14px 0 16px;
-  gap: 14px;
+  padding: 14px 0;
+  gap: 10px;
+  overflow: hidden;
   user-select: none;
 }
-
-.rail-live,
-.rail-report {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-}
-body[data-view="live"] .rail-report,
-body:not([data-view="live"]) .rail-live,
-body:not([data-view="live"]) .lvl,
-body:not([data-view="report"]) .rail-here {
+body:not([data-view="live"]) .rail {
   display: none;
 }
 
@@ -123,11 +257,11 @@ body:not([data-view="report"]) .rail-here {
   padding: 0;
   cursor: pointer;
   border: 2px solid rgba(255, 69, 58, 0.4);
-  background: radial-gradient(circle, var(--red) 0 34%, #2a1716 36%);
+  background: radial-gradient(circle, var(--red) 0 34%, color-mix(in srgb, var(--red) 12%, var(--chassis)) 36%);
   transition: box-shadow 160ms ease, background 160ms ease;
 }
 .rec-btn:hover {
-  background: radial-gradient(circle, var(--red) 0 40%, #331b19 42%);
+  background: radial-gradient(circle, var(--red) 0 40%, color-mix(in srgb, var(--red) 15%, var(--chassis)) 42%);
 }
 .rec-btn.recording {
   background: var(--red);
@@ -177,12 +311,9 @@ body:not([data-view="report"]) .rail-here {
   opacity: 0.35;
   cursor: default;
 }
-.rail-btn[aria-pressed="true"],
-.rail-active,
-body[data-view="profile"] #profile-btn,
-body[data-view="settings"] #settings-btn {
-  background: rgba(10, 132, 255, 0.18);
-  border-color: rgba(10, 132, 255, 0.4);
+.rail-btn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--blue) 18%, transparent);
+  border-color: color-mix(in srgb, var(--blue) 40%, transparent);
   color: var(--blue-2);
   font-weight: 600;
 }
@@ -203,13 +334,6 @@ body[data-view="settings"] #settings-btn {
   border: 1.5px solid var(--ink-2);
 }
 
-.live-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--red);
-}
-
 .lvl {
   display: flex;
   flex-direction: column;
@@ -227,7 +351,7 @@ body[data-view="settings"] #settings-btn {
 }
 .lvl-bar {
   width: 7px;
-  height: 82px;
+  height: 64px;
   border-radius: 3px;
   background: var(--edge);
   display: flex;
@@ -239,7 +363,7 @@ body[data-view="settings"] #settings-btn {
   width: 100%;
   height: 0;
   background: linear-gradient(to top, var(--green), var(--amber));
-  background-size: 100% 82px;
+  background-size: 100% 64px;
   background-position: bottom;
 }
 .lvl-dim {
@@ -286,8 +410,8 @@ body[data-view="settings"] .view-settings {
   pointer-events: none;
   opacity: 0.5;
   background:
-    repeating-linear-gradient(to right, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 88px),
-    repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 56px);
+    repeating-linear-gradient(to right, color-mix(in srgb, var(--fg) 8%, transparent) 0 1px, transparent 1px 88px),
+    repeating-linear-gradient(to bottom, color-mix(in srgb, var(--fg) 8%, transparent) 0 1px, transparent 1px 56px);
 }
 
 .scope-tl {
@@ -305,8 +429,8 @@ body[data-view="settings"] .view-settings {
   gap: 7px;
   padding: 4px 10px 4px 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  border: 0.5px solid color-mix(in srgb, var(--fg) 16%, transparent);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   font-size: 11px;
@@ -378,8 +502,8 @@ body[data-view="settings"] .view-settings {
 
 .seg {
   display: flex;
-  background: rgba(255, 255, 255, 0.08);
-  border: 0.5px solid rgba(255, 255, 255, 0.14);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  border: 0.5px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 6px;
   padding: 1px;
   backdrop-filter: blur(20px);
@@ -396,7 +520,7 @@ body[data-view="settings"] .view-settings {
   cursor: pointer;
 }
 .seg button[aria-checked="true"] {
-  background: rgba(255, 255, 255, 0.18);
+  background: color-mix(in srgb, var(--fg) 18%, transparent);
   color: var(--ink);
 }
 .scope-br {
@@ -420,7 +544,7 @@ body[data-view="settings"] .view-settings {
   inset: 0;
   z-index: 2;
   pointer-events: none;
-  background: linear-gradient(to bottom, var(--pane) 0%, rgba(26, 26, 30, 0) 16%, rgba(26, 26, 30, 0) 88%, var(--pane) 100%);
+  background: linear-gradient(to bottom, var(--pane) 0%, transparent 16%, transparent 88%, var(--pane) 100%);
 }
 
 .transcript {
@@ -528,7 +652,7 @@ body[data-view="settings"] .view-settings {
   width: 56px;
   height: 3px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
   overflow: hidden;
 }
 .seg-countdown i {
@@ -548,7 +672,7 @@ body[data-view="settings"] .view-settings {
   text-wrap: pretty;
 }
 .partial .seg-text {
-  color: rgba(242, 242, 247, 0.62);
+  color: color-mix(in srgb, var(--ink) 62%, transparent);
   font-style: italic;
 }
 .corrected .seg-text {
@@ -581,7 +705,7 @@ body[data-view="settings"] .view-settings {
   opacity: 0.12;
 }
 .waveform-pause {
-  fill: rgba(242, 242, 247, 0.08);
+  fill: color-mix(in srgb, var(--ink) 8%, transparent);
 }
 
 .error {
@@ -639,7 +763,7 @@ body.filler-flash .tpane {
   font-size: 12px;
 }
 .script-input:focus {
-  outline: 1px solid rgba(10, 132, 255, 0.5);
+  outline: 1px solid color-mix(in srgb, var(--blue) 50%, transparent);
 }
 
 .script-display {
@@ -723,13 +847,13 @@ body.filler-flash .tpane {
 .amber { color: var(--amber); }
 .amber-bg { background: var(--amber); }
 .purple-bg { background: var(--purple); }
-.ink-bg { background: rgba(242, 242, 247, 0.5); }
+.ink-bg { background: color-mix(in srgb, var(--ink) 50%, transparent); }
 
 .track {
   position: relative;
   height: 4px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.09);
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
   margin-top: 9px;
 }
 .fill {
@@ -767,10 +891,10 @@ body.filler-flash .tpane {
 .pips div {
   flex: 1;
   border-radius: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
 }
 .pips div.on {
-  background: rgba(255, 255, 255, 0.3);
+  background: color-mix(in srgb, var(--fg) 30%, transparent);
 }
 
 .card-pace {
@@ -811,7 +935,7 @@ body.filler-flash .tpane {
   height: 58px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: conic-gradient(var(--c) 0 calc(var(--p) * 1%), rgba(255, 255, 255, 0.08) 0 100%);
+  background: conic-gradient(var(--c) 0 calc(var(--p) * 1%), color-mix(in srgb, var(--fg) 8%, transparent) 0 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -907,7 +1031,7 @@ body.filler-flash .tpane {
   max-width: 250px;
   font-size: 12px;
   line-height: 1.45;
-  color: rgba(242, 242, 247, 0.8);
+  color: color-mix(in srgb, var(--ink) 80%, transparent);
   text-wrap: pretty;
 }
 
@@ -1094,10 +1218,10 @@ body.filler-flash .tpane {
 .hist-col .bar {
   width: 100%;
   border-radius: 3px 3px 1px 1px;
-  background: rgba(255, 255, 255, 0.16);
+  background: color-mix(in srgb, var(--fg) 16%, transparent);
 }
 .hist-col.now {
-  color: rgba(242, 242, 247, 0.95);
+  color: color-mix(in srgb, var(--ink) 95%, transparent);
 }
 .hist-col.now .bar {
   background: var(--green);
@@ -1158,8 +1282,8 @@ body.filler-flash .tpane {
   max-width: 280px;
   padding: 6px 10px;
   border-radius: 7px;
-  background: rgba(38, 38, 42, 0.94);
-  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  background: color-mix(in srgb, var(--btn) 94%, transparent);
+  border: 0.5px solid color-mix(in srgb, var(--fg) 16%, transparent);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
   font-size: 11.5px;
   line-height: 1.35;
@@ -1227,7 +1351,6 @@ body.filler-flash .tpane {
   display: block;
   margin-top: 2px;
 }
-.set-row select,
 .ctl,
 kbd {
   font: inherit;
@@ -1238,13 +1361,136 @@ kbd {
   border: 0.5px solid var(--edge-2);
   color: var(--ink);
 }
+.dd {
+  position: relative;
+}
+.dd-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dd-btn:hover {
+  background: var(--btn-hover);
+}
+.dd-btn::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin: -3px 0 0 auto;
+  border: solid var(--ink-3);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+}
+.dd.open .dd-btn::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
+}
+.dd-list {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 50;
+  min-width: 100%;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--btn);
+  border: 0.5px solid var(--edge-2);
+  box-shadow: 0 10px 30px var(--shadow-edge);
+  font-size: 11px;
+}
+.dd.open .dd-list {
+  display: block;
+}
+.dd-list [role="option"] {
+  padding: 5px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+.dd-list [role="option"]:hover,
+.dd-list [role="option"]:focus {
+  background: var(--btn-hover);
+}
+.dd-list [aria-selected="true"] {
+  color: var(--blue-2);
+  font-weight: 600;
+}
 body.no-hover-fx #shards {
   display: none;
 }
 .set-row input[type="checkbox"] {
-  accent-color: var(--blue);
-  width: 16px;
-  height: 16px;
+  appearance: none;
+  flex-shrink: 0;
+  position: relative;
+  width: 32px;
+  height: 18px;
+  margin: 0;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--fg) 14%, transparent);
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+.set-row input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: transform 150ms ease;
+}
+.set-row input[type="checkbox"]:checked {
+  background: var(--blue);
+}
+.set-row input[type="checkbox"]:checked::before {
+  transform: translateX(14px);
+}
+.set-row input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--blue-2);
+  outline-offset: 2px;
+}
+
+.mic-test {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mic-speech {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  transition: color 120ms ease;
+}
+.mic-speech.on {
+  color: var(--green);
+}
+.mic-meter {
+  position: relative;
+  width: 160px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
+}
+.mic-meter div {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+}
+#mic-live {
+  background: var(--green);
+}
+#mic-peak {
+  border-right: 2px solid var(--ink-2);
 }
 .set-row input[type="range"] {
   accent-color: var(--blue);
@@ -1270,7 +1516,7 @@ body.no-hover-fx #shards {
   height: 8px;
   margin: -4px 0 0 -4px;
   border-radius: 50%;
-  background: #0a84ff;
+  background: var(--blue);
   box-shadow: 0 0 0 2px var(--card);
 }
 /* Hit target bigger than the mark. */
@@ -1314,11 +1560,11 @@ body.no-hover-fx #shards {
   aspect-ratio: 1;
   border-radius: 2px;
 }
-.day.l0 { background: rgba(255, 255, 255, 0.06); }
-.day.l1 { background: rgba(10, 132, 255, 0.3); }
-.day.l2 { background: rgba(10, 132, 255, 0.5); }
-.day.l3 { background: rgba(10, 132, 255, 0.75); }
-.day.l4 { background: #0a84ff; }
+.day.l0 { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.day.l1 { background: color-mix(in srgb, var(--blue) 30%, transparent); }
+.day.l2 { background: color-mix(in srgb, var(--blue) 50%, transparent); }
+.day.l3 { background: color-mix(in srgb, var(--blue) 75%, transparent); }
+.day.l4 { background: var(--blue); }
 .act-grid .day:hover {
   outline: 1px solid var(--ink-2);
 }

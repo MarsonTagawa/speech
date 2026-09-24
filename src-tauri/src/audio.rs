@@ -151,18 +151,7 @@ pub fn start_recording(app: AppHandle, correct: bool) -> Result<(), String> {
         return Err("already recording".into());
     }
 
-    // Only probed here to learn the native sample rate; the capture thread
-    // builds its own Device/Stream since cpal's stream types aren't Send on
-    // Linux and must be created and live entirely on one thread.
-    let probe_device = cpal::default_host()
-        .default_input_device()
-        .ok_or("no input device available")?;
-    let sample_rate = probe_device
-        .default_input_config()
-        .map_err(|e| e.to_string())?
-        .sample_rate()
-        .0;
-    drop(probe_device);
+    let sample_rate = native_sample_rate()?;
 
     // Claim a fresh session generation. The correction worker stamps its
     // results with this so any decode still running from a prior session is
@@ -226,6 +215,107 @@ pub fn stop_recording(app: AppHandle) -> Result<(), String> {
         let _ = t.join();
     }
     Ok(())
+}
+
+/// Only probed to learn the native sample rate; the capture thread builds its
+/// own Device/Stream since cpal's stream types aren't Send on Linux and must be
+/// created and live entirely on one thread.
+fn native_sample_rate() -> Result<u32, String> {
+    let device = cpal::default_host()
+        .default_input_device()
+        .ok_or("no input device available")?;
+    Ok(device.default_input_config().map_err(|e| e.to_string())?.sample_rate().0)
+}
+
+/// Settings-page mic test: the same capture → resample → DC-block path as a
+/// recording, but it only reports level + VAD and keeps the last few seconds
+/// for playback. No transcription.
+pub struct MicTestHandle {
+    stop_tx: Sender<()>,
+    capture_thread: std::thread::JoinHandle<()>,
+    processing_thread: std::thread::JoinHandle<Vec<f32>>,
+}
+
+#[derive(Default)]
+pub struct MicTestState(pub Mutex<Option<MicTestHandle>>);
+
+const MIC_TEST_KEEP_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 10;
+
+#[tauri::command]
+pub fn start_mic_test(app: AppHandle) -> Result<(), String> {
+    if app.state::<RecordingState>().0.lock().map_err(|e| e.to_string())?.is_some() {
+        return Err("stop recording before testing the mic".into());
+    }
+    let state = app.state::<MicTestState>();
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        return Err("mic test already running".into());
+    }
+    let sample_rate = native_sample_rate()?;
+    let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let capture_thread = std::thread::spawn(move || {
+        if let Err(e) = run_capture(audio_tx, stop_rx) {
+            eprintln!("mic test capture failed: {e}");
+        }
+    });
+    let app_handle = app.clone();
+    let processing_thread = std::thread::spawn(move || run_mic_test_loop(app_handle, audio_rx, sample_rate));
+    *guard = Some(MicTestHandle { stop_tx, capture_thread, processing_thread });
+    Ok(())
+}
+
+/// Stops the test and returns the kept clip as raw little-endian f32 samples
+/// at 16 kHz (an ArrayBuffer on the JS side).
+#[tauri::command]
+pub fn stop_mic_test(app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    let handle = app.state::<MicTestState>().0.lock().map_err(|e| e.to_string())?.take();
+    let Some(handle) = handle else {
+        return Err("mic test not running".into());
+    };
+    let _ = handle.stop_tx.send(());
+    let _ = handle.capture_thread.join();
+    let clip = handle.processing_thread.join().unwrap_or_default();
+    Ok(tauri::ipc::Response::new(clip.iter().flat_map(|s| s.to_le_bytes()).collect::<Vec<u8>>()))
+}
+
+fn run_mic_test_loop(app: AppHandle, audio_rx: Receiver<Vec<f32>>, native_sample_rate: u32) -> Vec<f32> {
+    let mut resampler = Resampler::new(native_sample_rate, TARGET_SAMPLE_RATE);
+    let mut dc_blocker = DcBlocker::new();
+    let mut pending: Vec<f32> = Vec::new();
+    let mut clip: VecDeque<f32> = VecDeque::with_capacity(MIC_TEST_KEEP_SAMPLES);
+    let (mut level_peak, mut prob_peak, mut frames) = (0.0f32, 0.0f32, 0u32);
+    if let Ok(mut vad) = app.state::<VadModel>().0.lock() {
+        vad.reset();
+    }
+    while let Ok(chunk) = audio_rx.recv() {
+        let mut resampled = resampler.process(&chunk);
+        dc_blocker.process(&mut resampled);
+        pending.extend(resampled);
+        while pending.len() >= FRAME_SAMPLES {
+            let frame: Vec<f32> = pending.drain(0..FRAME_SAMPLES).collect();
+            let energy: f32 = frame.iter().map(|s| s * s).sum();
+            level_peak = level_peak.max((energy / frame.len() as f32).sqrt());
+            let prob = match app.state::<VadModel>().0.lock() {
+                Ok(mut vad) => vad.process(&frame).unwrap_or(0.0),
+                Err(_) => 0.0,
+            };
+            prob_peak = prob_peak.max(prob);
+            frames += 1;
+            // Same cadence and payload as a recording's level events, so the
+            // frontend meter code is shared.
+            if frames >= 2 {
+                let _ = app.emit("audio_level", level_peak);
+                let _ = app.emit("mic_test_speech", prob_peak >= SPEECH_THRESHOLD);
+                (level_peak, prob_peak, frames) = (0.0, 0.0, 0);
+            }
+            clip.extend(frame);
+            if clip.len() > MIC_TEST_KEEP_SAMPLES {
+                clip.drain(0..clip.len() - MIC_TEST_KEEP_SAMPLES);
+            }
+        }
+    }
+    clip.into()
 }
 
 fn run_capture(audio_tx: Sender<Vec<f32>>, stop_rx: Receiver<()>) -> Result<(), String> {

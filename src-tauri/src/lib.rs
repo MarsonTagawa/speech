@@ -105,6 +105,7 @@ pub fn run() {
             app.manage(VadModel(Mutex::new(vad)));
 
             app.manage(RecordingState::default());
+            app.manage(audio::MicTestState::default());
             app.manage(audio::SessionGen::default());
 
             Ok(())
@@ -114,6 +115,8 @@ pub fn run() {
             whisper::transcribe,
             audio::start_recording,
             audio::stop_recording,
+            audio::start_mic_test,
+            audio::stop_mic_test,
             history::save_session,
             history::list_sessions,
             history::clear_sessions

@@ -469,8 +469,8 @@ function sparkSvg(series: SecondPace[], preset: Preset): string {
     .join(" ");
   return (
     `<rect x="0" y="${y(preset.wpmHigh).toFixed(1)}" width="${W}" height="${(y(preset.wpmLow) - y(preset.wpmHigh)).toFixed(1)}" fill="rgba(48,209,88,0.12)" />` +
-    `<polyline points="${pts}" fill="none" stroke="#0a84ff" stroke-width="1.5" vector-effect="non-scaling-stroke" />` +
-    `<circle cx="${x(last).toFixed(1)}" cy="${y(series[last].wpm).toFixed(1)}" r="2.5" fill="#0a84ff" />` +
+    `<polyline points="${pts}" fill="none" style="stroke:var(--blue)" stroke-width="1.5" vector-effect="non-scaling-stroke" />` +
+    `<circle cx="${x(last).toFixed(1)}" cy="${y(series[last].wpm).toFixed(1)}" r="2.5" style="fill:var(--blue)" />` +
     (crosses.trim() ? `<path d="${crosses}" stroke="#ffd60a" stroke-width="1.5" stroke-linecap="round" fill="none" vector-effect="non-scaling-stroke" />` : "")
   );
 }
@@ -1168,6 +1168,60 @@ function setLevelMeter(level: number) {
   const peak = $("lvl-peak");
   if (live) live.style.height = `${level * 100}%`;
   if (peak) peak.style.height = `${peakLevel * 100}%`;
+  const micLive = $("mic-live");
+  const micPeak = $("mic-peak");
+  if (micLive) micLive.style.width = `${level * 100}%`;
+  if (micPeak) micPeak.style.width = `${peakLevel * 100}%`;
+}
+
+// Settings mic test: live meter + speech light while on, then plays back the
+// last ~10 s the backend kept (16 kHz mono f32 — exactly what the models hear).
+const MIC_HINT = "Talk for a few seconds, then stop to hear it back";
+let micTesting = false;
+let micAudio: AudioContext | null = null;
+async function startMicTest() {
+  const btn = $<HTMLButtonElement>("mic-test-btn");
+  try {
+    await invoke("start_mic_test");
+  } catch (e) {
+    setText("mic-status", String(e));
+    return;
+  }
+  micTesting = true;
+  if (btn) btn.textContent = "Stop";
+  setText("mic-status", "Listening — speak normally");
+}
+async function stopMicTest(playBack: boolean) {
+  if (!micTesting) return;
+  micTesting = false;
+  const btn = $<HTMLButtonElement>("mic-test-btn");
+  if (btn) btn.textContent = "Test";
+  let buf: ArrayBuffer;
+  try {
+    buf = await invoke<ArrayBuffer>("stop_mic_test");
+  } catch (e) {
+    setText("mic-status", String(e));
+    return;
+  } finally {
+    peakLevel = 0;
+    setLevelMeter(0);
+    ribbon?.setLevel(0);
+    $("mic-speech")?.classList.remove("on");
+  }
+  const samples = new Float32Array(buf);
+  if (!playBack || !samples.length) {
+    setText("mic-status", MIC_HINT);
+    return;
+  }
+  micAudio ??= new AudioContext();
+  const clip = micAudio.createBuffer(1, samples.length, 16000);
+  clip.copyToChannel(samples, 0);
+  const src = micAudio.createBufferSource();
+  src.buffer = clip;
+  src.connect(micAudio.destination);
+  src.onended = () => setText("mic-status", MIC_HINT);
+  setText("mic-status", `Playing back ${(samples.length / 16000).toFixed(1)} s…`);
+  src.start();
 }
 
 async function toggleRecording() {
@@ -1190,6 +1244,7 @@ async function toggleRecording() {
       reportVisible = false;
       const statsBtn = $<HTMLButtonElement>("stats-btn");
       if (statsBtn) statsBtn.disabled = true;
+      await stopMicTest(false);
       await invoke("start_recording", { correct: accurateCorrection });
       recording = true;
       sessionStartTs = Date.now();
@@ -1601,7 +1656,7 @@ function keyMoments(preset: Preset): Moment[] {
     out.push({
       ms,
       index: at,
-      color: "#0a84ff",
+      color: "var(--blue)",
       title: `Peak pace, ${peak} wpm`,
       note: peak > preset.wpmHigh ? `${peak - preset.wpmHigh} over target — breathe between phrases` : "Still inside your target range",
     });
@@ -1683,11 +1738,11 @@ function renderReport() {
     `<div class="panel-head"><span class="label">Pace across session</span><div class="legend"><span style="color:#4aa8ff">— wpm</span><span style="color:#30d158">▮ target ${preset.wpmLow}–${preset.wpmHigh}</span><span style="color:#ffd60a">● filler</span><span>| pause</span></div></div>` +
     `<div class="pace-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot">` +
     `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" data-tip="Words per minute over the full session — green band is the target range">` +
-    `<line x1="0" y1="0.5" x2="${W}" y2="0.5" stroke="rgba(255,255,255,0.06)" />` +
-    `<line x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}" stroke="rgba(255,255,255,0.1)" />` +
+    `<line x1="0" y1="0.5" x2="${W}" y2="0.5" stroke="currentColor" stroke-opacity="0.06" />` +
+    `<line x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}" stroke="currentColor" stroke-opacity="0.1" />` +
     `<rect x="0" y="${y(preset.wpmHigh).toFixed(1)}" width="${W}" height="${(y(preset.wpmLow) - y(preset.wpmHigh)).toFixed(1)}" fill="rgba(48,209,88,0.12)" />` +
     `<polygon points="0,${H} ${pts} ${W},${H}" fill="rgba(10,132,255,0.12)" />` +
-    `<polyline points="${pts}" fill="none" stroke="#0a84ff" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
+    `<polyline points="${pts}" fill="none" style="stroke:var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
     `</svg>` +
     `<div class="marks" data-tip="Filler words — ${s.fillers} across the session">${dots}</div>` +
     `<div class="marks" data-tip="Pauses — ${pauses.length} across the session">${ticks}</div>` +
@@ -1753,6 +1808,7 @@ function renderReport() {
 
 function showView(view: "live" | "report" | "profile" | "settings") {
   document.body.dataset.view = view;
+  if (view !== "settings") void stopMicTest(false);
   if (view === "profile") renderProfile();
 }
 
@@ -1774,7 +1830,94 @@ function save(key: string, value: string) {
   }
 }
 
+// Custom dropdown over a native <select>. The select stays in the DOM (hidden)
+// as the source of truth, so .value and "change" listeners keep working; call
+// syncSelect after setting .value from code.
+function enhanceSelect(sel: HTMLSelectElement) {
+  const dd = document.createElement("div");
+  dd.className = "dd";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ctl dd-btn";
+  btn.setAttribute("aria-haspopup", "listbox");
+  btn.setAttribute("aria-expanded", "false");
+  btn.dataset.name = sel.getAttribute("aria-label") ?? sel.closest(".set-row")?.querySelector("span")?.firstChild?.textContent ?? "";
+  const list = document.createElement("div");
+  list.className = "dd-list";
+  list.setAttribute("role", "listbox");
+  sel.replaceWith(dd);
+  sel.hidden = true;
+  dd.append(sel, btn, list);
+  syncSelect(sel);
+
+  const opts = () => [...list.querySelectorAll<HTMLElement>("[role=option]")];
+  const open = () => {
+    list.innerHTML = [...sel.options]
+      .map((o, i) => `<div role="option" tabindex="-1" data-i="${i}" aria-selected="${i === sel.selectedIndex}">${escapeHtml(o.text)}</div>`)
+      .join("");
+    setDropdownOpen(dd, true);
+    opts()[Math.max(0, sel.selectedIndex)]?.focus();
+  };
+  const pick = (i: number) => {
+    if (i !== sel.selectedIndex) {
+      sel.selectedIndex = i;
+      syncSelect(sel);
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    setDropdownOpen(dd, false);
+    if (btn.isConnected) btn.focus();
+  };
+
+  btn.addEventListener("click", () => (dd.classList.contains("open") ? setDropdownOpen(dd, false) : open()));
+  list.addEventListener("click", (e) => {
+    const o = (e.target as Element).closest<HTMLElement>("[role=option]");
+    if (o) pick(Number(o.dataset.i));
+  });
+  dd.addEventListener("keydown", (e) => {
+    const all = opts();
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    if (at < 0) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        open();
+      }
+      return;
+    }
+    const move = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 }[e.key];
+    if (move !== undefined) all[Math.min(all.length - 1, Math.max(0, move))].focus();
+    else if (e.key === "Enter" || e.key === " ") pick(at);
+    else if (e.key === "Escape") {
+      setDropdownOpen(dd, false);
+      btn.focus();
+    } else return;
+    e.preventDefault();
+  });
+  // Tabbing out closes; pointer clicks outside are handled document-wide below.
+  dd.addEventListener("focusout", (e) => {
+    if (e.relatedTarget && !dd.contains(e.relatedTarget as Node)) setDropdownOpen(dd, false);
+  });
+}
+
+function syncSelect(sel: HTMLSelectElement) {
+  const btn = sel.parentElement?.querySelector<HTMLElement>(".dd-btn");
+  if (!btn) return;
+  btn.textContent = sel.selectedOptions[0]?.text ?? "";
+  btn.setAttribute("aria-label", `${btn.dataset.name}: ${btn.textContent}`);
+}
+
+function setDropdownOpen(dd: Element, on: boolean) {
+  dd.classList.toggle("open", on);
+  dd.querySelector(".dd-btn")?.setAttribute("aria-expanded", String(on));
+}
+
+document.addEventListener("pointerdown", (e) => {
+  document.querySelectorAll(".dd.open").forEach((dd) => {
+    if (!dd.contains(e.target as Node)) setDropdownOpen(dd, false);
+  });
+});
+
 const NAME_KEY = "speech.name";
+const THEME_KEY = "speech.theme";
 const DRILL_KEY = "speech.drillSecs";
 const GAIN_KEY = "speech.levelGain";
 const PAUSE_KEY = "speech.pauseMs";
@@ -1853,9 +1996,9 @@ function trendHtml(): string {
   const plot = pts.length
     ? `<div class="pace-grid trend-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot">` +
       `<div class="trend-plot${pts.length > 60 ? " dense" : ""}"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">` +
-      `<line x1="0" y1="50" x2="100" y2="50" stroke="rgba(255,255,255,0.06)" vector-effect="non-scaling-stroke" />` +
-      `<line x1="0" y1="100" x2="100" y2="100" stroke="rgba(255,255,255,0.1)" vector-effect="non-scaling-stroke" />` +
-      `<polyline points="${line}" fill="none" stroke="#0a84ff" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
+      `<line x1="0" y1="50" x2="100" y2="50" stroke="currentColor" stroke-opacity="0.06" vector-effect="non-scaling-stroke" />` +
+      `<line x1="0" y1="100" x2="100" y2="100" stroke="currentColor" stroke-opacity="0.1" vector-effect="non-scaling-stroke" />` +
+      `<polyline points="${line}" fill="none" style="stroke:var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
       `</svg>${dots}</div><div class="x-labels">${xLabels}</div></div></div>`
     : `<div class="empty">No sessions in this range.</div>`;
   return (
@@ -1908,7 +2051,7 @@ function renderProfile() {
   const n = history.length;
   setText("prof-since", n ? `Practising since ${fmtDate(history[0].ts)} · ${n} session${n === 1 ? "" : "s"}` : "");
   if (!n) {
-    body.innerHTML = `<div class="panel"><span class="sub">No sessions yet — press ${keyName(recordKey)} to record your first.</span></div>`;
+    body.innerHTML = `<div class="panel"><span class="sub">No sessions yet — press ${keyName(recordKey)} on the Live tab to record your first.</span></div>`;
     return;
   }
   const scores = history.map((h) => h.scores.overall);
@@ -1949,6 +2092,8 @@ function renderProfile() {
     trendHtml() +
     `<div class="panel"><span class="label">Recent sessions</span><table class="prof-table">` +
     `<tr><th>Date</th><th>Context</th><th>Speaking</th><th>WPM</th><th>Fillers/min</th><th>Score</th></tr>${rows}</table></div>`;
+  const metricSel = $<HTMLSelectElement>("prof-metric");
+  if (metricSel) enhanceSelect(metricSel);
 }
 
 // Report → transcript: switch back to the live view and flash the line.
@@ -2049,7 +2194,9 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (e.code !== recordKey || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
-    if ((e.target as Element).closest("input, textarea, select, [contenteditable]")) return;
+    // Starts only from the live tab; a running recording can be stopped from anywhere.
+    if (!recording && document.body.dataset.view !== "live") return;
+    if ((e.target as Element).closest("input, textarea, select, .dd, [contenteditable]")) return;
     e.preventDefault();
     (document.activeElement as HTMLElement | null)?.blur();
     if (!recordBtn?.disabled) void toggleRecording();
@@ -2077,11 +2224,30 @@ window.addEventListener("DOMContentLoaded", () => {
     nameInput.addEventListener("input", () => save(NAME_KEY, nameInput.value));
   }
 
+  document.querySelectorAll<HTMLSelectElement>(".view-settings select").forEach(enhanceSelect);
+
+  const themeSel = $<HTMLSelectElement>("set-theme");
+  const applyTheme = (t: string) => {
+    document.documentElement.dataset.theme = t;
+    if (themeSel) {
+      themeSel.value = t;
+      syncSelect(themeSel);
+    }
+  };
+  applyTheme(load(THEME_KEY) ?? "graphite");
+  themeSel?.addEventListener("change", () => {
+    save(THEME_KEY, themeSel.value);
+    applyTheme(themeSel.value);
+  });
+
   const drillSel = $<HTMLSelectElement>("set-drill");
   const drillSecs = Number(load(DRILL_KEY));
   if (drillSecs > 0) drillMs = drillSecs * 1000;
   const syncDrill = () => {
-    if (drillSel) drillSel.value = String(drillMs / 1000);
+    if (drillSel) {
+      drillSel.value = String(drillMs / 1000);
+      syncSelect(drillSel);
+    }
     const btn = $("drill-btn");
     if (btn) btn.dataset.tip = `${drillMs / 1000}-second drill — a random prompt and a timed run`;
     tickClock();
@@ -2104,11 +2270,19 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  const micBtn = $<HTMLButtonElement>("mic-test-btn");
+  micBtn?.addEventListener("click", async () => {
+    micBtn.disabled = true;
+    await (micTesting ? stopMicTest(true) : startMicTest());
+    micBtn.disabled = false;
+  });
+
   const pauseSel = $<HTMLSelectElement>("set-pause");
   const savedPause = Number(load(PAUSE_KEY));
   if (savedPause > 0) INTER_PAUSE_MS = savedPause;
   if (pauseSel) {
     pauseSel.value = String(INTER_PAUSE_MS);
+    syncSelect(pauseSel);
     pauseSel.addEventListener("change", () => {
       INTER_PAUSE_MS = Number(pauseSel.value);
       save(PAUSE_KEY, pauseSel.value);
@@ -2194,7 +2368,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const presetSel = $<HTMLSelectElement>("set-preset");
   const syncPreset = () => {
     presetButtons.forEach((b) => b.setAttribute("aria-checked", String(b.dataset.preset === currentPreset)));
-    if (presetSel) presetSel.value = currentPreset;
+    if (presetSel) {
+      presetSel.value = currentPreset;
+      syncSelect(presetSel);
+    }
   };
   const setPreset = (p: string | undefined) => {
     if (!p || !PRESETS[p]) return;
@@ -2275,6 +2452,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // is small (~0.02–0.1) so a plain multiply barely moves the quiet end; sqrt is
   // a perceptual curve that lifts soft speech into a visible range. Bump the
   // gain if it still reacts weakly.
+  listen<boolean>("mic_test_speech", (event) => $("mic-speech")?.classList.toggle("on", event.payload));
   listen<number>("audio_level", (event) => {
     const level = Math.min(1, Math.sqrt(event.payload * levelGain));
     ribbon?.setLevel(level);

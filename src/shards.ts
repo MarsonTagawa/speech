@@ -110,10 +110,11 @@ export class Shards {
     }
     ctx.font = GLYPH_FONT;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const tail = getComputedStyle(document.documentElement).getPropertyValue("--blue-2").trim() || "#4aa8ff";
     for (let k = 0; k < gl.length; k++) {
       const h = gl[k]; if (h < .03) { gl[k] = 0; continue; }
       if (now >= gt[k]) { gc[k] = (Math.random() * n) | 0; gt[k] = now + SWAP_MIN + Math.random() * (SWAP_MAX - SWAP_MIN); }
-      ctx.fillStyle = h > .6 ? "#ffffff" : "#4aa8ff"; // fresh front white, tail cools to blue
+      ctx.fillStyle = h > .6 ? "#ffffff" : tail; // fresh front white, tail cools to the accent
       ctx.globalAlpha = Math.min(1, h * 1.2);
       ctx.fillText(GLYPHS[gc[k]], (k % cols) * cs + cs / 2, ((k / cols) | 0) * cs + cs / 2);
       gl[k] = h * SCR_DECAY;
