@@ -115,7 +115,8 @@ pub fn run() {
             audio::start_recording,
             audio::stop_recording,
             history::save_session,
-            history::list_sessions
+            history::list_sessions,
+            history::clear_sessions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

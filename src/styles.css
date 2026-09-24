@@ -89,32 +89,6 @@ button {
   user-select: none;
 }
 
-.lights {
-  display: flex;
-  gap: 9px;
-  align-self: flex-start;
-  padding-left: 14px;
-}
-
-.light {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
-.light-close { background: #ff736a; }
-.light-min { background: #febc2e; }
-.light-max { background: #19c332; }
-.light:hover { filter: brightness(0.85); }
-
-.rail-rule {
-  width: 60px;
-  height: 1px;
-  background: var(--edge-2);
-}
-
 .rail-live,
 .rail-report {
   display: flex;
@@ -1263,6 +1237,14 @@ kbd {
   background: var(--btn);
   border: 0.5px solid var(--edge-2);
   color: var(--ink);
+}
+body.no-hover-fx #shards {
+  display: none;
+}
+.set-row input[type="checkbox"] {
+  accent-color: var(--blue);
+  width: 16px;
+  height: 16px;
 }
 .set-row input[type="range"] {
   accent-color: var(--blue);

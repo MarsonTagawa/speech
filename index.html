@@ -10,16 +10,9 @@
 
   <body data-view="live">
     <div class="app">
-      <!-- Left rail: window controls, transport, level meter. The titlebar is
-           gone (decorations off), so the rail doubles as the drag region. -->
+      <!-- Left rail: transport, level meter. The titlebar is gone
+           (decorations off), so the rail doubles as the drag region. -->
       <aside class="rail" data-tauri-drag-region>
-        <div class="lights">
-          <button id="win-close" class="light light-close" aria-label="Close" data-tip="Close"></button>
-          <button id="win-min" class="light light-min" aria-label="Minimize" data-tip="Minimize"></button>
-          <button id="win-max" class="light light-max" aria-label="Maximize" data-tip="Maximize"></button>
-        </div>
-        <div class="rail-rule"></div>
-
         <div class="rail-live">
           <div class="rec-group">
             <button id="record-btn" class="rec-btn" aria-label="Start recording" data-tip="Start recording (Space)"></button>
@@ -190,6 +183,40 @@
               <option value="120">2 min</option>
             </select>
           </label>
+          <label class="set-row">
+            <span>Pause threshold<span class="sub">Silence between sentences that counts as a pause</span></span>
+            <select id="set-pause">
+              <option value="400">0.4 s</option>
+              <option value="600">0.6 s</option>
+              <option value="800">0.8 s</option>
+              <option value="1000">1.0 s</option>
+            </select>
+          </label>
+          <label class="set-row">
+            <span>Filler alert<span class="sub">Flash the transcript on a filler in filler-free mode</span></span>
+            <input id="set-flash" type="checkbox" />
+          </label>
+        </div>
+        <div class="panel">
+          <span class="label">Transcription</span>
+          <label class="set-row">
+            <span>Accurate correction<span class="sub">Re-transcribe with the larger model after Stop. Off = instant results, rougher text</span></span>
+            <input id="set-correct" type="checkbox" />
+          </label>
+        </div>
+        <div class="panel">
+          <span class="label">Data</span>
+          <div class="set-row">
+            <span>Session history<span class="sub">Permanently delete all saved sessions</span></span>
+            <button id="set-clear" class="ctl" type="button">Clear history</button>
+          </div>
+        </div>
+        <div class="panel">
+          <span class="label">Display</span>
+          <label class="set-row">
+            <span>Hover effect<span class="sub">Animated glyphs that follow the cursor</span></span>
+            <input id="set-hover" type="checkbox" />
+          </label>
         </div>
         <div class="panel">
           <span class="label">Input</span>
@@ -200,7 +227,10 @@
         </div>
         <div class="panel">
           <span class="label">Keyboard</span>
-          <div class="set-row"><span>Start / stop recording</span><kbd>Space</kbd></div>
+          <div class="set-row">
+            <span>Start / stop recording<span class="sub">Click, then press a key · Esc cancels</span></span>
+            <button id="set-record-key" class="ctl" type="button">Space</button>
+          </div>
         </div>
       </main>
     </div>

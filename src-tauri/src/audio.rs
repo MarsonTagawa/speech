@@ -142,8 +142,9 @@ pub struct RecordingHandle {
 #[derive(Default)]
 pub struct RecordingState(pub Mutex<Option<RecordingHandle>>);
 
+/// `correct: false` skips the accurate-model pass; the fast drafts stand as final.
 #[tauri::command]
-pub fn start_recording(app: AppHandle) -> Result<(), String> {
+pub fn start_recording(app: AppHandle, correct: bool) -> Result<(), String> {
     let recording_state = app.state::<RecordingState>();
     let mut guard = recording_state.0.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
@@ -182,7 +183,7 @@ pub fn start_recording(app: AppHandle) -> Result<(), String> {
     let (correction_tx, correction_rx) = std::sync::mpsc::channel::<CorrectionJob>();
     {
         let worker_app = app.clone();
-        std::thread::spawn(move || run_correction_worker(worker_app, correction_rx, generation));
+        std::thread::spawn(move || run_correction_worker(worker_app, correction_rx, generation, correct));
     }
 
     let capture_thread = std::thread::spawn(move || {
@@ -636,11 +637,11 @@ fn run_processing_loop(
 /// `whisper::GPU_LOCK`) and a decode can't be interrupted partway through, so a
 /// correction started mid-session makes live text wait for it (~1.6s for an 11s
 /// clip).
-fn run_correction_worker(app: AppHandle, rx: Receiver<CorrectionJob>, generation: u64) {
+fn run_correction_worker(app: AppHandle, rx: Receiver<CorrectionJob>, generation: u64, correct: bool) {
     let gen_matches = |app: &AppHandle| app.state::<SessionGen>().0.load(Ordering::Acquire) == generation;
     // Blocks until the processing loop drops its sender (capture stopped).
     let jobs: Vec<CorrectionJob> = rx.iter().collect();
-    for job in jobs {
+    for job in jobs.into_iter().filter(|_| correct) {
         // A newer session started: its indices restart from 1 and would collide,
         // so skip the decode entirely.
         // ponytail: a medium decode already in flight still holds the GPU, so

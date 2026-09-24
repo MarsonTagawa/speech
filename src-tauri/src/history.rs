@@ -42,6 +42,15 @@ pub fn save_session(app: AppHandle, session: String) -> Result<String, String> {
     Ok(text)
 }
 
+/// Deletes all saved sessions.
+#[tauri::command]
+pub fn clear_sessions(app: AppHandle) -> Result<(), String> {
+    match fs::remove_file(sessions_path(&app)?) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
 /// Returns all saved sessions as a JSON array string (`[]` when none).
 #[tauri::command]
 pub fn list_sessions(app: AppHandle) -> Result<String, String> {

@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/400-italic.css";
 import "@fontsource/ibm-plex-mono/500.css";
@@ -54,7 +53,7 @@ interface UtteranceAnalysis {
 // Gaps between separate utterances this long or longer are counted as pauses
 // too (matches the backend's MIN_SILENCE_MS that ends an utterance), so the
 // pause metric covers both within- and between-utterance hesitation.
-const INTER_PAUSE_MS = 600;
+let INTER_PAUSE_MS = 600;
 
 let recording = false;
 let recordBtn: HTMLButtonElement | null;
@@ -1113,10 +1112,20 @@ function setStatus(text: string) {
   pill?.classList.toggle("error", text === "Error");
 }
 
+// Start/stop hotkey, as a layout-independent KeyboardEvent.code.
+const RECORD_KEY = "speech.recordKey";
+let recordKey = "Space";
+
+// "KeyR" → "R", "Digit5" → "5", "ArrowUp" → "Up"; others ("Space", "F2") as-is.
+function keyName(code: string): string {
+  return code.replace(/^(Key|Digit|Arrow)/, "");
+}
+
 function setRecordingUi(on: boolean) {
   if (!recordBtn) return;
   recordBtn.classList.toggle("recording", on);
-  const label = on ? "Stop recording — ends the session and finalizes the transcript (Space)" : "Start recording (Space)";
+  const k = keyName(recordKey);
+  const label = on ? `Stop recording — ends the session and finalizes the transcript (${k})` : `Start recording (${k})`;
   recordBtn.setAttribute("aria-label", on ? "Stop recording" : "Start recording");
   recordBtn.dataset.tip = label;
   $("rec-label")?.classList.toggle("on", on);
@@ -1181,7 +1190,7 @@ async function toggleRecording() {
       reportVisible = false;
       const statsBtn = $<HTMLButtonElement>("stats-btn");
       if (statsBtn) statsBtn.disabled = true;
-      await invoke("start_recording");
+      await invoke("start_recording", { correct: accurateCorrection });
       recording = true;
       sessionStartTs = Date.now();
       renderSessionLabel();
@@ -1768,6 +1777,11 @@ function save(key: string, value: string) {
 const NAME_KEY = "speech.name";
 const DRILL_KEY = "speech.drillSecs";
 const GAIN_KEY = "speech.levelGain";
+const PAUSE_KEY = "speech.pauseMs";
+const FLASH_KEY = "speech.fillerFlash";
+const HOVER_KEY = "speech.hoverFx";
+const CORRECT_KEY = "speech.accurateCorrection";
+let accurateCorrection = true;
 
 // Consecutive calendar days with at least one session, ending today (or
 // yesterday, so the streak survives until you've had a chance to practise today).
@@ -1894,7 +1908,7 @@ function renderProfile() {
   const n = history.length;
   setText("prof-since", n ? `Practising since ${fmtDate(history[0].ts)} · ${n} session${n === 1 ? "" : "s"}` : "");
   if (!n) {
-    body.innerHTML = `<div class="panel"><span class="sub">No sessions yet — press Space to record your first.</span></div>`;
+    body.innerHTML = `<div class="panel"><span class="sub">No sessions yet — press ${keyName(recordKey)} to record your first.</span></div>`;
     return;
   }
   const scores = history.map((h) => h.scores.overall);
@@ -1967,8 +1981,10 @@ const PROMPTS = [
 ];
 
 let fillerFreeMode = false;
+let fillerFlash = true;
 
 function flashFillerAlert() {
+  if (!fillerFlash) return;
   document.body.classList.add("filler-flash");
   setTimeout(() => document.body.classList.remove("filler-flash"), 350);
 }
@@ -1992,12 +2008,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
   initTooltips();
 
-  // Titlebar is gone (decorations off); the rail's traffic lights drive the window.
-  const win = getCurrentWindow();
-  $("win-close")?.addEventListener("click", () => void win.close());
-  $("win-min")?.addEventListener("click", () => void win.minimize());
-  $("win-max")?.addEventListener("click", () => void win.toggleMaximize());
-
   recordBtn?.addEventListener("click", toggleRecording);
   $("reset-btn")?.addEventListener("click", resetSession);
   $("script-btn")?.addEventListener("click", () => toggleScript());
@@ -2006,10 +2016,39 @@ window.addEventListener("DOMContentLoaded", () => {
   $("profile-btn")?.addEventListener("click", () => showView("profile"));
   $("settings-btn")?.addEventListener("click", () => showView("settings"));
 
-  // Space starts/stops recording from anywhere except text fields. Blur first so
-  // a focused button doesn't also get "clicked" by the same keypress on keyup.
+  // Hotkey rebinding: the button arms capture, the next non-modifier key
+  // becomes the binding (Escape cancels).
+  const bindBtn = $<HTMLButtonElement>("set-record-key");
+  let capturing = false;
+  const syncBind = () => {
+    if (bindBtn) bindBtn.textContent = capturing ? "Press a key…" : keyName(recordKey);
+    setRecordingUi(recording);
+  };
+  recordKey = load(RECORD_KEY) || recordKey;
+  syncBind();
+  bindBtn?.addEventListener("click", () => {
+    capturing = true;
+    syncBind();
+  });
+  bindBtn?.addEventListener("blur", () => {
+    capturing = false;
+    syncBind();
+  });
+
+  // The hotkey starts/stops recording from anywhere except text fields. Blur first
+  // so a focused button doesn't also get "clicked" by the same keypress on keyup.
   document.addEventListener("keydown", (e) => {
-    if (e.code !== "Space" || e.repeat) return;
+    if (capturing) {
+      if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
+      e.preventDefault();
+      if (e.code && e.code !== "Escape") {
+        recordKey = e.code;
+        save(RECORD_KEY, recordKey);
+      }
+      bindBtn?.blur(); // ends capture via the blur handler
+      return;
+    }
+    if (e.code !== recordKey || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     if ((e.target as Element).closest("input, textarea, select, [contenteditable]")) return;
     e.preventDefault();
     (document.activeElement as HTMLElement | null)?.blur();
@@ -2064,6 +2103,60 @@ window.addEventListener("DOMContentLoaded", () => {
       save(GAIN_KEY, gainInput.value);
     });
   }
+
+  const pauseSel = $<HTMLSelectElement>("set-pause");
+  const savedPause = Number(load(PAUSE_KEY));
+  if (savedPause > 0) INTER_PAUSE_MS = savedPause;
+  if (pauseSel) {
+    pauseSel.value = String(INTER_PAUSE_MS);
+    pauseSel.addEventListener("change", () => {
+      INTER_PAUSE_MS = Number(pauseSel.value);
+      save(PAUSE_KEY, pauseSel.value);
+      renderStats();
+    });
+  }
+
+  // Boolean toggles: stored as "0"/"1", default on.
+  const bindToggle = (id: string, key: string, apply: (on: boolean) => void) => {
+    const box = $<HTMLInputElement>(id);
+    const on = load(key) !== "0";
+    apply(on);
+    if (!box) return;
+    box.checked = on;
+    box.addEventListener("change", () => {
+      save(key, box.checked ? "1" : "0");
+      apply(box.checked);
+    });
+  };
+  bindToggle("set-flash", FLASH_KEY, (on) => (fillerFlash = on));
+  bindToggle("set-correct", CORRECT_KEY, (on) => (accurateCorrection = on));
+  bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
+
+  // Two-click confirm: first click arms the button for 3 s.
+  const clearBtn = $<HTMLButtonElement>("set-clear");
+  let clearArmed = 0;
+  clearBtn?.addEventListener("click", async () => {
+    if (!clearArmed) {
+      clearBtn.textContent = "Click again to delete";
+      clearArmed = window.setTimeout(() => {
+        clearArmed = 0;
+        clearBtn.textContent = "Clear history";
+      }, 3000);
+      return;
+    }
+    clearTimeout(clearArmed);
+    clearArmed = 0;
+    try {
+      await invoke("clear_sessions");
+      history = [];
+      renderSessionLabel();
+      clearBtn.textContent = "Cleared";
+    } catch (e) {
+      clearBtn.textContent = "Clear history";
+      appendError(String(e));
+    }
+  });
+
   $("report-body")?.addEventListener("click", (e) => {
     const m = (e.target as Element).closest<HTMLElement>(".moment");
     if (m) jumpToLine(Number(m.dataset.index));
