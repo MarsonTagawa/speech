@@ -105,6 +105,17 @@ const timedIndices = new Set<number>();
 const analysisByIndex = new Map<number, UtteranceAnalysis>();
 const timingByIndex = new Map<number, { start: number; end: number }>();
 
+// One session's per-line data: the live session's maps above, or a saved
+// session's (History). The report helpers take one, defaulting to live.
+interface Lines {
+  timing: Map<number, { start: number; end: number }>;
+  words: Map<number, number>;
+  fillers: Map<number, number>;
+  fillerWords: Map<number, string[]>;
+  analysis: Map<number, UtteranceAnalysis>;
+}
+const live: Lines = { timing: timingByIndex, words: wordsByIndex, fillers: fillersByIndex, fillerWords: fillerWordsByIndex, analysis: analysisByIndex };
+
 // Bumped on every new recording. Captured when a contextual review is scheduled
 // so a review that resolves after the user has restarted is discarded instead
 // of writing into the new session's transcript or stats.
@@ -115,6 +126,13 @@ let sessionId = 0;
 let lastScriptResult:
   | { total: number; hits: number; misses: number; subs: number; accuracy: number; missed: number[] }
   | null = null;
+// Whether the read-along pane was open for this session. A script stays loaded
+// after the pane is closed, so the pane — not the loaded text — decides whether
+// the report scores against it. Frozen at Stop (jumpToLine closes the pane).
+let scriptUsed = false;
+
+// Set at Stop; the report opens once the correction pass finishes (corrections_done).
+let reportPending = false;
 
 // The report re-renders live as deferred corrections trickle in after stop, so
 // this tracks whether it's on screen (see renderStats).
@@ -424,24 +442,24 @@ function setWidth(id: string, frac: number) {
 }
 
 // Latest end time across committed utterances: the session's length so far.
-function sessionEndMs(): number {
+function sessionEndMs(L = live): number {
   let end = 0;
-  for (const t of timingByIndex.values()) end = Math.max(end, t.end);
+  for (const t of L.timing.values()) end = Math.max(end, t.end);
   return end;
 }
 
 // Session-relative start of every counted pause (the same set countPauses
 // tallies), for the pip bins and the report's pause timeline.
-function pauseTimesMs(): number[] {
+function pauseTimesMs(L = live): number[] {
   const out: number[] = [];
-  for (const [i, a] of analysisByIndex) {
-    const t = timingByIndex.get(i);
+  for (const [i, a] of L.analysis) {
+    const t = L.timing.get(i);
     if (t) for (const p of a.pauses) out.push(t.start + p.start_ms);
   }
-  const idx = [...timingByIndex.keys()].sort((a, b) => a - b);
+  const idx = [...L.timing.keys()].sort((a, b) => a - b);
   for (let k = 1; k < idx.length; k++) {
-    const prev = timingByIndex.get(idx[k - 1])!;
-    if (timingByIndex.get(idx[k])!.start - prev.end >= INTER_PAUSE_MS) out.push(prev.end);
+    const prev = L.timing.get(idx[k - 1])!;
+    if (L.timing.get(idx[k])!.start - prev.end >= INTER_PAUSE_MS) out.push(prev.end);
   }
   return out.sort((a, b) => a - b);
 }
@@ -554,16 +572,16 @@ interface SecondPace {
 // ponytail: 5s trailing window — widen to smooth more, narrow to react faster.
 const PACE_WINDOW_MS = 5000;
 
-function perSecondPace(): SecondPace[] {
-  const idx = [...timingByIndex.keys()].sort((a, b) => a - b);
+function perSecondPace(L = live): SecondPace[] {
+  const idx = [...L.timing.keys()].sort((a, b) => a - b);
   if (idx.length === 0) return [];
   const utts = idx.map((i) => {
-    const t = timingByIndex.get(i)!;
+    const t = L.timing.get(i)!;
     return {
       start: t.start,
       end: t.end,
-      wordsPerMs: (wordsByIndex.get(i) ?? 0) / Math.max(1, t.end - t.start),
-      fillers: fillersByIndex.get(i) ?? 0,
+      wordsPerMs: (L.words.get(i) ?? 0) / Math.max(1, t.end - t.start),
+      fillers: L.fillers.get(i) ?? 0,
       mid: (t.start + t.end) / 2,
     };
   });
@@ -603,6 +621,23 @@ function segmentHtml(startMs: number, textHtml: string): string {
   return `<div class="seg-body"><div class="seg-meta"><span class="seg-ts">${formatTimestamp(startMs)}</span><span class="seg-state"></span><span class="seg-countdown"><span class="bar"><i></i></span><span class="secs"></span></span></div><p class="seg-text">${textHtml}</p></div>`;
 }
 
+// Hover text for a line's state label (a CSS ::before, so it can't carry its own
+// data-tip). Filled in on mouseover from the line's class, so it survives the
+// innerHTML rewrites and applies to the report's transcript copy too.
+const STATE_TIPS: Record<string, string> = {
+  partial: "Live — rough preview from the fast model (tiny.en) while you're still speaking",
+  draft: "Draft — the fast model's text. The accurate model (medium.en) re-checks it after you stop",
+  corrected: "Corrected — re-transcribed by the accurate model (medium.en) after you stopped",
+  final: "Final — the accurate model had nothing to replace it with (it heard only noise, failed, or correction is off), so the fast model's text stands",
+};
+document.addEventListener("mouseover", (e) => {
+  const label = (e.target as Element).closest?.<HTMLElement>(".seg-state");
+  const line = label?.closest(".segment");
+  if (!label || !line) return;
+  const state = Object.keys(STATE_TIPS).find((k) => line.classList.contains(k));
+  if (state) label.dataset.tip = STATE_TIPS[state];
+});
+
 // --- Correction countdown ----------------------------------------------------
 // After Stop, the medium model corrects drafts one at a time, in order
 // (audio.rs). Each waiting draft line gets a bar that fills toward its projected
@@ -613,6 +648,17 @@ let countdownStart = 0;
 let countdownRaf = 0;
 let lastCorrection: { index: number; at: number } | null = null;
 const etaByIndex = new Map<number, number>(); // projected correction time (performance.now)
+let countdownEnd = 0; // projected end of the whole pass, for the overall bar
+let correctShown = 0; // overall bar fill; only moves forward as the ETA is re-learned
+
+// Overall "Correcting…" bar over the transcript, from Stop until corrections_done.
+function showCorrectBar(on: boolean) {
+  correctShown = 0;
+  countdownEnd = 0;
+  $("correct-bar")?.toggleAttribute("hidden", !on);
+  $("correct-bar")?.style.setProperty("--p", "0");
+  setText("correct-label", "Correcting…");
+}
 
 function utteranceMs(index: number): number {
   const t = timingByIndex.get(index);
@@ -638,6 +684,7 @@ function onCorrectionStarted(index: number) {
     eta += utteranceMs(i) * correctionRtf;
     etaByIndex.set(i, eta);
   }
+  countdownEnd = eta;
   if (!countdownRaf) countdownRaf = requestAnimationFrame(tickCountdown);
 }
 
@@ -656,10 +703,16 @@ function tickCountdown() {
     const secs = el.querySelector(".seg-countdown .secs");
     if (secs) secs.textContent = `~${Math.max(0, Math.ceil((eta - now) / 1000))}s`;
   }
+  if (countdownEnd) {
+    correctShown = Math.max(correctShown, Math.min(1, (now - countdownStart) / Math.max(1, countdownEnd - countdownStart)));
+    $("correct-bar")?.style.setProperty("--p", String(correctShown));
+    setText("correct-label", `Correcting… ~${Math.max(0, Math.ceil((countdownEnd - now) / 1000))}s`);
+  }
   countdownRaf = etaByIndex.size ? requestAnimationFrame(tickCountdown) : 0;
 }
 
 function resetCountdown() {
+  showCorrectBar(false);
   etaByIndex.clear();
   lastCorrection = null;
   for (const el of segmentEls.values()) el.classList.remove("counting");
@@ -1130,6 +1183,7 @@ function upsertSegment(segment: TranscriptSegment) {
   if (!entry) {
     entry = document.createElement("div");
     entry.className = "segment";
+    entry.dataset.index = String(segment.index);
     transcriptEl.appendChild(entry);
     segmentEls.set(segment.index, entry);
   }
@@ -1138,7 +1192,7 @@ function upsertSegment(segment: TranscriptSegment) {
   //   draft     — fast model's committed text, correction pending
   //   corrected — replaced by the accurate (medium) model; flashes once on change
   // A refined segment is also is_final, so check it first.
-  entry.classList.remove("partial", "draft", "corrected");
+  entry.classList.remove("partial", "draft", "corrected", "final");
   if (!segment.is_final) {
     entry.classList.add("partial");
   } else if (segment.refined) {
@@ -1348,12 +1402,15 @@ async function toggleRecording() {
       renderScriptMatch(); // reset read-along highlights to the start
       resetStats();
       reportVisible = false;
+      reportPending = false;
+      scriptUsed = !$("script-pane")?.hidden;
       const statsBtn = $<HTMLButtonElement>("stats-btn");
       if (statsBtn) statsBtn.disabled = true;
       await stopMicTest(false);
       await invoke("start_recording", { correct: accurateCorrection });
       recording = true;
       sessionStartTs = Date.now();
+      currentSaved = false;
       renderSessionLabel();
       startClock();
       showView("live");
@@ -1370,13 +1427,10 @@ async function toggleRecording() {
       peakLevel = 0;
       setLevelMeter(0);
       setStatus("Correcting…"); // back to Idle on corrections_done
-      // Build the report and switch to it. It keeps refreshing via renderStats
-      // as any trailing corrections land.
-      renderReport();
-      if (reportVisible) {
-        showView("report");
-        savePending = true;
-      }
+      // The report opens on corrections_done, so it shows corrected text.
+      reportPending = true;
+      savePending = totalWords > 0;
+      showCorrectBar(accurateCorrection && totalWords > 0);
     }
   } catch (e) {
     setStatus("Error");
@@ -1391,6 +1445,7 @@ async function toggleRecording() {
 function resetSession() {
   if (recording) return;
   flushSave();
+  reportPending = false;
   resetCountdown();
   segmentEls.clear();
   previewChunks.clear();
@@ -1415,6 +1470,7 @@ function toggleScript(open?: boolean) {
   const show = open ?? pane.hidden;
   pane.hidden = !show;
   $("script-btn")?.setAttribute("aria-pressed", String(show));
+  if (recording) scriptUsed = show;
 }
 
 // Styled hover tips for anything with data-tip (the design's tooltip).
@@ -1489,6 +1545,8 @@ interface SessionSummary {
   script: { total: number; hits: number; misses: number; subs: number; accuracy: number; missed?: number[] } | null;
   preset: string;
   speech?: string; // saved speech id, when read against one
+  saved?: boolean; // starred in Stats/History
+  pace?: PaceData; // absent on sessions saved before it was kept
   scores: Scores;
 }
 
@@ -1570,7 +1628,7 @@ function computeSummary(): SessionSummary {
   let peak = { minute: 0, wpm: 0 };
   for (const p of perMinuteWpm()) if (p.wpm > peak.wpm) peak = p;
 
-  const script = lastScriptResult && scriptTokens.length > 0 ? { ...lastScriptResult } : null;
+  const script = scriptUsed && lastScriptResult && scriptTokens.length > 0 ? { ...lastScriptResult } : null;
   const preset = PRESETS[currentPreset];
 
   const pace = scorePace(wpm, preset.wpmLow, preset.wpmHigh);
@@ -1612,6 +1670,7 @@ function computeSummary(): SessionSummary {
     script,
     preset: currentPreset,
     speech: script && currentSpeech ? currentSpeech : undefined,
+    saved: currentSaved || undefined,
     scores,
   };
 }
@@ -1704,11 +1763,74 @@ function flushSave() {
 
 async function saveSession() {
   try {
-    history = parseHistory(await invoke<string>("save_session", { session: JSON.stringify(computeSummary()) }));
+    const session = JSON.stringify({ ...computeSummary(), pace: paceData() });
+    history = parseHistory(await invoke<string>("save_session", { session, detail: sessionDetail() }));
     if (document.body.dataset.view === "speeches") renderSpeeches();
+    if (document.body.dataset.view === "history") renderHistory();
   } catch (e) {
     appendError(`Couldn't save session: ${e}`);
   }
+}
+
+// The live session's per-line data, so History can redraw its full report.
+// history.rs keeps it only for the newest sessions and starred ones.
+function sessionDetail(): string {
+  return JSON.stringify({
+    timing: [...timingByIndex],
+    words: [...wordsByIndex],
+    fillers: [...fillersByIndex],
+    fillerWords: [...fillerWordsByIndex],
+    // The envelope only draws the waveform, which is already in `lines`.
+    analysis: [...analysisByIndex].map(([i, a]) => [i, { ...a, envelope: [] }]),
+    lines: liveLinesHtml(),
+  });
+}
+
+interface Detail {
+  ts: number;
+  L: Lines;
+  lines: Array<[number, string]>;
+}
+function parseDetail(ts: number, json: string): Detail | null {
+  try {
+    const d = JSON.parse(json);
+    const L: Lines = {
+      timing: new Map(d.timing),
+      words: new Map(d.words),
+      fillers: new Map(d.fillers),
+      fillerWords: new Map(d.fillerWords),
+      analysis: new Map(d.analysis),
+    };
+    return { ts, L, lines: d.lines ?? [] };
+  } catch {
+    return null;
+  }
+}
+
+// Star on the session being recorded/reported, until its record is written
+// (then the record's `saved` is the truth).
+let currentSaved = false;
+function isSaved(ts: number): boolean {
+  const h = history.find((x) => x.ts === ts);
+  return h ? !!h.saved : ts === sessionStartTs && currentSaved;
+}
+
+async function toggleSaved(ts: number) {
+  const saved = !isSaved(ts);
+  if (ts === sessionStartTs) currentSaved = saved; // carried by a save still pending
+  try {
+    if (history.some((h) => h.ts === ts))
+      history = parseHistory(await invoke<string>("set_session_saved", { ts, saved }));
+  } catch (e) {
+    appendError(`Couldn't save session: ${e}`);
+  }
+  if (document.body.dataset.view === "report") renderReport();
+  if (document.body.dataset.view === "history") renderHistory();
+}
+
+function starHtml(ts: number): string {
+  const on = isSaved(ts);
+  return `<button type="button" class="star-btn" data-star="${ts}" aria-pressed="${on}" aria-label="${on ? "Unsave" : "Save"} session" data-tip="${on ? "Saved — click to unsave" : "Save this session"}">${on ? "★" : "☆"}</button>`;
 }
 
 // "+4", "−1.2", "±0" — typographic minus to match the design.
@@ -1733,27 +1855,27 @@ interface Moment {
 
 // Up to three jump-to points: the densest filler line, the fastest stretch,
 // and the longest filler-free run.
-function keyMoments(preset: Preset): Moment[] {
-  const idx = [...timingByIndex.keys()].sort((a, b) => a - b);
+function keyMoments(preset: Preset, L = live): Moment[] {
+  const idx = [...L.timing.keys()].sort((a, b) => a - b);
   if (idx.length === 0) return [];
-  const start = (i: number) => timingByIndex.get(i)!.start;
+  const start = (i: number) => L.timing.get(i)!.start;
   const out: Moment[] = [];
 
   let worst = -1;
   for (const i of idx) {
-    const n = fillersByIndex.get(i) ?? 0;
-    if (n >= 2 && (worst < 0 || n > fillersByIndex.get(worst)!)) worst = i;
+    const n = L.fillers.get(i) ?? 0;
+    if (n >= 2 && (worst < 0 || n > L.fillers.get(worst)!)) worst = i;
   }
   if (worst >= 0)
     out.push({
       ms: start(worst),
       index: worst,
       color: "#ffd60a",
-      title: `${fillersByIndex.get(worst)} fillers in one sentence`,
-      note: (fillerWordsByIndex.get(worst) ?? []).join(" → "),
+      title: `${L.fillers.get(worst)} fillers in one sentence`,
+      note: (L.fillerWords.get(worst) ?? []).join(" → "),
     });
 
-  const series = perSecondPace();
+  const series = perSecondPace(L);
   let ps = 0;
   series.forEach((p, sec) => {
     if (p.wpm > series[ps].wpm) ps = sec;
@@ -1775,15 +1897,15 @@ function keyMoments(preset: Preset): Moment[] {
   let best = { from: -1, ms: 0 };
   let runStart = -1;
   for (let k = 0; k < idx.length; k++) {
-    if ((fillersByIndex.get(idx[k]) ?? 0) > 0) {
+    if ((L.fillers.get(idx[k]) ?? 0) > 0) {
       runStart = -1;
       continue;
     }
     if (runStart < 0) runStart = k;
-    const ms = timingByIndex.get(idx[k])!.end - start(idx[runStart]);
+    const ms = L.timing.get(idx[k])!.end - start(idx[runStart]);
     if (ms > best.ms) best = { from: runStart, ms };
   }
-  if (best.ms >= 5000 && totalFillers > 0)
+  if (best.ms >= 5000 && [...L.fillers.values()].some((n) => n > 0))
     out.push({
       ms: start(idx[best.from]),
       index: idx[best.from],
@@ -1793,6 +1915,49 @@ function keyMoments(preset: Preset): Moment[] {
     });
 
   return out.sort((a, b) => a.ms - b.ms);
+}
+
+const tone = (v: number) => (v > 0 ? "up" : v < 0 ? "down" : "flat");
+
+// Report header: score ring, title + save star, delta vs the previous
+// session, the top tip. Shared by the live report and History's session page.
+function reportHeroHtml(s: SessionSummary, prev: SessionSummary | undefined, num: number, lengthMs: number): string {
+  const c = s.scores;
+  const title = speechTitle(s.speech);
+  const d = prev ? c.overall - prev.scores.overall : null;
+  return (
+    `<div class="rep-hero">` +
+    ringHtml(c.overall, `Delivery score — ${c.overall} of 100, grade ${grade(c.overall)}`) +
+    `<div class="rep-title"><h2>Session ${num} report ${starHtml(s.ts)}</h2><div class="sub">${fmtDate(s.ts)} · ${formatTimestamp(lengthMs)} · ${PRESETS[s.preset]?.name ?? s.preset}${title ? ` · ${escapeHtml(title)}` : ""} · medium.en</div></div>` +
+    (d === null
+      ? ""
+      : `<div class="rep-delta" data-tip="Score change since session ${num - 1}"><div class="num ${tone(d)}">${signed(d)}</div><div class="sub">vs session ${num - 1}</div></div>`) +
+    `<div class="rep-vr"></div>` +
+    `<div class="rep-tip" data-tip="The single change that would lift the score most">${escapeHtml(generateTips(s)[0])}</div>` +
+    `</div>`
+  );
+}
+
+// Headline numbers, each with its change vs the previous session, colored by
+// whether that dimension's sub-score went up or down.
+function reportTilesHtml(s: SessionSummary, prev: SessionSummary | undefined): string {
+  const c = s.scores;
+  const preset = PRESETS[s.preset];
+  const vs = (cur: number, old: number | undefined, digits: number, key: keyof Scores): [string, string] => {
+    if (!prev || typeof old !== "number") return ["first session", "flat"];
+    return [`${signed(cur - old, digits)} vs last`, tone((c[key] ?? 0) - (prev.scores[key] ?? 0))];
+  };
+  const tile = (value: string, unit: string, [delta, cls]: [string, string], tip: string) =>
+    `<div class="tile" data-tip="${escapeHtml(tip)}"><div class="card-top"><span class="big">${value}</span><span class="unit">${unit}</span></div><span class="delta ${cls}">${delta}</span></div>`;
+  return (
+    `<div class="tiles">` +
+    tile(String(s.wpm), "wpm", vs(s.wpm, prev?.wpm, 0, "pace"), `Average pace — target ${preset.wpmLow}–${preset.wpmHigh}`) +
+    tile(s.fillersPerMin.toFixed(1), "fillers/min", vs(s.fillersPerMin, prev?.fillersPerMin, 1, "fillers"), "Fillers per minute — aim under 3") +
+    tile(s.pausesPerMin.toFixed(1), "pauses/min", vs(s.pausesPerMin, prev?.pausesPerMin, 1, "pauses"), "Hesitation pauses per minute") +
+    tile(s.pitchRange.toFixed(1), "semitones", vs(s.pitchRange, prev?.pitchRange, 1, "pitch"), "Pitch range per sentence — under 3 reads as flat") +
+    tile(String(s.words), "words", [`${formatTimestamp(s.durationMs)} speaking`, "flat"], `Words spoken across ${formatTimestamp(s.durationMs)} of speech`) +
+    `</div>`
+  );
 }
 
 function renderReport() {
@@ -1807,79 +1972,87 @@ function renderReport() {
   }
   reportVisible = true;
   if (statsBtn) statsBtn.disabled = false;
+  body.innerHTML = reportBodyHtml(computeSummary(), live, paceData());
+  const rt = $("report-transcript");
+  if (rt) rt.innerHTML = transcriptCopyHtml(liveLinesHtml());
+}
 
-  const s = computeSummary();
-  const c = s.scores;
-  const preset = PRESETS[s.preset];
-  const prior = priorSessions();
-  const prev = prior[prior.length - 1];
-  const num = prior.length + 1;
-  const title = speechTitle(s.speech);
+// Every live transcript line's markup (fillers, waveform), in order.
+function liveLinesHtml(): Array<[number, string]> {
+  return [...segmentEls].sort((a, b) => a[0] - b[0]).map(([i, el]) => [i, el.outerHTML]);
+}
 
-  // Hero: score ring, title, delta vs last session, the top tip.
-  const d = prev ? c.overall - prev.scores.overall : null;
-  const tone = (v: number) => (v > 0 ? "up" : v < 0 ? "down" : "flat");
-  const hero =
-    `<div class="rep-hero">` +
-    ringHtml(c.overall, `Delivery score — ${c.overall} of 100, grade ${grade(c.overall)}`) +
-    `<div class="rep-title"><h2>Session ${num} report</h2><div class="sub">${fmtDate(s.ts)} · ${formatTimestamp(sessionEndMs())} · ${preset.name}${title ? ` · ${escapeHtml(title)}` : ""} · medium.en</div></div>` +
-    (d === null
-      ? ""
-      : `<div class="rep-delta" data-tip="Score change since session ${num - 1}"><div class="num ${tone(d)}">${signed(d)}</div><div class="sub">vs session ${num - 1}</div></div>`) +
-    `<div class="rep-vr"></div>` +
-    `<div class="rep-tip" data-tip="The single change that would lift the score most">${escapeHtml(generateTips(s)[0])}</div>` +
-    `</div>`;
+// Full transcript below the fold: copies of the session's lines.
+function transcriptCopyHtml(lines: Array<[number, string]>): string {
+  return `<span class="label">Transcript</span>` + lines.map(([, html]) => html).join("");
+}
 
-  // Pace across the session, with filler dots and pause ticks on shared time.
-  const series = perSecondPace();
-  const totalSec = Math.max(1, series.length - 1);
-  const [lo, hi] = wpmAxis(Math.max(0, ...series.map((p) => p.wpm)));
+// A session's pace, second by second — all the pace chart draws. Saved with
+// every session, so older sessions (whose per-line data is pruned) keep it.
+interface PaceData {
+  wpm: number[];
+  fillerSecs: number[];
+  pauseMs: number[];
+  lengthMs: number;
+}
+function paceData(L = live): PaceData {
+  const series = perSecondPace(L);
+  return {
+    wpm: series.map((p) => p.wpm),
+    fillerSecs: series.flatMap((p, sec) => (p.fillerHere ? [sec] : [])),
+    pauseMs: pauseTimesMs(L).map(Math.round),
+    lengthMs: sessionEndMs(L),
+  };
+}
+
+// Pace across the session, with filler dots and pause ticks on shared time.
+function paceChartHtml(p: PaceData, preset: Preset): string {
+  const totalSec = Math.max(1, p.wpm.length - 1);
+  const [lo, hi] = wpmAxis(Math.max(0, ...p.wpm));
   const W = 960;
   const H = 160;
   const y = (v: number) => H - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * H;
-  const pts = series.map((p, sec) => `${((sec / totalSec) * W).toFixed(1)},${y(p.wpm).toFixed(1)}`).join(" ");
+  const pts = p.wpm.map((v, sec) => `${((sec / totalSec) * W).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   const pct = (sec: number) => `${Math.min(100, (sec / totalSec) * 100).toFixed(1)}%`;
-  const dots = series.map((p, sec) => (p.fillerHere ? `<div class="dot" style="left:${pct(sec)}"></div>` : "")).join("");
-  const pauses = pauseTimesMs();
-  const ticks = pauses.map((ms) => `<div class="tick" style="left:${pct(ms / 1000)}"></div>`).join("");
+  const dots = p.fillerSecs.map((sec) => `<div class="dot" style="left:${pct(sec)}"></div>`).join("");
+  const ticks = p.pauseMs.map((ms) => `<div class="tick" style="left:${pct(ms / 1000)}"></div>`).join("");
   const yLabels = [0, 1, 2, 3].map((k) => `<span>${Math.round(hi - ((hi - lo) * k) / 3)}</span>`).join("");
-  const xLabels = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${formatTimestamp(f * sessionEndMs())}</span>`).join("");
-  const pace =
+  const xLabels = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${formatTimestamp(f * p.lengthMs)}</span>`).join("");
+  return (
     `<div class="panel pace-panel">` +
     `<div class="panel-head"><span class="label">Pace across session</span><div class="legend"><span style="color:#4aa8ff">— wpm</span><span style="color:#30d158">▮ target ${preset.wpmLow}–${preset.wpmHigh}</span><span style="color:#ffd60a">● filler</span><span>| pause</span></div></div>` +
-    `<div class="pace-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot">` +
-    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" data-tip="Words per minute over the full session — green band is the target range">` +
+    `<div class="pace-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot" data-tip="">` +
+    `<div class="pace-cursor"></div>` +
+    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
     `<line x1="0" y1="0.5" x2="${W}" y2="0.5" stroke="currentColor" stroke-opacity="0.06" />` +
     `<line x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}" stroke="currentColor" stroke-opacity="0.1" />` +
     `<rect x="0" y="${y(preset.wpmHigh).toFixed(1)}" width="${W}" height="${(y(preset.wpmLow) - y(preset.wpmHigh)).toFixed(1)}" fill="rgba(48,209,88,0.12)" />` +
     `<polygon points="0,${H} ${pts} ${W},${H}" fill="rgba(10,132,255,0.12)" />` +
     `<polyline points="${pts}" fill="none" style="stroke:var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
     `</svg>` +
-    `<div class="marks" data-tip="Filler words — ${s.fillers} across the session">${dots}</div>` +
-    `<div class="marks" data-tip="Pauses — ${pauses.length} across the session">${ticks}</div>` +
+    `<div class="marks">${dots}</div>` +
+    `<div class="marks">${ticks}</div>` +
     `<div class="x-labels">${xLabels}</div>` +
-    `</div></div></div>`;
+    `</div></div></div>`
+  );
+}
 
-  // Headline numbers, each with its change vs the last session, colored by
-  // whether that dimension's sub-score went up or down.
-  const vs = (cur: number, old: number | undefined, digits: number, key: keyof Scores): [string, string] => {
-    if (!prev || typeof old !== "number") return ["first session", "flat"];
-    return [`${signed(cur - old, digits)} vs last`, tone((c[key] ?? 0) - (prev.scores[key] ?? 0))];
-  };
-  const tile = (value: string, unit: string, [delta, cls]: [string, string], tip: string) =>
-    `<div class="tile" data-tip="${escapeHtml(tip)}"><div class="card-top"><span class="big">${value}</span><span class="unit">${unit}</span></div><span class="delta ${cls}">${delta}</span></div>`;
-  const tiles =
-    `<div class="tiles">` +
-    tile(String(s.wpm), "wpm", vs(s.wpm, prev?.wpm, 0, "pace"), `Average pace — target ${preset.wpmLow}–${preset.wpmHigh}`) +
-    tile(s.fillersPerMin.toFixed(1), "fillers/min", vs(s.fillersPerMin, prev?.fillersPerMin, 1, "fillers"), "Fillers per minute — aim under 3") +
-    tile(s.pausesPerMin.toFixed(1), "pauses/min", vs(s.pausesPerMin, prev?.pausesPerMin, 1, "pauses"), "Hesitation pauses per minute") +
-    tile(s.pitchRange.toFixed(1), "semitones", vs(s.pitchRange, prev?.pitchRange, 1, "pitch"), "Pitch range per sentence — under 3 reads as flat") +
-    tile(String(s.words), "words", [`${formatTimestamp(s.durationMs)} speaking`, "flat"], `Words spoken across ${formatTimestamp(s.durationMs)} of speech`) +
-    `</div>`;
+// The Stats report for summary `s`, drawn from its per-line data `L`: the
+// live session's, or a saved session's detail in History.
+function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
+  const c = s.scores;
+  const preset = PRESETS[s.preset];
+  const prior = history.filter((h) => h.ts < s.ts);
+  const prev = prior[prior.length - 1];
+  const num = prior.length + 1;
+  const title = speechTitle(s.speech);
+  const hero = reportHeroHtml(s, prev, num, pace.lengthMs);
+  const chart = paceChartHtml(pace, preset);
+  const tiles = reportTilesHtml(s, prev);
 
   // Filler breakdown by word.
   const counts = new Map<string, number>();
-  for (const ws of fillerWordsByIndex.values()) for (const w of ws) counts.set(w, (counts.get(w) ?? 0) + 1);
+  for (const ws of L.fillerWords.values()) for (const w of ws) counts.set(w, (counts.get(w) ?? 0) + 1);
   const rows = [...counts].sort((a, b) => b[1] - a[1]);
   const topN = rows[0]?.[1] ?? 1;
   const fillerRows = rows.length
@@ -1902,22 +2075,145 @@ function renderReport() {
     .map((b) => `<div class="hist-col${b.now ? " now" : ""}" data-tip="${what} ${b.n} — score ${b.score}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
     .join("");
 
-  const moments = keyMoments(preset);
+  const moments = keyMoments(preset, L);
   const momentsHtml = moments.length
     ? moments
-        .map((m) => `<button type="button" class="moment" data-index="${m.index}" data-tip="Jump to ${formatTimestamp(m.ms)} in the transcript"><span class="t">${formatTimestamp(m.ms)}</span><span class="bar" style="background:${m.color}"></span><span><b>${escapeHtml(m.title)}</b><span class="note">${escapeHtml(m.note)}</span></span></button>`)
+        .map((m) => `<button type="button" class="moment" data-index="${m.index}" data-ms="${m.ms}" data-tip="Jump to ${formatTimestamp(m.ms)} in the transcript"><span class="t">${formatTimestamp(m.ms)}</span><span class="bar" style="background:${m.color}"></span><span><b>${escapeHtml(m.title)}</b><span class="note">${escapeHtml(m.note)}</span></span></button>`)
         .join("")
     : `<div class="empty">Speak a little longer for highlights.</div>`;
 
-  body.innerHTML =
+  return (
     hero +
-    pace +
+    chart +
     tiles +
     `<div class="rep-bottom">` +
     `<div class="panel"><span class="label">Fillers · ${s.fillers}</span><div class="fw-list">${fillerRows}</div></div>` +
     `<div class="panel"><div class="panel-head"><span class="label">${title ? `${escapeHtml(title)} · ${bars.length} attempt${bars.length === 1 ? "" : "s"}` : `Score · last ${bars.length}`}</span>${trend}</div><div class="hist">${hist}</div></div>` +
     `<div class="panel"><span class="label">Key moments</span><div class="moments">${momentsHtml}</div></div>` +
-    `</div>`;
+    `</div>`
+  );
+}
+
+// The utterance (transcript line) at session time `ms`: the one spanning it,
+// else the last one started before it (so a gap maps to the line it follows).
+function lineAt(ms: number, L = live): number | undefined {
+  let at: number | undefined;
+  for (const [i, t] of [...L.timing].sort((a, b) => a[0] - b[0])) if (t.start <= ms) at = i;
+  return at;
+}
+
+// How far across the report's pace plot the pointer is (0–1), and the session
+// time there.
+function plotFrac(plot: HTMLElement, clientX: number): number {
+  const r = plot.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (clientX - r.left) / Math.max(1, r.width)));
+}
+const fracMs = (frac: number, pace: PaceData) => frac * Math.max(1, pace.wpm.length - 1) * 1000;
+
+// Hover readout for the pace plot: pace at that second, plus the loudness,
+// inflection, fillers and pauses of the line being spoken there — when the
+// session's per-line data `L` is around.
+function paceTip(ms: number, pace: PaceData, L?: Lines): string {
+  const sec = Math.round(ms / 1000);
+  const lines = [`${formatTimestamp(ms)} · ${pace.wpm[sec] ?? 0} wpm`];
+  if (!L) return lines[0];
+  const i = lineAt(ms, L);
+  const t = i === undefined ? undefined : L.timing.get(i);
+  const a = i === undefined ? undefined : L.analysis.get(i);
+  const levels = [...L.analysis.values()].map((x) => x.rms_level).filter((x) => x > 0);
+  if (a && a.rms_level > 0 && levels.length) lines.push(`Volume ${Math.round((a.rms_level / mean(levels)) * 100)}% of your average`);
+  if (a) lines.push(a.f0_median > 0 ? `Pitch range ${a.f0_range_semitones.toFixed(1)} semitones${a.f0_terminal_rising ? " · rising end" : ""}` : "Pitch —");
+  const fw = i === undefined ? [] : L.fillerWords.get(i) ?? [];
+  lines.push(fw.length ? `Filler: ${fw.join(", ")}` : "No filler");
+  // In a pause: inside a VAD gap of this line, or in a long gap after it.
+  const inside = t && a?.pauses.find((p) => ms >= t.start + p.start_ms && ms <= t.start + p.end_ms);
+  const next = i === undefined ? undefined : [...L.timing].filter(([k]) => k > i).sort((x, y) => x[0] - y[0])[0]?.[1];
+  const gap = t && next && ms > t.end && next.start - t.end >= INTER_PAUSE_MS ? next.start - t.end : 0;
+  const pauseMs = inside ? inside.end_ms - inside.start_ms : gap;
+  lines.push(pauseMs ? `Pause ${(pauseMs / 1000).toFixed(1)} s` : a?.pause_count ? `${a.pause_count} pause${a.pause_count === 1 ? "" : "s"} in this line` : "No pause");
+  return lines.join("\n");
+}
+
+// Pace plot / key moment → the matching line in that report's transcript copy.
+function jumpInCopy(root: Element, index: number, ms: number, L: Lines) {
+  const el = root.querySelector<HTMLElement>(`.rep-transcript [data-index="${index}"]`);
+  if (el) flashLine(el, index, ms, L);
+}
+
+// Pace plot hover: moves the cursor and fills the tip. Runs before the
+// document-level tooltip handler, so the tip reads fresh text.
+function hoverPace(e: MouseEvent, pace: PaceData, L?: Lines) {
+  const plot = (e.target as Element).closest<HTMLElement>(".pace-plot");
+  if (!plot) return;
+  const frac = plotFrac(plot, e.clientX);
+  plot.dataset.tip = paceTip(fracMs(frac, pace), pace, L);
+  const cursor = plot.querySelector<HTMLElement>(".pace-cursor");
+  if (cursor) cursor.style.left = `${frac * 100}%`;
+}
+
+// Pace plot click → the line spoken there, in the report's transcript copy.
+function clickPace(e: MouseEvent, root: Element, pace: PaceData, L: Lines) {
+  const plot = (e.target as Element).closest<HTMLElement>(".pace-plot");
+  if (!plot) return;
+  const ms = fracMs(plotFrac(plot, e.clientX), pace);
+  const i = lineAt(ms, L);
+  if (i !== undefined) jumpInCopy(root, i, ms, L);
+}
+
+// Scrolls a transcript line into view, flashes it, and marks the word spoken at `ms`.
+function flashLine(el: HTMLElement, index: number, ms: number, L = live) {
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.remove("flash");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("flash");
+  highlightWord(el, index, ms, L);
+}
+
+// Which of a line's `n` words was being spoken at session time `ms`. No word
+// timestamps come from the decoder, so words are spread evenly across the
+// line's voiced time (its duration minus the VAD pauses inside it).
+// ponytail: even-spread estimate; enable whisper token timestamps if it drifts.
+function wordIndexAt(index: number, ms: number, n: number, L = live): number {
+  const t = L.timing.get(index);
+  if (!t) return 0;
+  let off = ms - t.start;
+  let voiced = t.end - t.start;
+  for (const p of L.analysis.get(index)?.pauses ?? []) {
+    voiced -= p.end_ms - p.start_ms;
+    off -= Math.max(0, Math.min(off, p.end_ms) - p.start_ms);
+  }
+  return Math.max(0, Math.min(n - 1, Math.floor((off / Math.max(1, voiced)) * n)));
+}
+
+// Wraps that word in a fading <mark>. Words can straddle text nodes (a filler
+// span followed by punctuation), so a match glued to the previous node's last
+// word continues it rather than starting a new one.
+function highlightWord(el: HTMLElement, index: number, ms: number, L = live) {
+  const p = el.querySelector(".seg-text");
+  const n = p?.textContent?.match(/\S+/g)?.length ?? 0;
+  if (!p || n === 0) return;
+  const target = wordIndexAt(index, ms, n, L);
+  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+  let w = -1;
+  let glued = false;
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    for (const m of node.data.matchAll(/\S+/g)) {
+      if (!(m.index === 0 && glued)) w++;
+      if (w !== target) continue;
+      const range = document.createRange();
+      range.setStart(node, m.index);
+      range.setEnd(node, m.index + m[0].length);
+      const mark = document.createElement("mark");
+      mark.className = "word-hit";
+      range.surroundContents(mark);
+      // Cancelled too (view hidden mid-fade), so no mark lingers into the report's copy.
+      const unwrap = () => mark.isConnected && mark.replaceWith(...mark.childNodes);
+      mark.addEventListener("animationend", unwrap);
+      mark.addEventListener("animationcancel", unwrap);
+      return;
+    }
+    glued = /\S$/.test(node.data);
+  }
 }
 
 // Pages Tab cycles through, with their nav rail buttons.
@@ -1925,13 +2221,15 @@ const TAB_VIEWS: Array<[string, string]> = [
   ["live", "live-btn"],
   ["report", "stats-btn"],
   ["speeches", "speeches-btn"],
+  ["history", "history-btn"],
 ];
 
-function showView(view: "live" | "report" | "profile" | "speeches" | "settings") {
+function showView(view: "live" | "report" | "profile" | "speeches" | "history" | "settings") {
   document.body.dataset.view = view;
   if (view !== "settings") void stopMicTest(false);
   if (view === "profile") renderProfile();
   if (view === "speeches") renderSpeeches();
+  if (view === "history") renderHistory();
 }
 
 // Speeches view: the list of saved speeches, or one speech's own page.
@@ -2561,16 +2859,138 @@ function renderProfile() {
   }
 }
 
+// --- History ---------------------------------------------------------------
+// Every saved session, newest first, filtered; a row opens that session's
+// stats. Only the summary is stored, so its page has no pace plot or transcript.
+let histPage = 0; // ts of the open session; 0 = the list
+let histSaved = false; // starred only
+let histPreset = ""; // "" = all contexts
+let histSpeech = ""; // "" = all, "free" = no script, else a speech id
+let histRange = "All";
+let histDetail: Detail | null = null; // the open session's per-line data, if still kept
+
+async function openHistorySession(ts: number) {
+  histPage = ts;
+  if (histDetail?.ts !== ts) {
+    histDetail = null;
+    try {
+      const json = await invoke<string | null>("load_session_detail", { ts });
+      if (json && histPage === ts) histDetail = parseDetail(ts, json);
+    } catch (e) {
+      appendError(`Couldn't load session: ${e}`);
+    }
+  }
+  if (histPage === ts) renderHistory();
+}
+
+// The open session's pace series and per-line data, for the chart's hover/click.
+function histPace(): { pace: PaceData; L?: Lines } | null {
+  const s = history.find((h) => h.ts === histPage);
+  const L = histDetail?.ts === histPage ? histDetail.L : undefined;
+  const pace = s?.pace ?? (L && paceData(L));
+  return pace ? { pace, L } : null;
+}
+
+function renderHistory() {
+  const el = $("history");
+  if (!el) return;
+  const i = history.findIndex((h) => h.ts === histPage);
+  if (i < 0) histPage = 0; // cleared since
+  el.innerHTML = i < 0 ? historyListHtml() : historyPageHtml(i);
+  for (const id of ["hist-preset", "hist-speech"]) {
+    const sel = $<HTMLSelectElement>(id);
+    if (sel) enhanceSelect(sel);
+  }
+}
+
+function historyListHtml(): string {
+  if (!history.length)
+    return `<div class="panel"><span class="label">History</span><div class="empty">No sessions yet — press ${keyName(recordKey)} on the Live tab to record your first.</div></div>`;
+  if (histSpeech && histSpeech !== "free" && !speechTitle(histSpeech)) histSpeech = ""; // deleted since
+  const days = RANGES.find((r) => r[0] === histRange)?.[1] ?? Infinity;
+  const now = Date.now();
+  const rows = history
+    .filter(
+      (h) =>
+        (!histSaved || h.saved) &&
+        (!histPreset || h.preset === histPreset) &&
+        (!histSpeech || (histSpeech === "free" ? !h.script : h.speech === histSpeech)) &&
+        now - h.ts <= days * DAY_MS,
+    )
+    .reverse();
+  const opt = (v: string, label: string, cur: string) => `<option value="${v}"${v === cur ? " selected" : ""}>${escapeHtml(label)}</option>`;
+  const presetSel =
+    `<select id="hist-preset" class="ctl" aria-label="Context">${opt("", "All contexts", histPreset)}` +
+    Object.entries(PRESETS).map(([k, p]) => opt(k, p.name, histPreset)).join("") +
+    `</select>`;
+  const speechSel =
+    `<select id="hist-speech" class="ctl" aria-label="Practised">${opt("", "Anything practised", histSpeech)}${opt("free", "Free speaking", histSpeech)}` +
+    speeches.map((sp) => opt(sp.id, sp.title, histSpeech)).join("") +
+    `</select>`;
+  const seg = (attr: string, items: Array<[string, string, boolean]>, label: string) =>
+    `<div class="seg" role="radiogroup" aria-label="${label}">` +
+    items.map(([v, text, on]) => `<button type="button" role="radio" ${attr}="${v}" aria-checked="${on}">${text}</button>`).join("") +
+    `</div>`;
+  const filters =
+    `<div class="speech-filters">` +
+    seg("data-hsaved", [["0", "All", !histSaved], ["1", "★ Saved", histSaved]], "Saved") +
+    presetSel +
+    speechSel +
+    seg("data-range", RANGES.map(([r]) => [r, r, r === histRange]), "Time frame") +
+    `</div>`;
+  const body = rows
+    .map(
+      (h) =>
+        `<tr data-open="${h.ts}" data-tip="Open this session's stats"><td>${starHtml(h.ts)}</td>` +
+        `<td>${new Date(h.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</td>` +
+        `<td>${practisedCell(h)}</td><td>${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))}</td><td>${formatTimestamp(h.durationMs)}</td>` +
+        `<td>${Math.round(h.wpm)}</td><td>${h.fillersPerMin.toFixed(1)}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
+    )
+    .join("");
+  return (
+    `<div class="panel"><div class="panel-head"><span class="label">History · ${rows.length} of ${history.length} session${history.length === 1 ? "" : "s"}</span></div>${filters}` +
+    `<table class="prof-table"><tr><th></th><th>Date</th><th>Practised</th><th>Context</th><th>Speaking</th><th>WPM</th><th>Fillers/min</th><th>Score</th></tr>` +
+    (body || `<tr><td colspan="8" class="empty">No sessions match.</td></tr>`) +
+    `</table></div>`
+  );
+}
+
+// One saved session. Recent and starred ones keep their per-line data and get
+// the full Stats report; older ones get what the summary holds: the report's
+// hero, pace chart and tiles, the sub-score breakdown and tips.
+function historyPageHtml(i: number): string {
+  const s = history[i];
+  const back = `<div class="panel"><div class="panel-head"><button type="button" class="ctl" data-back>← History</button></div></div>`;
+  if (histDetail?.ts === s.ts)
+    return (
+      back +
+      `<div class="hist-report">${reportBodyHtml(s, histDetail.L, s.pace ?? paceData(histDetail.L))}</div>` +
+      `<section class="panel rep-transcript">${transcriptCopyHtml(histDetail.lines)}</section>`
+    );
+  const dims = DIMENSIONS.filter(([k]) => typeof s.scores[k] === "number")
+    .map(([k, name]) => {
+      const v = s.scores[k] ?? 0;
+      return `<div class="fw-row" data-tip="${name} — ${v} of 100"><span>${name}</span><div class="fw-bar"><div style="width:${v}%"></div></div><span class="n">${v}</span></div>`;
+    })
+    .join("");
+  return (
+    back +
+    reportHeroHtml(s, history[i - 1], i + 1, s.pace?.lengthMs ?? s.durationMs) +
+    (s.pace ? paceChartHtml(s.pace, PRESETS[s.preset]) : "") +
+    reportTilesHtml(s, history[i - 1]) +
+    `<div class="panel"><span class="label">Score breakdown</span><div class="fw-list dims">${dims}</div></div>` +
+    `<div class="panel"><span class="label">What to work on</span><ul class="overview">` +
+    generateTips(s).map((t) => `<li>${escapeHtml(t)}</li>`).join("") +
+    `</ul></div>`
+  );
+}
+
 // Report → transcript: switch back to the live view and flash the line.
-function jumpToLine(index: number) {
+function jumpToLine(index: number, ms: number) {
   showView("live");
   toggleScript(false);
   const el = segmentEls.get(index);
-  if (!el) return;
-  el.scrollIntoView({ block: "center", behavior: "smooth" });
-  el.classList.remove("flash");
-  void el.offsetWidth; // restart the animation
-  el.classList.add("flash");
+  if (el) flashLine(el, index, ms);
 }
 
 // --- Practice ----------------------------------------------------------------
@@ -2679,7 +3099,7 @@ window.addEventListener("DOMContentLoaded", () => {
       renderSpeeches();
       return;
     }
-    // Tab / Shift+Tab step through Live, Stats (when enabled) and Speeches.
+    // Tab / Shift+Tab step through Live, Stats (when enabled), Speeches and History.
     // Text fields and the popup keep Tab for moving focus. Matched on
     // e.code: GTK reports Shift+Tab's key as "ISO_Left_Tab".
     if (
@@ -2867,9 +3287,14 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   $("report-body")?.addEventListener("click", (e) => {
+    const star = (e.target as Element).closest<HTMLElement>("[data-star]");
+    if (star) return void toggleSaved(Number(star.dataset.star));
     const m = (e.target as Element).closest<HTMLElement>(".moment");
-    if (m) jumpToLine(Number(m.dataset.index));
+    if (m) jumpToLine(Number(m.dataset.index), Number(m.dataset.ms));
+    const report = $("report");
+    if (report) clickPace(e, report, paceData(), live);
   });
+  $("report-body")?.addEventListener("mousemove", (e) => hoverPace(e, paceData(), live));
 
   // Editing a saved speech updates it in place.
   scriptInput?.addEventListener("input", () => {
@@ -2903,6 +3328,47 @@ window.addEventListener("DOMContentLoaded", () => {
   speechSel?.addEventListener("change", () => openSpeech(speechSel.value));
   speechPage = load(SPEECH_PAGE_KEY) ?? "";
   $("speeches-btn")?.addEventListener("click", () => showView("speeches"));
+  $("history-btn")?.addEventListener("click", () => showView("history"));
+  const histEl = $("history");
+  histEl?.addEventListener("click", (e) => {
+    const b = (e.target as Element).closest<HTMLElement>("[data-star], [data-goto], [data-open], [data-back], [data-hsaved], [data-range]");
+    const d = b?.dataset;
+    if (!b || !d) return;
+    if (d.star) return void toggleSaved(Number(d.star));
+    if (d.goto) {
+      speechPage = d.goto;
+      return showView("speeches");
+    }
+    if (d.open) {
+      histEl.scrollTop = 0;
+      return void openHistorySession(Number(d.open));
+    }
+    if (d.back !== undefined) histPage = 0;
+    else if (d.hsaved) histSaved = d.hsaved === "1";
+    else if (d.range) histRange = d.range;
+    renderHistory();
+    if (d.back !== undefined) histEl.scrollTop = 0;
+  });
+  // The open session's report: key moments and pace clicks jump within its own
+  // transcript copy (the live one belongs to another session).
+  histEl?.addEventListener("click", (e) => {
+    const hp = histPace();
+    if (!hp?.L) return;
+    const m = (e.target as Element).closest<HTMLElement>(".moment");
+    if (m) jumpInCopy(histEl, Number(m.dataset.index), Number(m.dataset.ms), hp.L);
+    clickPace(e, histEl, hp.pace, hp.L);
+  });
+  histEl?.addEventListener("mousemove", (e) => {
+    const hp = histPace();
+    if (hp) hoverPace(e, hp.pace, hp.L);
+  });
+  histEl?.addEventListener("change", (e) => {
+    const t = e.target as HTMLSelectElement;
+    if (t.id === "hist-preset") histPreset = t.value;
+    else if (t.id === "hist-speech") histSpeech = t.value;
+    else return;
+    renderHistory();
+  });
   const speechesEl = $("speeches");
   speechesEl?.addEventListener("click", (e) => {
     const b = (e.target as Element).closest<HTMLElement>(
@@ -3065,6 +3531,15 @@ window.addEventListener("DOMContentLoaded", () => {
 
   listen("corrections_done", () => {
     resetCountdown();
+    // Lines the pass didn't replace — medium heard only noise ("[BLANK_AUDIO]"),
+    // its decode failed, or correction is off — never get a refined segment, so
+    // settle them here: the fast text is final.
+    for (const el of segmentEls.values()) el.classList.replace("draft", "final");
+    if (reportPending) {
+      reportPending = false;
+      renderReport();
+      if (reportVisible && document.body.dataset.view === "live") showView("report");
+    }
     flushSave();
     if (!recording) setStatus("Idle");
   });

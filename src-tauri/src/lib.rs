@@ -118,6 +118,8 @@ pub fn run() {
             audio::start_mic_test,
             audio::stop_mic_test,
             history::save_session,
+            history::set_session_saved,
+            history::load_session_detail,
             history::list_sessions,
             history::clear_sessions
         ])

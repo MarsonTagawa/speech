@@ -187,8 +187,8 @@ button {
   cursor: default;
 }
 .nav-btn svg {
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -199,6 +199,7 @@ body[data-view="live"] #live-btn,
 body[data-view="report"] #stats-btn,
 body[data-view="profile"] #profile-btn,
 body[data-view="speeches"] #speeches-btn,
+body[data-view="history"] #history-btn,
 body[data-view="settings"] #settings-btn {
   background: color-mix(in srgb, var(--blue) 18%, transparent);
   border-color: color-mix(in srgb, var(--blue) 40%, transparent);
@@ -402,6 +403,7 @@ body[data-view="live"] .view-live,
 body[data-view="report"] .view-report,
 body[data-view="profile"] .view-profile,
 body[data-view="speeches"] .view-speeches,
+body[data-view="history"] .view-history,
 body[data-view="settings"] .view-settings {
   display: flex;
 }
@@ -658,6 +660,9 @@ body.timer-countdown.has-timer .countdown {
 .segment.corrected {
   --tone: var(--green);
 }
+.segment.final {
+  --tone: var(--ink-2);
+}
 .segment.flash {
   animation: landFlash 1.4s ease-out;
 }
@@ -710,6 +715,7 @@ body.timer-countdown.has-timer .countdown {
 }
 .partial .seg-state::before { content: "live"; }
 .draft .seg-state::before { content: "draft"; }
+.final .seg-state::before { content: "final"; }
 .corrected .seg-state::before { content: "corrected"; }
 
 .seg-text {
@@ -1027,15 +1033,18 @@ body.timer-countdown.has-timer .countdown {
 .view-report,
 .view-profile,
 .view-speeches,
+.view-history,
 .view-settings {
   padding: 14px 16px 16px;
   gap: 12px;
   background: var(--main);
   overflow-y: auto;
 }
-#report-body {
-  flex: 1;
-  min-height: 0;
+/* At least one screen tall, so the transcript sits below the fold. */
+#report-body,
+.hist-report {
+  flex: 0 0 auto;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1135,10 +1144,79 @@ body.timer-countdown.has-timer .countdown {
   text-align: right;
 }
 .pace-plot {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  cursor: pointer;
+}
+.pace-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 14px;
+  width: 1px;
+  background: var(--ink-2);
+  opacity: 0;
+  pointer-events: none;
+}
+.pace-plot:hover .pace-cursor {
+  opacity: 0.6;
+}
+.rep-transcript {
+  flex: 0 0 auto;
+}
+
+/* Word spoken at the jumped-to time; held, then faded (the mark is removed on animationend). */
+.word-hit {
+  border-radius: 3px;
+  color: inherit;
+  animation: wordHit 2.6s ease-out forwards;
+}
+@keyframes wordHit {
+  0%, 60% { background: color-mix(in srgb, var(--blue) 45%, transparent); }
+  100% { background: transparent; }
+}
+
+/* Whole-session correction progress, over the transcript after Stop. */
+.correct-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 34px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  background: var(--pane);
+  border-bottom: 0.5px solid var(--edge);
+}
+.correct-bar[hidden] {
+  display: none;
+}
+.correct-bar:not([hidden]) ~ .transcript {
+  top: 36px;
+}
+.correct-bar .bar {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  overflow: hidden;
+}
+.correct-bar i {
+  display: block;
+  height: 100%;
+  width: calc(var(--p, 0) * 100%);
+  background: var(--green);
+  transition: width 200ms linear;
+}
+.rep-transcript .seg-text {
+  animation: none;
 }
 .pace-plot svg {
   width: 100%;
@@ -1238,6 +1316,12 @@ body.timer-countdown.has-timer .countdown {
   background: var(--amber);
   border-radius: 2px;
 }
+.fw-list.dims .fw-row {
+  grid-template-columns: 110px 1fr 24px;
+}
+.fw-list.dims .fw-bar div {
+  background: var(--blue);
+}
 .fw-row .n {
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -1332,6 +1416,7 @@ body.timer-countdown.has-timer .countdown {
   opacity: 0;
   transition: opacity 110ms ease;
   max-width: 280px;
+  white-space: pre-line;
   padding: 6px 10px;
   border-radius: 7px;
   background: color-mix(in srgb, var(--btn) 94%, transparent);
@@ -1349,6 +1434,7 @@ body.timer-countdown.has-timer .countdown {
 /* These views scroll; keep panels at their natural height. */
 .view-profile > *,
 .view-speeches > *,
+.view-history > *,
 .view-settings > * {
   flex-shrink: 0;
 }
@@ -1418,6 +1504,22 @@ body.timer-countdown.has-timer .countdown {
 .speech-filters input {
   flex: 1 1 140px;
   min-width: 0;
+}
+/* Save toggle: a star on the report hero and each history row. */
+.star-btn {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-3);
+  background: none;
+  border: none;
+  padding: 0 2px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.star-btn:hover,
+.star-btn[aria-pressed="true"] {
+  color: var(--amber);
 }
 .link-btn {
   font: inherit;
