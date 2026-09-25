@@ -19,21 +19,32 @@ VAD for voice detection.
 - **Delivery metrics** — words-per-minute over voiced time, hesitation pauses,
   loudness, and pitch (median, inflection range, uptalk) from per-utterance
   acoustic analysis.
-- **Session history** saved locally so you can track progress over time.
+- **Speeches** — save scripts you're practising and read along while you talk;
+  each speech tracks your attempts and quotes the sentences you skip most.
+  Optional timer with a big countdown.
+- **History** — every session saved locally with its full report (recent and
+  starred ones keep per-line detail), plus a profile with progress over time,
+  personal bests and streaks.
+- **Model choice** — pick the live and correction models in Settings (tiny.en
+  up to large-v3-turbo); non-bundled ones download on demand from Hugging Face.
 
 ## Models (required, not in git)
 
 The whisper + VAD weights are large binaries, so they're gitignored. Fetch them
-into `src-tauri/resources/` before building:
+into `src-tauri/resources/` before building (anything in there is bundled):
 
 ```sh
 cd src-tauri/resources
-curl -L -O https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en-q5_0.bin
 curl -L -O https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin
 curl -L -o silero_vad.onnx https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+# optional: default correction model; otherwise download it from Settings
+curl -L -O https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en-q5_0.bin
 ```
 
-Both whisper models run on the GPU (Vulkan) and are warmed up at launch.
+tiny.en and the VAD are required. Models downloaded from Settings go to the app
+data dir (`<app data>/models/`). All whisper models run on the GPU (Vulkan); the
+live model is warmed up at launch, the correction model is loaded per pass and
+freed when it's done.
 
 ## Develop
 
