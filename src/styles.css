@@ -317,11 +317,6 @@ body:not([data-view="live"]) .rail {
   color: var(--blue-2);
   font-weight: 600;
 }
-.rail-ff[aria-pressed="true"] {
-  background: rgba(255, 214, 10, 0.16);
-  border-color: rgba(255, 214, 10, 0.3);
-  color: var(--amber);
-}
 .rail-btn.drilling {
   color: var(--red);
   font-variant-numeric: tabular-nums;
@@ -712,11 +707,6 @@ body[data-view="settings"] .view-settings {
   margin: 0 0 12px;
   font-size: 12px;
   color: var(--red);
-}
-
-/* Filler-free mode: a brief red wash whenever a filler is counted. */
-body.filler-flash .tpane {
-  box-shadow: inset 0 0 0 2px var(--red), inset 0 0 40px rgba(255, 69, 58, 0.25);
 }
 
 /* --- Script read-along ---------------------------------------------------- */
@@ -1419,6 +1409,37 @@ kbd {
 .dd-list [aria-selected="true"] {
   color: var(--blue-2);
   font-weight: 600;
+}
+.timer-menu:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  right: auto;
+  min-width: 110px;
+}
+.timer-menu button {
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  outline: none;
+}
+.timer-menu button:hover,
+.timer-menu button:focus {
+  background: var(--btn-hover);
+}
+.timer-menu button[aria-current="true"] {
+  color: var(--blue-2);
+  font-weight: 600;
+}
+.timer-menu input {
+  margin-top: 4px;
+  width: 100%;
+  box-sizing: border-box;
 }
 body.no-hover-fx #shards {
   display: none;

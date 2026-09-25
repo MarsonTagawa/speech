@@ -320,8 +320,6 @@ async function reviewFillers(
   if (ranges.length > 0) {
     entry.innerHTML = segmentHtml(startMs, renderHighlighted(text, ranges));
     refreshWaveform(index); // innerHTML rewrite wiped it
-    // Practice: in filler-free mode, flag any newly counted fillers on this line.
-    if (fillerFreeMode && ranges.length > (fillersByIndex.get(index) ?? 0)) flashFillerAlert();
   }
   // Adjust the running total by the delta for this line, so a re-review of a
   // corrected line replaces its earlier filler count rather than stacking on it.
@@ -1921,7 +1919,6 @@ const THEME_KEY = "speech.theme";
 const DRILL_KEY = "speech.drillSecs";
 const GAIN_KEY = "speech.levelGain";
 const PAUSE_KEY = "speech.pauseMs";
-const FLASH_KEY = "speech.fillerFlash";
 const HOVER_KEY = "speech.hoverFx";
 const CORRECT_KEY = "speech.accurateCorrection";
 let accurateCorrection = true;
@@ -2125,15 +2122,6 @@ const PROMPTS = [
   "What advice would you give your younger self?",
 ];
 
-let fillerFreeMode = false;
-let fillerFlash = true;
-
-function flashFillerAlert() {
-  if (!fillerFlash) return;
-  document.body.classList.add("filler-flash");
-  setTimeout(() => document.body.classList.remove("filler-flash"), 350);
-}
-
 let drillMs = 60_000;
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -2196,7 +2184,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (e.code !== recordKey || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     // Starts only from the live tab; a running recording can be stopped from anywhere.
     if (!recording && document.body.dataset.view !== "live") return;
-    if ((e.target as Element).closest("input, textarea, select, .dd, [contenteditable]")) return;
+    if ((e.target as Element).closest("input, textarea, select, .dd, .timer-menu, [contenteditable]")) return;
     e.preventDefault();
     (document.activeElement as HTMLElement | null)?.blur();
     if (!recordBtn?.disabled) void toggleRecording();
@@ -2240,22 +2228,52 @@ window.addEventListener("DOMContentLoaded", () => {
     applyTheme(themeSel.value);
   });
 
-  const drillSel = $<HTMLSelectElement>("set-drill");
   const drillSecs = Number(load(DRILL_KEY));
   if (drillSecs > 0) drillMs = drillSecs * 1000;
   const syncDrill = () => {
-    if (drillSel) {
-      drillSel.value = String(drillMs / 1000);
-      syncSelect(drillSel);
-    }
     const btn = $("drill-btn");
-    if (btn) btn.dataset.tip = `${drillMs / 1000}-second drill — a random prompt and a timed run`;
+    if (btn) btn.dataset.tip = `${drillMs / 1000}-second timer — records, then stops`;
     tickClock();
   };
-  drillSel?.addEventListener("change", () => {
-    drillMs = Number(drillSel.value) * 1000;
-    save(DRILL_KEY, drillSel.value);
+  // Right-click (or the context-menu key) on the timer opens a length picker.
+  const timerMenu = $("timer-menu");
+  const timerCustom = $<HTMLInputElement>("timer-custom");
+  const closeTimerMenu = () => timerMenu?.setAttribute("hidden", "");
+  const setDrill = (secs: number) => {
+    if (!(secs > 0)) return;
+    drillMs = Math.round(Math.min(3600, Math.max(5, secs))) * 1000;
+    save(DRILL_KEY, String(drillMs / 1000));
     syncDrill();
+    closeTimerMenu();
+  };
+  $("drill-btn")?.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (!timerMenu) return;
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    timerMenu.style.left = `${r.right + 6}px`;
+    timerMenu.style.top = `${r.top}px`;
+    timerMenu.querySelectorAll<HTMLElement>("[data-s]").forEach((b) =>
+      b.setAttribute("aria-current", String(Number(b.dataset.s) * 1000 === drillMs)),
+    );
+    if (timerCustom) timerCustom.value = "";
+    timerMenu.removeAttribute("hidden");
+    timerMenu.querySelector<HTMLElement>("[data-s]")?.focus();
+  });
+  timerMenu?.addEventListener("click", (e) => {
+    const b = (e.target as Element).closest<HTMLElement>("[data-s]");
+    if (b) setDrill(Number(b.dataset.s));
+  });
+  timerCustom?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") setDrill(Number(timerCustom.value));
+  });
+  timerMenu?.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeTimerMenu();
+      $("drill-btn")?.focus();
+    }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (timerMenu && !timerMenu.contains(e.target as Node)) closeTimerMenu();
   });
   syncDrill();
 
@@ -2302,7 +2320,6 @@ window.addEventListener("DOMContentLoaded", () => {
       apply(box.checked);
     });
   };
-  bindToggle("set-flash", FLASH_KEY, (on) => (fillerFlash = on));
   bindToggle("set-correct", CORRECT_KEY, (on) => (accurateCorrection = on));
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
 
@@ -2396,31 +2413,24 @@ window.addEventListener("DOMContentLoaded", () => {
       // no history available; numbering starts at 1
     });
 
-  // Practice: timed drill (with a random prompt) + filler-free mode.
+  // Practice: random prompt, timer.
   const promptEl = $("practice-prompt");
-  const showPrompt = () => {
+  $("prompt-btn")?.addEventListener("click", () => {
     if (!promptEl) return;
     promptEl.textContent = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
     promptEl.removeAttribute("hidden");
-  };
-  $("drill-btn")?.addEventListener("click", () => {
-    showPrompt();
-    if (!recording) {
-      const drillSession = sessionId + 1; // resetStats (in toggleRecording) bumps to this
-      void toggleRecording().then(() => {
-        if (recording && sessionId === drillSession) drillEndsAt = performance.now() + drillMs;
-      });
-      // Auto-stop after the drill window, unless the user already stopped or
-      // started another session.
-      setTimeout(() => {
-        if (recording && sessionId === drillSession) void toggleRecording();
-      }, drillMs);
-    }
   });
-  const ffBtn = $("ff-btn");
-  ffBtn?.addEventListener("click", () => {
-    fillerFreeMode = !fillerFreeMode;
-    ffBtn.setAttribute("aria-pressed", String(fillerFreeMode));
+  // Timer: starts recording if needed, then auto-stops this session after drillMs.
+  $("drill-btn")?.addEventListener("click", async () => {
+    if (drillEndsAt > performance.now()) return;
+    if (!recording) await toggleRecording();
+    if (!recording) return;
+    const timedSession = sessionId;
+    drillEndsAt = performance.now() + drillMs;
+    tickClock();
+    setTimeout(() => {
+      if (recording && sessionId === timedSession) void toggleRecording();
+    }, drillMs);
   });
 
   listen<TranscriptSegment>("transcript_segment", (event) => {
