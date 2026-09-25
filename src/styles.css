@@ -3,7 +3,6 @@
 
 :root {
   --chassis: #121214;
-  --rail: #191919;
   --main: #161619;
   --pane: #1a1a1e;
   --dock: #1b1b1f;
@@ -40,7 +39,6 @@
 /* Colorschemes: surfaces, ink and accent (--blue). All dark — the scope stays black. */
 :root[data-theme="midnight"] {
   --chassis: #0b0f19;
-  --rail: #0f1422;
   --main: #0d1220;
   --pane: #111827;
   --dock: #121a2b;
@@ -53,7 +51,6 @@
 }
 :root[data-theme="nord"] {
   --chassis: #242933;
-  --rail: #2a303b;
   --main: #272c36;
   --pane: #2e3440;
   --dock: #2f3542;
@@ -66,7 +63,6 @@
 }
 :root[data-theme="rose"] {
   --chassis: #151320;
-  --rail: #191724;
   --main: #17151f;
   --pane: #1f1d2e;
   --dock: #201e2f;
@@ -81,7 +77,6 @@
 :root[data-theme="light"] {
   color-scheme: light;
   --chassis: #e6e6eb;
-  --rail: #ececf0;
   --main: #f1f1f5;
   --pane: #f5f5f8;
   --dock: #f3f3f6;
@@ -210,30 +205,20 @@ body[data-view="settings"] #settings-btn {
   font-weight: 600;
 }
 
+/* LIVE icon: a mic while idle, a pulsing red dot while recording. */
 .nav-dot {
+  display: none;
   width: 9px;
   height: 9px;
   margin: 3px 0;
   border-radius: 50%;
   background: var(--red);
+  animation: recPulse 1.6s ease-in-out infinite;
 }
-
-/* --- Tool rail (live only) ------------------------------------------------- */
-
-.rail {
-  width: 96px;
-  flex: 0 0 auto;
-  background: var(--rail);
-  border-right: 0.5px solid var(--shadow-edge);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 14px 0;
-  gap: 10px;
-  overflow: hidden;
-  user-select: none;
+#live-btn.recording .nav-dot {
+  display: block;
 }
-body:not([data-view="live"]) .rail {
+#live-btn.recording .nav-mic {
   display: none;
 }
 
@@ -242,17 +227,31 @@ body:not([data-view="live"]) .rail {
   align-self: stretch;
 }
 
-.rec-group {
+/* --- Toolbar strip (live only) -------------------------------------------- */
+
+.strip {
+  flex: 0 0 auto;
+  height: 48px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  padding: 0 16px 0 20px;
+  background: var(--pane);
+  border-bottom: 0.5px solid var(--edge);
+  user-select: none;
+}
+
+.strip-sep {
+  width: 0.5px;
+  height: 20px;
+  margin: 0 2px;
+  background: var(--edge-2);
 }
 
 /* Idle: a dark bezel with a red dot. Recording: the whole button lights up. */
 .rec-btn {
-  width: 52px;
-  height: 52px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   padding: 0;
   cursor: pointer;
@@ -284,15 +283,9 @@ body:not([data-view="live"]) .rail {
   color: var(--red);
 }
 
-.rail-btns {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 68px;
-}
-
-.rail-btn {
-  height: 32px;
+.tool-btn {
+  height: 28px;
+  padding: 0 11px;
   border-radius: 7px;
   background: var(--btn);
   border: 0.5px solid var(--edge);
@@ -304,36 +297,66 @@ body:not([data-view="live"]) .rail {
   color: var(--ink-2);
   cursor: pointer;
 }
-.rail-btn:hover:not(:disabled) {
+.tool-btn:hover:not(:disabled) {
   background: var(--btn-hover);
+  color: var(--ink);
 }
-.rail-btn:disabled {
+.tool-btn:disabled {
   opacity: 0.35;
   cursor: default;
 }
-.rail-btn[aria-pressed="true"] {
+.tool-btn[aria-pressed="true"] {
   background: color-mix(in srgb, var(--blue) 18%, transparent);
   border-color: color-mix(in srgb, var(--blue) 40%, transparent);
   color: var(--blue-2);
-  font-weight: 600;
 }
-.rail-btn.drilling {
-  color: var(--red);
+.tool-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tool-btn.icon {
+  width: 28px;
+  padding: 0;
+}
+#reset-btn:not(:hover) {
+  background: transparent;
+  border-color: transparent;
+}
+.tool-btn.timer {
+  padding: 0 8px 0 9px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.tool-btn.timer svg {
+  width: 13px;
+  height: 13px;
+  stroke: var(--ink-2);
+}
+.tool-btn.drilling {
+  color: var(--red);
+}
+.chev {
+  width: 5px;
+  height: 5px;
+  margin: -3px 0 0 2px;
+  border: solid var(--ink-3);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
 }
 
-.rst-icon {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  border: 1.5px solid var(--ink-2);
-}
-
-.lvl {
+.card.lvl {
+  padding: 9px 12px 10px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  justify-content: space-between;
+  gap: 6px;
 }
 .lvl-label {
   font-size: 10px;
@@ -343,23 +366,24 @@ body:not([data-view="live"]) .rail {
 .lvl-bars {
   display: flex;
   gap: 5px;
+  flex: 1;
+  min-height: 0;
 }
 .lvl-bar {
   width: 7px;
-  height: 64px;
   border-radius: 3px;
   background: var(--edge);
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   overflow: hidden;
+  container-type: size;
 }
+/* Gradient spans the whole bar (100cqh), so the fill reveals it at any bar height. */
 .lvl-fill {
   width: 100%;
   height: 0;
-  background: linear-gradient(to top, var(--green), var(--amber));
-  background-size: 100% 64px;
-  background-position: bottom;
+  background: linear-gradient(to top, var(--green), var(--amber) 100cqh);
 }
 .lvl-dim {
   opacity: 0.6;
@@ -379,13 +403,16 @@ body[data-view="profile"] .view-profile,
 body[data-view="settings"] .view-settings {
   display: flex;
 }
+.view-live {
+  overflow-y: auto;
+}
 
 /* --- Scope (ribbon) ------------------------------------------------------- */
 
 .scope {
   position: relative;
   flex: 0 0 auto;
-  height: clamp(180px, 34vh, 252px);
+  height: clamp(96px, min(34vh, 26vw), 252px); /* narrower window → shorter scope */
   overflow: hidden;
   background: #000;
   border-bottom: 0.5px solid var(--shadow-edge);
@@ -529,7 +556,7 @@ body[data-view="settings"] .view-settings {
 .tpane {
   position: relative;
   flex: 1 1 0;
-  min-height: 0;
+  min-height: 120px; /* short tiled windows: scroll the view rather than lose the transcript */
   overflow: hidden;
   background: var(--pane);
 }
@@ -795,7 +822,7 @@ body[data-view="settings"] .view-settings {
   border-top: 0.5px solid var(--shadow-edge);
   padding: 12px 16px 14px;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(0, 1.5fr);
+  grid-template-columns: 44px repeat(5, minmax(0, 1fr)) minmax(0, 1.5fr);
   gap: 10px;
 }
 
@@ -902,6 +929,7 @@ body[data-view="settings"] .view-settings {
 }
 .card-head {
   display: flex;
+  gap: 8px;
   justify-content: space-between;
   align-items: baseline;
 }
@@ -910,7 +938,7 @@ body[data-view="settings"] .view-settings {
 }
 .spark {
   width: 100%;
-  flex: 1;
+  flex: 1 1 30px; /* definite basis: the SVG's intrinsic size mustn't set the card height */
   min-height: 30px;
   margin-top: 4px;
   overflow: visible;
@@ -1042,9 +1070,10 @@ body[data-view="settings"] .view-settings {
 }
 .panel-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px 10px;
 }
 
 .pace-panel {
@@ -1054,7 +1083,8 @@ body[data-view="settings"] .view-settings {
 }
 .legend {
   display: flex;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 4px 14px;
   font-size: 10px;
   color: var(--ink-2);
 }
@@ -1573,7 +1603,11 @@ body.no-hover-fx #shards {
   font-size: 9px;
   color: var(--ink-3);
 }
+/* Zero-height so the weekday labels don't make their rows taller than the rest. */
 .act-grid > span {
+  height: 0;
+  display: flex;
+  align-items: center;
   line-height: 1;
   align-self: center;
 }
@@ -1601,3 +1635,121 @@ body.no-hover-fx #shards {
 }
 .act-legend .day:first-of-type { margin-left: 3px; }
 .act-legend .day:last-of-type { margin-right: 3px; }
+
+/* --- Tiled / split-screen windows -----------------------------------------
+   Half-screen splits (~630×680 or ~1270×335 logical at 1.5x) land in these.
+   Keep tauri.conf.json free of minWidth/minHeight: Hyprland tiles below the
+   minimum anyway and squashes the oversized buffer into the tile. */
+
+/* Rows of three cards on a 6-column grid (the second row's two span 3, so no
+   hole); the pace card gets a full-width row. */
+@media (max-width: 900px) {
+  .dock {
+    grid-template-columns: 44px repeat(6, minmax(0, 1fr));
+    padding: 10px 12px 12px;
+    gap: 8px;
+  }
+  .tiles {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .dock > .card,
+  .tiles > .tile {
+    grid-column: span 2;
+  }
+  .dock > .lvl {
+    grid-column: auto;
+    grid-row: span 3;
+  }
+  .dock > :nth-child(n + 5),
+  .tiles > .tile:nth-child(n + 4) {
+    grid-column: span 3;
+  }
+  .dock > .card-pace {
+    grid-column: 2 / -1;
+  }
+
+  .rep-bottom {
+    flex: none;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(170px, auto);
+  }
+  .rep-bottom > :last-child {
+    grid-column: 1 / -1;
+  }
+  .rep-hero {
+    flex-wrap: wrap;
+  }
+  .rep-vr {
+    display: none;
+  }
+  .rep-tip {
+    max-width: none;
+    flex-basis: 100%;
+  }
+}
+
+@media (max-width: 600px) {
+  .dock,
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dock > .lvl {
+    display: none; /* the ribbon already shows input level */
+  }
+  .dock > .card:nth-child(n),
+  .tiles > .tile:nth-child(n) {
+    grid-column: auto;
+  }
+  .dock > .card:nth-child(n + 6),
+  .tiles > .tile:last-child {
+    grid-column: 1 / -1;
+  }
+  .rep-bottom,
+  .prof-tiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .scope-bl,
+  #rms-label {
+    display: none;
+  }
+  .set-row {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .act-months,
+  .act-grid {
+    gap: 1px;
+  }
+  .prof-table {
+    display: block; /* scroll sideways instead of spilling out of the panel */
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
+
+/* Short: a slim scope header (preset also lives in Settings) and tighter cards,
+   so the transcript keeps its room. */
+@media (max-height: 480px) {
+  .scope {
+    height: 60px;
+  }
+  .scope-bl,
+  .scope-br,
+  #rms-label {
+    display: none;
+  }
+  .scope-tl,
+  .scope-tr {
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  .dock {
+    padding-block: 8px 10px;
+  }
+  .dock .card {
+    padding-block: 7px 8px;
+  }
+  .dock .big {
+    font-size: 22px;
+  }
+}

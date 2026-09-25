@@ -408,8 +408,7 @@ function renderStats() {
   setText("words-sub", `${formatTimestamp(speakingMs)} speaking`);
 
   const series = perSecondPace();
-  const spark = $("pace-spark");
-  if (spark) spark.innerHTML = sparkSvg(series, preset);
+  drawSpark(series);
   setText("peak-label", `peak ${Math.max(0, ...series.map((p) => p.wpm))}`);
   setLiveRing(s.words > 0 ? s.scores.overall : null);
 
@@ -451,12 +450,11 @@ function wpmAxis(peak: number): [number, number] {
   return [80, Math.max(200, Math.ceil(peak / 40) * 40)];
 }
 
-// Contents of the dock's pace sparkline (viewBox 240×44): target band, WPM
-// line, a dot at "now" and an amber × at each filler onset.
-function sparkSvg(series: SecondPace[], preset: Preset): string {
+// Contents of the dock's pace sparkline: target band, WPM line, a dot at "now"
+// and an amber × at each filler onset. Drawn in CSS pixels (W×H = the element's
+// size), not a stretched viewBox, so the dot and × keep their shape at any width.
+function sparkSvg(series: SecondPace[], preset: Preset, W: number, H: number): string {
   if (series.length < 2) return "";
-  const W = 240;
-  const H = 44;
   const [lo, hi] = wpmAxis(Math.max(...series.map((p) => p.wpm)));
   const x = (sec: number) => (sec / (series.length - 1)) * W;
   const y = (v: number) => H - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * H;
@@ -471,6 +469,17 @@ function sparkSvg(series: SecondPace[], preset: Preset): string {
     `<circle cx="${x(last).toFixed(1)}" cy="${y(series[last].wpm).toFixed(1)}" r="2.5" style="fill:var(--blue)" />` +
     (crosses.trim() ? `<path d="${crosses}" stroke="#ffd60a" stroke-width="1.5" stroke-linecap="round" fill="none" vector-effect="non-scaling-stroke" />` : "")
   );
+}
+
+// Also run by a ResizeObserver: while the live view is hidden the spark has no
+// size, so it's skipped and redrawn when the view (or window) resizes.
+function drawSpark(series = perSecondPace()) {
+  const spark = $("pace-spark");
+  if (!spark) return;
+  const { width, height } = spark.getBoundingClientRect();
+  if (!width || !height) return;
+  spark.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  spark.innerHTML = sparkSvg(series, PRESETS[currentPreset], width, height);
 }
 
 const GRADE_COLOR: Record<string, string> = { A: "#30d158", B: "#30d158", C: "#ffd60a", D: "#ff9f0a", E: "#ff453a" };
@@ -1127,9 +1136,11 @@ function setRecordingUi(on: boolean) {
   recordBtn.setAttribute("aria-label", on ? "Stop recording" : "Start recording");
   recordBtn.dataset.tip = label;
   $("rec-label")?.classList.toggle("on", on);
+  $("live-btn")?.classList.toggle("recording", on);
 }
 
-// Wall-clock session timer on the scope; also counts the drill button down.
+// Wall-clock session timer on the scope; also counts the timer (drill) down
+// and stops the recording when it runs out. drillMs 0 = no timer.
 let clockTimer = 0;
 let recordStartedAt = 0;
 let drillEndsAt = 0;
@@ -1137,16 +1148,20 @@ let drillEndsAt = 0;
 function tickClock() {
   const now = performance.now();
   setText("clock", formatTimestamp(recordStartedAt ? now - recordStartedAt : 0));
-  const drill = $("drill-btn");
-  if (drill) {
-    const left = drillEndsAt - now;
-    drill.textContent = left > 0 ? `${Math.ceil(left / 1000)}s` : `${drillMs / 1000}s`;
-    drill.classList.toggle("drilling", left > 0);
+  const left = drillEndsAt - now;
+  if (drillEndsAt && left <= 0 && recording) {
+    drillEndsAt = 0;
+    void toggleRecording(); // stopClock re-ticks the display
+    return;
   }
+  const running = left > 0;
+  setText("drill-label", drillMs ? formatTimestamp(running ? Math.ceil(left / 1000) * 1000 : drillMs) : "Off");
+  $("drill-btn")?.classList.toggle("drilling", running);
 }
 
 function startClock() {
   recordStartedAt = performance.now();
+  drillEndsAt = drillMs ? recordStartedAt + drillMs : 0;
   clearInterval(clockTimer);
   clockTimer = window.setInterval(tickClock, 250);
   tickClock();
@@ -1158,7 +1173,7 @@ function stopClock() {
   tickClock();
 }
 
-// Input level meter in the rail: live level plus a slowly falling peak.
+// Input level meter in the dock: live level plus a slowly falling peak.
 let peakLevel = 0;
 function setLevelMeter(level: number) {
   peakLevel = Math.max(level, peakLevel * 0.97);
@@ -2122,13 +2137,15 @@ const PROMPTS = [
   "What advice would you give your younger self?",
 ];
 
-let drillMs = 60_000;
+let drillMs = 0;
 
 window.addEventListener("DOMContentLoaded", () => {
   const ribbonCanvas = document.querySelector<HTMLCanvasElement>("#ribbon");
   if (ribbonCanvas) ribbon = new Ribbon(ribbonCanvas, "idle");
   const shardsCanvas = document.querySelector<HTMLCanvasElement>("#shards");
   if (shardsCanvas) new Shards(shardsCanvas, shardsCanvas.parentElement!);
+  const sparkEl = $("pace-spark");
+  if (sparkEl) new ResizeObserver(() => drawSpark()).observe(sparkEl);
 
   recordBtn = $<HTMLButtonElement>("record-btn");
   statusEl = $("status");
@@ -2228,30 +2245,26 @@ window.addEventListener("DOMContentLoaded", () => {
     applyTheme(themeSel.value);
   });
 
-  const drillSecs = Number(load(DRILL_KEY));
-  if (drillSecs > 0) drillMs = drillSecs * 1000;
-  const syncDrill = () => {
-    const btn = $("drill-btn");
-    if (btn) btn.dataset.tip = `${drillMs / 1000}-second timer — records, then stops`;
-    tickClock();
-  };
-  // Right-click (or the context-menu key) on the timer opens a length picker.
+  drillMs = (Number(load(DRILL_KEY)) || 0) * 1000;
+  const syncDrill = tickClock;
+  // Clicking the timer opens a length picker. The picked length applies to
+  // every recording started afterwards; Off records until stopped.
   const timerMenu = $("timer-menu");
   const timerCustom = $<HTMLInputElement>("timer-custom");
   const closeTimerMenu = () => timerMenu?.setAttribute("hidden", "");
   const setDrill = (secs: number) => {
-    if (!(secs > 0)) return;
-    drillMs = Math.round(Math.min(3600, Math.max(5, secs))) * 1000;
+    if (!(secs >= 0)) return;
+    drillMs = secs && Math.round(Math.min(3600, Math.max(5, secs))) * 1000;
     save(DRILL_KEY, String(drillMs / 1000));
     syncDrill();
     closeTimerMenu();
   };
-  $("drill-btn")?.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
+  $("drill-btn")?.addEventListener("click", (e) => {
     if (!timerMenu) return;
+    if (!timerMenu.hidden) return closeTimerMenu();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    timerMenu.style.left = `${r.right + 6}px`;
-    timerMenu.style.top = `${r.top}px`;
+    timerMenu.style.left = `${r.left}px`;
+    timerMenu.style.top = `${r.bottom + 6}px`;
     timerMenu.querySelectorAll<HTMLElement>("[data-s]").forEach((b) =>
       b.setAttribute("aria-current", String(Number(b.dataset.s) * 1000 === drillMs)),
     );
@@ -2264,7 +2277,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (b) setDrill(Number(b.dataset.s));
   });
   timerCustom?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") setDrill(Number(timerCustom.value));
+    if (e.key === "Enter" && timerCustom.value) setDrill(Number(timerCustom.value));
   });
   timerMenu?.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -2273,7 +2286,8 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
   document.addEventListener("pointerdown", (e) => {
-    if (timerMenu && !timerMenu.contains(e.target as Node)) closeTimerMenu();
+    const t = e.target as Element;
+    if (timerMenu && !timerMenu.contains(t) && !t.closest("#drill-btn")) closeTimerMenu();
   });
   syncDrill();
 
@@ -2420,18 +2434,6 @@ window.addEventListener("DOMContentLoaded", () => {
     promptEl.textContent = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
     promptEl.removeAttribute("hidden");
   });
-  // Timer: starts recording if needed, then auto-stops this session after drillMs.
-  $("drill-btn")?.addEventListener("click", async () => {
-    if (drillEndsAt > performance.now()) return;
-    if (!recording) await toggleRecording();
-    if (!recording) return;
-    const timedSession = sessionId;
-    drillEndsAt = performance.now() + drillMs;
-    tickClock();
-    setTimeout(() => {
-      if (recording && sessionId === timedSession) void toggleRecording();
-    }, drillMs);
-  });
 
   listen<TranscriptSegment>("transcript_segment", (event) => {
     const segment = withPreviewPrefix(event.payload);
@@ -2458,7 +2460,7 @@ window.addEventListener("DOMContentLoaded", () => {
     appendError(event.payload);
   });
 
-  // Mic RMS → 0..1 drive for the ribbon and the rail's level meter. Speech RMS
+  // Mic RMS → 0..1 drive for the ribbon and the dock's level meter. Speech RMS
   // is small (~0.02–0.1) so a plain multiply barely moves the quiet end; sqrt is
   // a perceptual curve that lifts soft speech into a visible range. Bump the
   // gain if it still reacts weakly.

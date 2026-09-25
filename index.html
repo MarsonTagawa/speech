@@ -11,10 +11,10 @@
   <body data-view="live">
     <div class="app">
       <!-- Nav rail: page switches keep the same slot on every page. The titlebar
-           is gone (decorations off), so the rails double as the drag region. -->
+           is gone (decorations off), so the nav rail and toolbar strip double as the drag region. -->
       <nav class="nav" data-tauri-drag-region>
         <button id="live-btn" class="nav-btn" type="button" data-tip="Live session">
-          <span class="nav-dot"></span>LIVE
+          <svg class="nav-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg><span class="nav-dot"></span>LIVE
         </button>
         <button id="stats-btn" class="nav-btn" type="button" disabled data-tip="Session report">
           <svg viewBox="0 0 24 24"><line x1="18" x2="18" y1="20" y2="10" /><line x1="12" x2="12" y1="20" y2="4" /><line x1="6" x2="6" y1="20" y2="14" /></svg>STATS
@@ -27,30 +27,6 @@
           <svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>SET
         </button>
       </nav>
-
-      <!-- Tool rail (live page only): transport, session tools, level meter. -->
-      <aside class="rail" data-tauri-drag-region>
-        <div class="rec-group">
-          <button id="record-btn" class="rec-btn" aria-label="Start recording" data-tip="Start recording (Space)"></button>
-          <span id="rec-label" class="rec-label">REC</span>
-        </div>
-        <div class="rail-btns">
-          <button id="reset-btn" class="rail-btn" type="button" data-tip="Reset — clears the transcript and all metrics for this session">
-            <span class="rst-icon"></span>RST
-          </button>
-          <button id="prompt-btn" class="rail-btn" type="button" data-tip="Prompt — show a random speaking topic">PRM</button>
-          <button id="drill-btn" class="rail-btn" type="button" data-tip="Timer — records for a set time, then stops (right-click to change)">60s</button>
-          <button id="script-btn" class="rail-btn" type="button" aria-pressed="false" data-tip="Script read-along — paste a script and track your words against it">SCR</button>
-        </div>
-        <div class="rail-spacer" data-tauri-drag-region></div>
-        <div class="lvl" data-tip="Input level — live and peak">
-          <span class="lvl-label">LVL</span>
-          <div class="lvl-bars">
-            <div class="lvl-bar"><div id="lvl-live" class="lvl-fill"></div></div>
-            <div class="lvl-bar"><div id="lvl-peak" class="lvl-fill lvl-dim"></div></div>
-          </div>
-        </div>
-      </aside>
 
       <!-- 2a: live session -->
       <main class="view view-live">
@@ -83,6 +59,23 @@
           </div>
         </section>
 
+        <!-- Toolbar strip: transport + session tools, atop the transcript. -->
+        <div class="strip" data-tauri-drag-region>
+          <button id="record-btn" class="rec-btn" aria-label="Start recording" data-tip="Start recording (Space)"></button>
+          <span id="rec-label" class="rec-label">REC</span>
+          <div class="strip-sep"></div>
+          <button id="reset-btn" class="tool-btn icon" type="button" aria-label="Reset session" data-tip="Reset — clears the transcript and all metrics for this session">
+            <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
+          </button>
+          <button id="prompt-btn" class="tool-btn" type="button" data-tip="Prompt — show a random speaking topic">PRM</button>
+          <button id="drill-btn" class="tool-btn timer" type="button" data-tip="Timer — recordings stop automatically after this long">
+            <svg viewBox="0 0 24 24"><line x1="10" x2="14" y1="2" y2="2" /><line x1="12" x2="15" y1="14" y2="11" /><circle cx="12" cy="14" r="8" /></svg><span id="drill-label">Off</span><i class="chev"></i>
+          </button>
+          <button id="script-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Script read-along" data-tip="Script read-along — paste a script and track your words against it">
+            <svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M16 13H8" /><path d="M16 17H8" /><path d="M10 9H8" /></svg>
+          </button>
+        </div>
+
         <section class="tpane">
           <div class="tfade"></div>
           <p id="practice-prompt" class="practice-prompt" hidden></p>
@@ -110,6 +103,13 @@
         </section>
 
         <section class="dock">
+          <div class="card lvl" data-tip="Input level — live and peak">
+            <div class="lvl-bars">
+              <div class="lvl-bar"><div id="lvl-live" class="lvl-fill"></div></div>
+              <div class="lvl-bar"><div id="lvl-peak" class="lvl-fill lvl-dim"></div></div>
+            </div>
+            <span class="lvl-label">LVL</span>
+          </div>
           <div class="card">
             <div class="card-top"><span id="stat-wpm" class="big">0</span><span class="unit" data-tip="Speaking rate in words per minute, over voiced time">wpm</span></div>
             <div class="track">
@@ -141,7 +141,7 @@
           <div class="card card-pace">
             <div class="pace-col">
               <div class="card-head"><span class="label">Pace</span><span id="peak-label" class="card-sub" data-tip="Fastest five-second stretch this session">peak 0</span></div>
-              <svg id="pace-spark" class="spark" viewBox="0 0 240 44" preserveAspectRatio="none" data-tip="Pace over time — blue line is words per minute, green band the target range, amber crosses are fillers"></svg>
+              <svg id="pace-spark" class="spark" data-tip="Pace over time — blue line is words per minute, green band the target range, amber crosses are fillers"></svg>
             </div>
             <div id="live-ring" class="ring" data-tip="Delivery score so far">
               <div class="ring-in"><span id="live-score" class="ring-num">–</span><span id="live-grade" class="ring-grade"></span></div>
@@ -242,6 +242,7 @@
 
     <div id="tip" class="tip"></div>
     <div id="timer-menu" class="dd-list timer-menu" role="menu" aria-label="Timer length" hidden>
+      <button type="button" role="menuitem" data-s="0">Off</button>
       <button type="button" role="menuitem" data-s="30">30 s</button>
       <button type="button" role="menuitem" data-s="60">1 min</button>
       <button type="button" role="menuitem" data-s="120">2 min</button>

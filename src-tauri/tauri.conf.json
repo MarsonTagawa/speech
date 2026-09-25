@@ -16,8 +16,6 @@
         "title": "Speech",
         "width": 1120,
         "height": 740,
-        "minWidth": 900,
-        "minHeight": 620,
         "decorations": false
       }
     ],
