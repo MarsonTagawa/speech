@@ -1,5 +1,6 @@
 mod audio;
 mod history;
+mod models;
 mod pitch;
 mod vad;
 mod whisper;
@@ -9,7 +10,6 @@ use std::sync::Mutex;
 use tauri::Manager;
 use vad::{SileroVad, VadModel};
 use whisper::{AccurateModel, WhisperModel};
-use whisper_rs::{WhisperContext, WhisperContextParameters, WhisperState};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -22,26 +22,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // Loads a bundled ggml model and creates its reusable decode state.
-            // Flash attention lowers attention memory and speeds decoding
-            // (notably on the Vulkan backend); we don't use DTW timestamps, so
-            // its DTW incompatibility doesn't apply. The state holds an Arc to
-            // the context, so the context stays alive after the wrapper is
-            // dropped; reusing one state avoids reallocating decode buffers per
-            // utterance.
-            let load_model = |resource: &str, use_gpu: bool| -> Result<WhisperState, Box<dyn std::error::Error>> {
-                let path = app.path().resolve(resource, tauri::path::BaseDirectory::Resource)?;
-                let mut params = WhisperContextParameters::default();
-                params.use_gpu(use_gpu);
-                // Flash attention OFF: on this Vulkan iGPU (Radeon RENOIR, no
-                // matrix cores) it takes a slow fallback path — medium took 13.1s
-                // on an 11s clip with it vs 1.6s without, tiny 0.94s vs 0.17s,
-                // with identical text.
-                params.flash_attn(false);
-                let ctx = WhisperContext::new_with_params(&path.to_string_lossy(), params)?;
-                Ok(ctx.create_state()?)
-            };
-
             // Both models run on the GPU (Vulkan). They can't decode at the same
             // time — ggml shares one Vulkan device/queue across contexts and
             // concurrent `state.full` calls abort the process — but that's handled
@@ -54,46 +34,36 @@ pub fn run() {
             //   GPU decodes in ~160-500ms, keeping the live preview and immediate
             //   commit fast. Its lower accuracy doesn't matter — the medium model
             //   re-decodes and replaces this draft (see AccurateModel).
-            app.manage(WhisperModel(Mutex::new(load_model("resources/ggml-tiny.en-q5_1.bin", true)?)));
+            app.manage(WhisperModel(Mutex::new(whisper::load_model(app.handle(), "tiny.en")?)));
 
-            //   Accurate model — English-only medium (q5_0). Slower (~1.6s for an
-            //   11s clip on GPU) but far more accurate; runs the deferred correction pass.
-            app.manage(AccurateModel(Mutex::new(load_model("resources/ggml-medium.en-q5_0.bin", true)?)));
+            //   The frontend swaps in the user's chosen live model at startup
+            //   (whisper::set_live_model); tiny.en is bundled so there's always one.
+            //
+            //   Accurate model — medium.en by default, chosen in settings. Slower
+            //   (~1.6s for an 11s clip on GPU) but far more accurate; runs the
+            //   deferred correction pass. Loaded per pass by the correction
+            //   worker, not here.
+            app.manage(AccurateModel(Mutex::new(None)));
 
-            // Warm both models up on a background thread. The first decode after
+            // Warm the fast model up on a background thread. The first decode after
             // load pays one-time costs — Vulkan shader compilation, compute-graph
             // setup, buffer allocation — that would otherwise stall the user's
-            // first spoken utterance (fast model) or first correction (accurate
-            // model) for seconds. A throwaway decode on a short silence buffer
+            // first spoken utterance for seconds. A throwaway decode on a short silence buffer
             // pays it during launch instead. Backgrounded so it doesn't hold up
-            // the window; each model's mutex serializes the warmup against real
+            // the window; the model's mutex serializes the warmup against real
             // decodes, so if recording starts first the first decode just waits
             // for the warmup (the cost it would pay anyway).
             let warmup_handle = app.handle().clone();
             std::thread::spawn(move || {
-                // 1s of silence (16kHz mono) still runs the full encoder+decoder
-                // graph, which is what triggers the shader/allocation work we
-                // want cached before the first real utterance.
-                let silence = vec![0.0f32; 16_000];
                 let fast = warmup_handle
                     .state::<WhisperModel>()
                     .0
                     .lock()
                     .map_err(|e| e.to_string())
-                    .and_then(|mut state| whisper::run(&mut state, &silence, false));
+                    .and_then(|mut state| whisper::warm_up(&mut state));
                 match fast {
                     Ok(_) => eprintln!("[whisper] fast warmup complete"),
                     Err(e) => eprintln!("[whisper] fast warmup failed: {e}"),
-                }
-                let accurate = warmup_handle
-                    .state::<AccurateModel>()
-                    .0
-                    .lock()
-                    .map_err(|e| e.to_string())
-                    .and_then(|mut state| whisper::run(&mut state, &silence, true));
-                match accurate {
-                    Ok(_) => eprintln!("[whisper] accurate warmup complete"),
-                    Err(e) => eprintln!("[whisper] accurate warmup failed: {e}"),
                 }
             });
 
@@ -113,6 +83,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             whisper::transcribe,
+            whisper::set_live_model,
+            models::list_models,
+            models::download_model,
+            models::delete_model,
             audio::start_recording,
             audio::stop_recording,
             audio::start_mic_test,

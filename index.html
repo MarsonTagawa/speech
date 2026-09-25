@@ -56,7 +56,7 @@
             <div id="rms-label" class="sub" data-tip="Current mic signal level (RMS) and model sample rate">rms 0.00 · 16 kHz</div>
           </div>
           <div class="scope-bl sub">
-            <span data-tip="Model chain — tiny.en streams text instantly, medium.en re-decodes it for accuracy">tiny.en → medium.en</span>
+            <span id="model-chain" data-tip="Model chain — the live model streams text instantly, the correction model re-decodes it for accuracy (change in Settings)">tiny.en → medium.en</span>
             <span class="gpu" data-tip="Running on the local GPU — audio never leaves this machine"><i></i>GPU · on-device</span>
           </div>
           <div id="preset-seg" class="seg scope-br" role="radiogroup" aria-label="Speaking context">
@@ -211,6 +211,18 @@
             <span>Accurate correction<span class="sub">Re-transcribe with the larger model after Stop. Off = instant results, rougher text</span></span>
             <input id="set-correct" type="checkbox" role="switch" />
           </label>
+          <div class="set-row">
+            <span>Live model<span class="sub">Streams text while you talk. Bigger = cleaner drafts, but text lags</span></span>
+            <select id="set-live-model"></select>
+          </div>
+          <div class="set-row">
+            <span>Correction model<span class="sub">Re-transcribes after Stop. Bigger = more accurate, longer wait</span></span>
+            <select id="set-correct-model"></select>
+          </div>
+        </div>
+        <div class="panel">
+          <span class="label">Models</span>
+          <div id="model-list"></div>
         </div>
         <div class="panel">
           <span class="label">Data</span>

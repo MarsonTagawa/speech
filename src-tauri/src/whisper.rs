@@ -1,5 +1,6 @@
-use whisper_rs::{WhisperState, FullParams, SamplingStrategy};
+use whisper_rs::{WhisperContext, WhisperContextParameters, WhisperState, FullParams, SamplingStrategy};
 use std::sync::Mutex;
+use tauri::Manager;
 
 /// Serializes every GPU decode across both models. The fast (tiny) and accurate
 /// (medium) models both run on the Vulkan backend, which shares one device/queue
@@ -31,7 +32,29 @@ pub struct WhisperModel(pub Mutex<WhisperState>);
 /// "crashes when I speak" bug; see examples/concurrency.rs). Two things keep that
 /// safe: [`GPU_LOCK`] serializes all decodes, and corrections only run after
 /// recording stops, so a slow medium decode never blocks a live interim.
-pub struct AccurateModel(pub Mutex<WhisperState>);
+///
+/// `None` between correction passes: the worker loads the chosen model (by id,
+/// see `models`) on the first job and drops it when the pass ends, freeing ~1GB
+/// of GPU (shared system) memory while idle.
+pub struct AccurateModel(pub Mutex<Option<(String, WhisperState)>>);
+
+/// Loads a bundled ggml model on the GPU and creates its reusable decode state.
+/// The state holds an Arc to the context, so the context stays alive after the
+/// wrapper is dropped; reusing one state avoids reallocating decode buffers per
+/// utterance. Holds [`GPU_LOCK`]: context init allocates on the shared Vulkan
+/// device, so it mustn't overlap a live decode.
+pub fn load_model(app: &tauri::AppHandle, id: &str) -> Result<WhisperState, String> {
+    let path = crate::models::path(app, id)?;
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu(true);
+    // Flash attention OFF: on this Vulkan iGPU (Radeon RENOIR, no matrix
+    // cores) it takes a slow fallback path — medium took 13.1s on an 11s clip
+    // with it vs 1.6s without, tiny 0.94s vs 0.17s, with identical text.
+    params.flash_attn(false);
+    let _gpu = GPU_LOCK.lock().map_err(|e| e.to_string())?;
+    let ctx = WhisperContext::new_with_params(&path.to_string_lossy(), params).map_err(|e| e.to_string())?;
+    ctx.create_state().map_err(|e| e.to_string())
+}
 
 /// Transcribes 16kHz mono f32 samples. Shared by the manual `transcribe`
 /// command and the recording pipeline's per-utterance calls.
@@ -273,6 +296,28 @@ mod tests {
         assert_eq!(clean_transcript("the quick brown fox"), "the quick brown fox");
         assert_eq!(clean_transcript("um, so, like"), "um, so, like");
     }
+}
+
+/// Swaps the fast (live) model. The new one is loaded and warmed up before it
+/// replaces the old, so live decodes never pay the load or first-decode cost.
+#[tauri::command]
+pub async fn set_live_model(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut state = load_model(&app, &id)?;
+        warm_up(&mut state)?;
+        *app.state::<WhisperModel>().0.lock().map_err(|e| e.to_string())? = state;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The first decode after load pays one-time costs — Vulkan shader
+/// compilation, compute-graph setup, buffer allocation. 1s of silence (16kHz
+/// mono) still runs the full encoder+decoder graph, so a throwaway decode pays
+/// them up front.
+pub fn warm_up(state: &mut WhisperState) -> Result<String, String> {
+    run(state, &vec![0.0f32; 16_000], false)
 }
 
 #[tauri::command]

@@ -625,10 +625,10 @@ function segmentHtml(startMs: number, textHtml: string): string {
 // data-tip). Filled in on mouseover from the line's class, so it survives the
 // innerHTML rewrites and applies to the report's transcript copy too.
 const STATE_TIPS: Record<string, string> = {
-  partial: "Live — rough preview from the fast model (tiny.en) while you're still speaking",
-  draft: "Draft — the fast model's text. The accurate model (medium.en) re-checks it after you stop",
-  corrected: "Corrected — re-transcribed by the accurate model (medium.en) after you stopped",
-  final: "Final — the accurate model had nothing to replace it with (it heard only noise, failed, or correction is off), so the fast model's text stands",
+  partial: "Live — rough preview from the live model while you're still speaking",
+  draft: "Draft — the live model's text. The correction model re-checks it after you stop",
+  corrected: "Corrected — re-transcribed by the correction model after you stopped",
+  final: "Final — the correction model had nothing to replace it with (it heard only noise, failed, or correction is off), so the live model's text stands",
 };
 document.addEventListener("mouseover", (e) => {
   const label = (e.target as Element).closest?.<HTMLElement>(".seg-state");
@@ -1407,7 +1407,7 @@ async function toggleRecording() {
       const statsBtn = $<HTMLButtonElement>("stats-btn");
       if (statsBtn) statsBtn.disabled = true;
       await stopMicTest(false);
-      await invoke("start_recording", { correct: accurateCorrection });
+      await invoke("start_recording", { correct: accurateCorrection, correctionModel });
       recording = true;
       sessionStartTs = Date.now();
       currentSaved = false;
@@ -2659,6 +2659,86 @@ const COUNTDOWN_KEY = "speech.timerCountdown";
 const CORRECT_KEY = "speech.accurateCorrection";
 let accurateCorrection = true;
 
+// Whisper models (see models.rs). tiny.en and medium.en are bundled, so they're
+// the fallbacks when a chosen model is deleted; the rest download on demand.
+const LIVE_MODEL_KEY = "speech.liveModel";
+const CORRECT_MODEL_KEY = "speech.correctionModel";
+let liveModel = "tiny.en";
+let correctionModel = "medium.en";
+type ModelInfo = { id: string; size_mb: number; installed: boolean; bundled: boolean };
+let models: ModelInfo[] = [];
+const MODEL_NOTES: Record<string, string> = {
+  "tiny.en": "Fastest, roughest",
+  "base.en": "Fast, a little cleaner",
+  "small.en": "Balanced",
+  "medium.en": "Accurate",
+  "large-v3-turbo": "Most accurate, slowest",
+};
+const downloading = new Map<string, number>(); // id → percent done
+const modelErrors = new Map<string, string>(); // id → last download failure
+
+function renderModelChain() {
+  setText("model-chain", accurateCorrection ? `${liveModel} → ${correctionModel}` : liveModel);
+}
+
+// Swaps the backend's live model. It loads and warms the new one before
+// switching, so the old model keeps serving until then.
+async function setLiveModel(id: string) {
+  liveModel = id;
+  save(LIVE_MODEL_KEY, id);
+  renderModelChain();
+  try {
+    await invoke("set_live_model", { id });
+  } catch (e) {
+    appendError(String(e));
+  }
+}
+
+// Fills both model pickers with installed models and redraws the Models list.
+async function refreshModels() {
+  models = await invoke<ModelInfo[]>("list_models");
+  const installed = models.filter((m) => m.installed);
+  if (!installed.some((m) => m.id === liveModel)) void setLiveModel("tiny.en");
+  if (!installed.some((m) => m.id === correctionModel)) correctionModel = "medium.en";
+  for (const [id, value] of [["set-live-model", liveModel], ["set-correct-model", correctionModel]]) {
+    const sel = $<HTMLSelectElement>(id);
+    if (!sel) continue;
+    sel.innerHTML = installed.map((m) => `<option value="${m.id}">${m.id}</option>`).join("");
+    sel.value = value;
+    syncSelect(sel);
+  }
+  renderModelChain();
+  const list = $("model-list");
+  if (!list) return;
+  list.innerHTML = models
+    .map((m) => {
+      const pct = downloading.get(m.id);
+      const action = m.bundled
+        ? `<span class="sub">Bundled</span>`
+        : pct !== undefined
+          ? `<button class="ctl" type="button" data-progress="${m.id}" disabled>${pct}%</button>`
+          : m.installed
+            ? `<button class="ctl" type="button" data-delete="${m.id}">Delete</button>`
+            : `<button class="ctl" type="button" data-download="${m.id}">${modelErrors.has(m.id) ? "Retry" : "Download"}</button>`;
+      const note = modelErrors.has(m.id) ? `Download failed: ${escapeHtml(modelErrors.get(m.id)!)}` : `${MODEL_NOTES[m.id] ?? ""} · ${m.size_mb} MB`;
+      return `<div class="set-row"><span>${m.id}<span class="sub">${note}</span></span>${action}</div>`;
+    })
+    .join("");
+}
+
+async function downloadModel(id: string) {
+  downloading.set(id, 0);
+  modelErrors.delete(id);
+  void refreshModels();
+  try {
+    await invoke("download_model", { id });
+  } catch (e) {
+    modelErrors.set(id, String(e));
+  }
+  downloading.delete(id);
+  await refreshModels();
+}
+
 // Consecutive calendar days with at least one session, ending today (or
 // yesterday, so the streak survives until you've had a chance to practise today).
 function dayStreak(timestamps: number[], now = Date.now()): number {
@@ -3257,7 +3337,44 @@ window.addEventListener("DOMContentLoaded", () => {
       apply(box.checked);
     });
   };
-  bindToggle("set-correct", CORRECT_KEY, (on) => (accurateCorrection = on));
+  bindToggle("set-correct", CORRECT_KEY, (on) => {
+    accurateCorrection = on;
+    renderModelChain();
+  });
+
+  // The backend always starts on tiny.en; swap in the saved pick if different.
+  correctionModel = load(CORRECT_MODEL_KEY) ?? correctionModel;
+  liveModel = load(LIVE_MODEL_KEY) ?? liveModel;
+  void refreshModels().then(() => {
+    if (liveModel !== "tiny.en") void setLiveModel(liveModel);
+  });
+  const liveSel = $<HTMLSelectElement>("set-live-model");
+  liveSel?.addEventListener("change", () => void setLiveModel(liveSel.value));
+  const correctSel = $<HTMLSelectElement>("set-correct-model");
+  correctSel?.addEventListener("change", () => {
+    correctionModel = correctSel.value;
+    save(CORRECT_MODEL_KEY, correctionModel);
+    renderModelChain();
+  });
+  $("model-list")?.addEventListener("click", async (e) => {
+    const btn = (e.target as Element).closest<HTMLButtonElement>("button");
+    if (btn?.dataset.download) void downloadModel(btn.dataset.download);
+    if (btn?.dataset.delete) {
+      btn.disabled = true;
+      try {
+        await invoke("delete_model", { id: btn.dataset.delete });
+      } catch (e) {
+        appendError(String(e));
+      }
+      await refreshModels();
+    }
+  });
+  listen<{ id: string; done: number; total: number }>("model_download", ({ payload: p }) => {
+    const pct = p.total ? Math.floor((p.done / p.total) * 100) : 0;
+    downloading.set(p.id, pct);
+    const btn = document.querySelector<HTMLButtonElement>(`[data-progress="${p.id}"]`);
+    if (btn) btn.textContent = p.total ? `${pct}%` : `${Math.round(p.done / 1e6)} MB`;
+  });
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
   bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);
 

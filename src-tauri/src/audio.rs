@@ -143,8 +143,9 @@ pub struct RecordingHandle {
 pub struct RecordingState(pub Mutex<Option<RecordingHandle>>);
 
 /// `correct: false` skips the accurate-model pass; the fast drafts stand as final.
+/// `correction_model` is the model id (see `models`) the pass decodes with.
 #[tauri::command]
-pub fn start_recording(app: AppHandle, correct: bool) -> Result<(), String> {
+pub fn start_recording(app: AppHandle, correct: bool, correction_model: String) -> Result<(), String> {
     let recording_state = app.state::<RecordingState>();
     let mut guard = recording_state.0.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
@@ -172,7 +173,7 @@ pub fn start_recording(app: AppHandle, correct: bool) -> Result<(), String> {
     let (correction_tx, correction_rx) = std::sync::mpsc::channel::<CorrectionJob>();
     {
         let worker_app = app.clone();
-        std::thread::spawn(move || run_correction_worker(worker_app, correction_rx, generation, correct));
+        std::thread::spawn(move || run_correction_worker(worker_app, correction_rx, generation, correct, correction_model));
     }
 
     let capture_thread = std::thread::spawn(move || {
@@ -626,9 +627,21 @@ fn run_processing_loop(
                     samples_since_partial = 0;
                     let end_ms = start_ms + utterance_ms;
                     let audio = std::mem::take(&mut utterance);
-                    // Emit the acoustic analysis (waveform + hesitation pauses)
-                    // for this committed utterance before the text decode kicks
-                    // off; the frontend correlates it to the line by index.
+                    // Kick off the text decode first so the committed line never
+                    // waits on the pitch tracker below.
+                    spawn_transcription(
+                        app.clone(),
+                        audio.clone(),
+                        utterance_index,
+                        start_ms,
+                        end_ms,
+                        0,
+                        true,
+                        None,
+                    );
+                    // Acoustic analysis (waveform + hesitation pauses + pitch);
+                    // the frontend correlates it to the line by index, in either
+                    // arrival order.
                     let probs = std::mem::take(&mut utterance_probs);
                     let _ = app.emit(
                         "utterance_analysis",
@@ -640,18 +653,8 @@ fn run_processing_loop(
                         index: utterance_index,
                         start_ms,
                         end_ms,
-                        audio: audio.clone(),
-                    });
-                    spawn_transcription(
-                        app.clone(),
                         audio,
-                        utterance_index,
-                        start_ms,
-                        end_ms,
-                        0,
-                        true,
-                        None,
-                    );
+                    });
                 } else {
                     // Not done yet: emit an interim decode of what we have so far.
                     samples_since_partial += FRAME_SAMPLES;
@@ -694,6 +697,16 @@ fn run_processing_loop(
     if triggered && !utterance.is_empty() {
         let start_ms = utterance_start_sample * 1000 / TARGET_SAMPLE_RATE as u64;
         let end_ms = start_ms + utterance.len() as u64 * 1000 / TARGET_SAMPLE_RATE as u64;
+        spawn_transcription(
+            app.clone(),
+            utterance.clone(),
+            utterance_index,
+            start_ms,
+            end_ms,
+            0,
+            true,
+            None,
+        );
         let _ = app.emit(
             "utterance_analysis",
             analyze_utterance(utterance_index, &utterance, &utterance_probs),
@@ -702,18 +715,8 @@ fn run_processing_loop(
             index: utterance_index,
             start_ms,
             end_ms,
-            audio: utterance.clone(),
+            audio: utterance,
         });
-        spawn_transcription(
-            app,
-            utterance,
-            utterance_index,
-            start_ms,
-            end_ms,
-            0,
-            true,
-            None,
-        );
     }
     // Dropping `correction_tx` here closes the worker's channel, which starts the
     // correction pass.
@@ -727,7 +730,7 @@ fn run_processing_loop(
 /// `whisper::GPU_LOCK`) and a decode can't be interrupted partway through, so a
 /// correction started mid-session makes live text wait for it (~1.6s for an 11s
 /// clip).
-fn run_correction_worker(app: AppHandle, rx: Receiver<CorrectionJob>, generation: u64, correct: bool) {
+fn run_correction_worker(app: AppHandle, rx: Receiver<CorrectionJob>, generation: u64, correct: bool, model: String) {
     let gen_matches = |app: &AppHandle| app.state::<SessionGen>().0.load(Ordering::Acquire) == generation;
     // Blocks until the processing loop drops its sender (capture stopped).
     let jobs: Vec<CorrectionJob> = rx.iter().collect();
@@ -746,7 +749,15 @@ fn run_correction_worker(app: AppHandle, rx: Receiver<CorrectionJob>, generation
             .0
             .lock()
             .map_err(|e| e.to_string())
-            .and_then(|mut state| whisper::run(&mut state, &job.audio, true));
+            .and_then(|mut slot| {
+                if slot.as_ref().map(|(id, _)| id) != Some(&model) {
+                    *slot = None; // free a different model before loading this one
+                    let t = std::time::Instant::now();
+                    *slot = Some((model.clone(), whisper::load_model(&app, &model)?));
+                    eprintln!("[whisper] {model} loaded in {:?}", t.elapsed());
+                }
+                whisper::run(&mut slot.as_mut().unwrap().1, &job.audio, true)
+            });
         // Re-check after the (possibly long) decode; the session may have ended.
         if !gen_matches(&app) {
             continue;
@@ -770,6 +781,10 @@ fn run_correction_worker(app: AppHandle, rx: Receiver<CorrectionJob>, generation
             Ok(_) => {}
             Err(e) => eprintln!("correction failed: {e}"),
         }
+    }
+    // Free medium until the next pass. A concurrent newer worker just reloads it.
+    if let Ok(mut slot) = app.state::<AccurateModel>().0.lock() {
+        *slot = None;
     }
     // Tells the UI the transcript is final, so it can save the session.
     if gen_matches(&app) {

@@ -1622,6 +1622,9 @@ body.timer-countdown.has-timer .countdown {
   display: block;
   margin-top: 2px;
 }
+#model-list {
+  display: contents; /* rows join the panel's flex column and its gap */
+}
 .ctl,
 kbd {
   font: inherit;
