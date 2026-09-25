@@ -1,5 +1,5 @@
 /* Speech — "mixer chassis" redesign (2a live session, 3a session report).
-   The ribbon scope is black in every theme; the light theme re-darkens it locally. */
+   The ribbon scope is black in every dark theme and white in the light one. */
 
 :root {
   --chassis: #121214;
@@ -36,7 +36,7 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* Colorschemes: surfaces, ink and accent (--blue). All dark — the scope stays black. */
+/* Colorschemes: surfaces, ink and accent (--blue). */
 :root[data-theme="midnight"] {
   --chassis: #0b0f19;
   --main: #0d1220;
@@ -96,8 +96,8 @@
   --orange: #f08300;
   --purple: #af52de;
 }
-/* The scope and report hero stay black in every theme, so they keep dark ink. */
-:root[data-theme="light"] :is(.scope, .rep-hero) {
+/* The report hero stays black in every theme, so it keeps dark-theme ink. */
+:root[data-theme="light"] .rep-hero {
   --fg: #fff;
   --ink: #f2f2f7;
   --ink-2: rgba(242, 242, 247, 0.68);
@@ -198,6 +198,7 @@ button {
 body[data-view="live"] #live-btn,
 body[data-view="report"] #stats-btn,
 body[data-view="profile"] #profile-btn,
+body[data-view="speeches"] #speeches-btn,
 body[data-view="settings"] #settings-btn {
   background: color-mix(in srgb, var(--blue) 18%, transparent);
   border-color: color-mix(in srgb, var(--blue) 40%, transparent);
@@ -400,6 +401,7 @@ body[data-view="settings"] #settings-btn {
 body[data-view="live"] .view-live,
 body[data-view="report"] .view-report,
 body[data-view="profile"] .view-profile,
+body[data-view="speeches"] .view-speeches,
 body[data-view="settings"] .view-settings {
   display: flex;
 }
@@ -424,6 +426,29 @@ body[data-view="settings"] .view-settings {
   width: 100%;
   height: 100%;
   display: block;
+}
+/* Light: white scope. */
+:root[data-theme="light"] .scope {
+  background: #fff;
+}
+
+/* Timer countdown (Settings): stands in for the ribbon while a timer is set. */
+.countdown {
+  display: none;
+}
+body.timer-countdown.has-timer #ribbon {
+  display: none;
+}
+body.timer-countdown.has-timer .countdown {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(32px, min(17vh, 13vw), 126px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
 }
 
 .scope-grid {
@@ -755,6 +780,12 @@ body[data-view="settings"] .view-settings {
   justify-content: space-between;
 }
 
+.script-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .file-btn {
   font-size: 10px;
   padding: 5px 10px;
@@ -995,6 +1026,7 @@ body[data-view="settings"] .view-settings {
 
 .view-report,
 .view-profile,
+.view-speeches,
 .view-settings {
   padding: 14px 16px 16px;
   gap: 12px;
@@ -1316,6 +1348,7 @@ body[data-view="settings"] .view-settings {
 
 /* These views scroll; keep panels at their natural height. */
 .view-profile > *,
+.view-speeches > *,
 .view-settings > * {
   flex-shrink: 0;
 }
@@ -1357,6 +1390,122 @@ body[data-view="settings"] .view-settings {
 .prof-table td {
   padding: 6px 8px 6px 0;
   border-top: 0.5px solid var(--edge);
+}
+.speech-spark {
+  display: block;
+  width: 80px;
+  height: 20px;
+  overflow: visible;
+}
+.prof-table tr[data-open] {
+  cursor: pointer;
+}
+.prof-table tr[data-open]:hover td {
+  background: var(--btn);
+}
+.speech-text {
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.speech-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.speech-filters input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.link-btn {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.link-btn:hover {
+  color: var(--blue-2);
+}
+.overview {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.skipped {
+  border-radius: 3px;
+  background: rgba(255, 69, 58, var(--a));
+  color: var(--ink);
+}
+.overview b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.speech-name {
+  align-self: flex-start;
+  text-align: left;
+  cursor: pointer;
+}
+.speech-name:hover {
+  color: var(--blue-2);
+}
+.swatches {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--c);
+  cursor: pointer;
+}
+.swatches .ctl[aria-pressed="true"] {
+  background: var(--btn-hover);
+  border-color: var(--blue);
+}
+.swatch[aria-pressed="true"],
+.swatch[aria-checked="true"] {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.speech-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--c);
+}
+.modal {
+  width: min(520px, calc(100vw - 32px));
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+}
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+.modal .panel {
+  box-shadow: 0 20px 60px var(--shadow-edge);
+}
+.speech-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .set-row {

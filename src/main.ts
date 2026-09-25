@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/400-italic.css";
 import "@fontsource/ibm-plex-mono/500.css";
@@ -7,6 +8,7 @@ import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
 import { Ribbon } from "./ribbon";
 import { Shards } from "./shards";
+import { troubleSpots } from "./passages";
 
 let ribbon: Ribbon | null = null;
 
@@ -111,7 +113,7 @@ let sessionId = 0;
 // Last script-alignment result (null until a script is used), so the end-of-
 // session report can score articulation. Updated every re-align in renderScriptMatch.
 let lastScriptResult:
-  | { total: number; hits: number; misses: number; subs: number; accuracy: number }
+  | { total: number; hits: number; misses: number; subs: number; accuracy: number; missed: number[] }
   | null = null;
 
 // The report re-renders live as deferred corrections trickle in after stop, so
@@ -919,6 +921,7 @@ function renderScriptMatch() {
   let hits = 0;
   let misses = 0;
   let subs = 0;
+  const missed: number[] = [];
   let currentSpan: HTMLElement | null = null;
   for (let i = 0; i < scriptSpans.length; i++) {
     let state: string;
@@ -933,6 +936,7 @@ function renderScriptMatch() {
       // The cursor advanced past this word without matching it: skipped.
       state = "script-miss";
       misses++;
+      missed.push(i);
     } else {
       state = "script-pending";
     }
@@ -955,12 +959,98 @@ function renderScriptMatch() {
     misses,
     subs,
     accuracy: pct,
+    missed,
   };
 
   // Keep the current word in view within the panel.
   if (currentSpan) {
     scriptDisplay.scrollTop = currentSpan.offsetTop - scriptDisplay.clientHeight / 2;
   }
+}
+
+// Saved speeches: named scripts you come back to. Sessions recorded against one
+// carry its id (SessionSummary.speech), so the report and profile can chart
+// progress on that speech across attempts.
+interface Speech {
+  id: string;
+  title: string;
+  text: string;
+  color?: string; // one of SPEECH_COLORS; older speeches have none
+}
+// Tag colors, fixed across themes so a speech keeps its color.
+const SPEECH_COLORS: Array<[string, string]> = [
+  ["#0a84ff", "Blue"],
+  ["#30d158", "Green"],
+  ["#ffd60a", "Yellow"],
+  ["#ff9f0a", "Orange"],
+  ["#ff453a", "Red"],
+  ["#bf5af2", "Purple"],
+  ["#64d2ff", "Teal"],
+  ["#ff375f", "Pink"],
+];
+const speechColor = (sp: Speech) => sp.color ?? SPEECH_COLORS[0][0];
+const SPEECHES_KEY = "speech.speeches";
+const SPEECH_KEY = "speech.currentSpeech";
+let speeches: Speech[] = [];
+let currentSpeech = ""; // id of the saved speech in the script box; "" = unsaved
+
+const speechTitle = (id: string | undefined) => speeches.find((s) => s.id === id)?.title;
+
+function saveSpeeches() {
+  save(SPEECHES_KEY, JSON.stringify(speeches));
+  save(SPEECH_KEY, currentSpeech);
+}
+
+function renderSpeechPicker() {
+  const sel = $<HTMLSelectElement>("speech-sel");
+  if (sel) {
+    sel.innerHTML =
+      `<option value="">New script</option>` +
+      speeches.map((s) => `<option value="${s.id}">${escapeHtml(s.title)}</option>`).join("");
+    sel.value = currentSpeech;
+    syncSelect(sel);
+  }
+  const btn = $("speech-save");
+  if (btn) {
+    btn.textContent = currentSpeech ? "Clear" : "Save";
+    btn.dataset.tip = currentSpeech ? "Clear the box to start a new script — the speech stays saved" : "Save this script as a speech";
+  }
+}
+
+// Two-click confirm: the first click relabels the button "Sure?" for 3 s and
+// returns false; a second click within that window returns true.
+function confirmClick(btn: HTMLElement): boolean {
+  if (btn.dataset.armed) return true;
+  const label = btn.textContent;
+  btn.dataset.armed = "1";
+  btn.textContent = "Sure?";
+  setTimeout(() => {
+    if (!btn.dataset.armed) return;
+    delete btn.dataset.armed;
+    btn.textContent = label;
+  }, 3000);
+  return false;
+}
+
+// Past sessions keep the id, so re-saving the text starts a fresh progress line.
+function deleteSpeech(id: string) {
+  speeches = speeches.filter((s) => s.id !== id);
+  if (currentSpeech === id) currentSpeech = "";
+  saveSpeeches();
+  renderSpeechPicker();
+}
+
+function loadScript(text: string) {
+  if (scriptInput) scriptInput.value = text;
+  setScript(text);
+}
+
+// Puts a saved speech (or, for "", a blank script) in the read-along box.
+function openSpeech(id: string) {
+  currentSpeech = id;
+  saveSpeeches();
+  renderSpeechPicker();
+  loadScript(speeches.find((s) => s.id === id)?.text ?? "");
 }
 
 function setScript(text: string) {
@@ -1155,7 +1245,10 @@ function tickClock() {
     return;
   }
   const running = left > 0;
-  setText("drill-label", drillMs ? formatTimestamp(running ? Math.ceil(left / 1000) * 1000 : drillMs) : "Off");
+  const label = drillMs ? formatTimestamp(running ? Math.ceil(left / 1000) * 1000 : drillMs) : "Off";
+  setText("drill-label", label);
+  setText("countdown", label);
+  document.body.classList.toggle("has-timer", drillMs > 0);
   $("drill-btn")?.classList.toggle("drilling", running);
 }
 
@@ -1392,8 +1485,10 @@ interface SessionSummary {
   trailingOff: number; // 1 = steady, <1 = fades at sentence ends
   peakMinuteWpm: number;
   peakMinute: number;
-  script: { total: number; hits: number; misses: number; subs: number; accuracy: number } | null;
+  // `missed`: script token indices skipped (absent on sessions saved before it was tracked).
+  script: { total: number; hits: number; misses: number; subs: number; accuracy: number; missed?: number[] } | null;
   preset: string;
+  speech?: string; // saved speech id, when read against one
   scores: Scores;
 }
 
@@ -1516,6 +1611,7 @@ function computeSummary(): SessionSummary {
     peakMinute: peak.minute,
     script,
     preset: currentPreset,
+    speech: script && currentSpeech ? currentSpeech : undefined,
     scores,
   };
 }
@@ -1609,6 +1705,7 @@ function flushSave() {
 async function saveSession() {
   try {
     history = parseHistory(await invoke<string>("save_session", { session: JSON.stringify(computeSummary()) }));
+    if (document.body.dataset.view === "speeches") renderSpeeches();
   } catch (e) {
     appendError(`Couldn't save session: ${e}`);
   }
@@ -1717,6 +1814,7 @@ function renderReport() {
   const prior = priorSessions();
   const prev = prior[prior.length - 1];
   const num = prior.length + 1;
+  const title = speechTitle(s.speech);
 
   // Hero: score ring, title, delta vs last session, the top tip.
   const d = prev ? c.overall - prev.scores.overall : null;
@@ -1724,7 +1822,7 @@ function renderReport() {
   const hero =
     `<div class="rep-hero">` +
     ringHtml(c.overall, `Delivery score — ${c.overall} of 100, grade ${grade(c.overall)}`) +
-    `<div class="rep-title"><h2>Session ${num} report</h2><div class="sub">${fmtDate(s.ts)} · ${formatTimestamp(sessionEndMs())} · ${preset.name} · medium.en</div></div>` +
+    `<div class="rep-title"><h2>Session ${num} report</h2><div class="sub">${fmtDate(s.ts)} · ${formatTimestamp(sessionEndMs())} · ${preset.name}${title ? ` · ${escapeHtml(title)}` : ""} · medium.en</div></div>` +
     (d === null
       ? ""
       : `<div class="rep-delta" data-tip="Score change since session ${num - 1}"><div class="num ${tone(d)}">${signed(d)}</div><div class="sub">vs session ${num - 1}</div></div>`) +
@@ -1790,15 +1888,18 @@ function renderReport() {
         .join("")
     : `<div class="empty">No fillers — clean session.</div>`;
 
-  // Score trend: up to nine saved sessions plus this one.
-  const shownPrior = prior.slice(-9);
+  // Score trend: up to nine saved sessions plus this one — or, when reading a
+  // saved speech, its last nine attempts.
+  const pool = title ? prior.filter((h) => h.speech === s.speech) : prior;
+  const shownPrior = pool.slice(-9);
   const bars = [
-    ...shownPrior.map((h, i) => ({ n: prior.length - shownPrior.length + i + 1, score: h.scores.overall, now: false })),
-    { n: num, score: c.overall, now: true },
+    ...shownPrior.map((h, i) => ({ n: pool.length - shownPrior.length + i + 1, score: h.scores.overall, now: false })),
+    { n: pool.length + 1, score: c.overall, now: true },
   ];
+  const what = title ? "Attempt" : "Session";
   const trend = bars.length > 1 ? `<span class="${tone(c.overall - bars[0].score)}">${signed(c.overall - bars[0].score)} since ${bars[0].n}</span>` : "";
   const hist = bars
-    .map((b) => `<div class="hist-col${b.now ? " now" : ""}" data-tip="Session ${b.n} — score ${b.score}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
+    .map((b) => `<div class="hist-col${b.now ? " now" : ""}" data-tip="${what} ${b.n} — score ${b.score}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
     .join("");
 
   const moments = keyMoments(preset);
@@ -1814,15 +1915,336 @@ function renderReport() {
     tiles +
     `<div class="rep-bottom">` +
     `<div class="panel"><span class="label">Fillers · ${s.fillers}</span><div class="fw-list">${fillerRows}</div></div>` +
-    `<div class="panel"><div class="panel-head"><span class="label">Score · last ${bars.length}</span>${trend}</div><div class="hist">${hist}</div></div>` +
+    `<div class="panel"><div class="panel-head"><span class="label">${title ? `${escapeHtml(title)} · ${bars.length} attempt${bars.length === 1 ? "" : "s"}` : `Score · last ${bars.length}`}</span>${trend}</div><div class="hist">${hist}</div></div>` +
     `<div class="panel"><span class="label">Key moments</span><div class="moments">${momentsHtml}</div></div>` +
     `</div>`;
 }
 
-function showView(view: "live" | "report" | "profile" | "settings") {
+// Pages Tab cycles through, with their nav rail buttons.
+const TAB_VIEWS: Array<[string, string]> = [
+  ["live", "live-btn"],
+  ["report", "stats-btn"],
+  ["speeches", "speeches-btn"],
+];
+
+function showView(view: "live" | "report" | "profile" | "speeches" | "settings") {
   document.body.dataset.view = view;
   if (view !== "settings") void stopMicTest(false);
   if (view === "profile") renderProfile();
+  if (view === "speeches") renderSpeeches();
+}
+
+// Speeches view: the list of saved speeches, or one speech's own page.
+let speechPage = ""; // id of the open speech page; "" = the list. Persisted.
+const SPEECH_PAGE_KEY = "speech.speechPage";
+let speechMetric = "score";
+const SPEECH_METRICS = ["score", "accuracy", "wpm", "fillers"];
+
+function renderSpeeches() {
+  const el = $("speeches");
+  if (!el) return;
+  const sp = speeches.find((x) => x.id === speechPage);
+  if (!sp) speechPage = ""; // deleted since
+  save(SPEECH_PAGE_KEY, speechPage);
+  el.innerHTML = sp ? speechPageHtml(sp) : speechListHtml();
+  const sort = $<HTMLSelectElement>("speech-sort");
+  if (sort) enhanceSelect(sort);
+}
+
+// List controls. The color filter resets itself once no speech uses that color.
+let speechQuery = "";
+let speechFilter = ""; // color hex; "" = all
+let speechSort = "recent";
+const SPEECH_SORTS: Record<string, string> = {
+  recent: "Last practiced",
+  name: "Name",
+  best: "Best score",
+  attempts: "Most attempts",
+  added: "Newest",
+};
+
+function speechListHtml(): string {
+  const head =
+    `<div class="panel-head"><span class="label">Your speeches</span>` +
+    `<button type="button" class="ctl" data-new data-tip="Add a speech to practise">New speech</button></div>`;
+  if (!speeches.length)
+    return `<div class="panel">${head}<div class="empty">No saved speeches yet. Press New speech to add one.</div></div>`;
+  const used = SPEECH_COLORS.filter(([c]) => speeches.some((sp) => speechColor(sp) === c));
+  if (!used.some(([c]) => c === speechFilter)) speechFilter = "";
+  const swatches =
+    used.length > 1
+      ? `<div class="swatches" role="group" aria-label="Filter by color">` +
+        `<button type="button" class="ctl" data-cfilter="" aria-pressed="${!speechFilter}">All</button>` +
+        used
+          .map(([c, n]) => `<button type="button" class="swatch" style="--c:${c}" data-cfilter="${c}" aria-pressed="${speechFilter === c}" aria-label="${n}" data-tip="Only ${n.toLowerCase()} speeches"></button>`)
+          .join("") +
+        `</div>`
+      : "";
+  const sorts = Object.entries(SPEECH_SORTS)
+    .map(([k, v]) => `<option value="${k}"${k === speechSort ? " selected" : ""}>${v}</option>`)
+    .join("");
+  return (
+    `<div class="panel">${head}<div class="speech-filters">` +
+    `<input id="speech-q" class="ctl" type="search" spellcheck="false" placeholder="Search names and scripts" aria-label="Search speeches" value="${escapeHtml(speechQuery)}" />` +
+    `${swatches}<select id="speech-sort" aria-label="Sort by">${sorts}</select></div>` +
+    `<table id="speech-table" class="prof-table">${speechRowsHtml()}</table></div>`
+  );
+}
+
+// One row per speech that passes the search and color filter: attempts, best
+// and latest score, and a sparkline of every attempt's score. A row opens
+// that speech's page.
+function speechRowsHtml(): string {
+  const q = speechQuery.trim().toLowerCase();
+  const rows = speeches
+    .filter((sp) => !speechFilter || speechColor(sp) === speechFilter)
+    .filter((sp) => !q || sp.title.toLowerCase().includes(q) || sp.text.toLowerCase().includes(q))
+    .map((sp) => {
+      const tries = history.filter((h) => h.speech === sp.id);
+      const scores = tries.map((h) => h.scores.overall);
+      const lastTs = tries.length ? tries[tries.length - 1].ts : Number(sp.id);
+      return { sp, scores, best: scores.length ? Math.max(...scores) : -1, lastTs };
+    });
+  type Row = (typeof rows)[number];
+  const orders: Record<string, (a: Row, b: Row) => number> = {
+    recent: (a, b) => b.lastTs - a.lastTs,
+    name: (a, b) => a.sp.title.localeCompare(b.sp.title),
+    best: (a, b) => b.best - a.best,
+    attempts: (a, b) => b.scores.length - a.scores.length,
+    added: (a, b) => Number(b.sp.id) - Number(a.sp.id),
+  };
+  rows.sort(orders[speechSort] ?? orders.recent);
+  const body = rows
+    .map(({ sp, scores, best }) => {
+      const color = speechColor(sp);
+      const last = scores[scores.length - 1];
+      const x = (i: number) => (scores.length > 1 ? (i / (scores.length - 1)) * 80 : 80);
+      const y = (v: number) => 20 - (v / 100) * 20;
+      const spark = scores.length
+        ? `<svg class="speech-spark" viewBox="0 0 80 20" aria-hidden="true">` +
+          `<polyline points="${scores.map((v, i) => `${x(i)},${y(v)}`).join(" ")}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" />` +
+          `<circle cx="${x(scores.length - 1)}" cy="${y(last)}" r="2.5" fill="${color}" /></svg>`
+        : `<span class="sub">no attempts</span>`;
+      const lastCell = scores.length
+        ? `${last} ${grade(last)}${scores.length > 1 ? ` <span class="sub">${signed(last - scores[0])}</span>` : ""}`
+        : "—";
+      return (
+        `<tr data-open="${sp.id}" data-tip="Open ${escapeHtml(sp.title)}"><td><span class="speech-dot" style="--c:${color}"></span>${escapeHtml(sp.title)}</td>` +
+        `<td>${scores.length}</td><td>${scores.length ? `${best} ${grade(best)}` : "—"}</td>` +
+        `<td>${lastCell}</td><td>${spark}</td><td><div class="speech-actions">` +
+        `<button type="button" class="ctl" data-practice="${sp.id}" data-tip="Load it into the read-along on the Live tab">Practice</button></div></td></tr>`
+      );
+    })
+    .join("");
+  return (
+    `<tr><th>Speech</th><th>Attempts</th><th>Best</th><th>Last</th><th>Progress</th><th></th></tr>` +
+    (body || `<tr><td colspan="6" class="empty">No speeches match.</td></tr>`)
+  );
+}
+
+// Rule-based overview across a speech's attempts: the weakest areas on
+// average (with the numbers behind them), what's improving or slipping from
+// early to recent attempts, and the top fix from the latest attempt.
+const DIMENSIONS: Array<[keyof Scores, string]> = [
+  ["pace", "Pace"],
+  ["fillers", "Filler words"],
+  ["pauses", "Pauses"],
+  ["pitch", "Vocal variety"],
+  ["volume", "Volume"],
+  ["articulation", "Script accuracy"],
+];
+
+// How often each word of the speech's current text was skipped. Only
+// attempts that tracked skips against the same text (same word count) count,
+// since indices from an older version of the script would point elsewhere.
+interface SkipCounts {
+  tokens: ScriptToken[];
+  counts: number[];
+  runs: number;
+}
+function skipCounts(sp: Speech, tries: SessionSummary[]): SkipCounts {
+  const tokens = tokenizeWithOffsets(sp.text);
+  const counts = new Array<number>(tokens.length).fill(0);
+  let runs = 0;
+  for (const h of tries) {
+    if (!h.script?.missed || h.script.total !== tokens.length) continue;
+    runs++;
+    for (const i of h.script.missed) if (i < counts.length) counts[i]++;
+  }
+  return { tokens, counts, runs };
+}
+
+// The text from `from` to `to`, escaped, with skipped words shaded by how
+// often they were skipped.
+function shadeSkips(text: string, from: number, to: number, { tokens, counts, runs }: SkipCounts): string {
+  let html = "";
+  let pos = from;
+  tokens.forEach((t, i) => {
+    if (!counts[i] || t.start < from || t.end > to) return;
+    html += escapeHtml(text.slice(pos, t.start));
+    html += `<span class="skipped" style="--a:${(0.2 + 0.5 * (counts[i] / runs)).toFixed(2)}" data-tip="Skipped in ${counts[i]} of ${runs} attempt${runs === 1 ? "" : "s"}">${escapeHtml(text.slice(t.start, t.end))}</span>`;
+    pos = t.end;
+  });
+  return html + escapeHtml(text.slice(pos, to));
+}
+
+function speechOverview(tries: SessionSummary[], sp: Speech, skips: SkipCounts): string[] {
+  const n = tries.length;
+  const latest = tries[n - 1];
+  const avg = (f: (h: SessionSummary) => number | null | undefined, hs = tries) =>
+    mean(hs.map(f).filter((v): v is number => typeof v === "number"));
+  const preset = PRESETS[latest.preset] ?? PRESETS.conversation;
+  const detail: Record<string, () => string> = {
+    pace: () => {
+      const w = Math.round(avg((h) => h.wpm));
+      const dir = w > preset.wpmHigh ? "slow down" : w < preset.wpmLow ? "pick up the pace" : "hold it steady";
+      return `you average ${w} wpm against a ${preset.wpmLow}–${preset.wpmHigh} target — ${dir}.`;
+    },
+    fillers: () => `${avg((h) => h.fillersPerMin).toFixed(1)} fillers a minute on average. Aim under 3 — pause silently where an "um" would go.`,
+    pauses: () => `${avg((h) => h.pausesPerMin).toFixed(1)} hesitation pauses a minute. Rehearse the transitions between sections so the gaps close.`,
+    pitch: () => `${avg((h) => h.pitchRange).toFixed(1)} semitones of inflection per sentence — under 3 sounds flat. Stress the key word in each line.`,
+    volume: () => `sentence endings fade to ${Math.round(avg((h) => h.trailingOff) * 100)}% of your level. Carry energy through the last word.`,
+    articulation: () => {
+      const misses = Math.round(avg((h) => h.script?.misses));
+      return `you match ${Math.round(avg((h) => h.script?.accuracy))}% of the script on average${misses ? `, skipping about ${misses} word${misses === 1 ? "" : "s"} a run` : ""}. Slow down on the passages you lose.`;
+    },
+  };
+
+  const out: string[] = [];
+  const dims = DIMENSIONS.filter(([k]) => tries.some((h) => typeof h.scores[k] === "number"));
+  const weak = dims
+    .map(([k, label]) => ({ k, label, v: avg((h) => h.scores[k]) }))
+    .filter((d) => d.v < 80)
+    .sort((a, b) => a.v - b.v)
+    .slice(0, 2);
+  for (const d of weak) out.push(`<b>${d.label}</b> <span class="sub">avg ${Math.round(d.v)}/100</span> — ${detail[d.k]()}`);
+  if (!weak.length) out.push(`<b>No weak spots</b> — every area averages 80 or better across your attempts.`);
+
+  for (const spot of troubleSpots(sp.text, skips.tokens, skips.counts))
+    out.push(
+      `<b>Trouble spot</b> <span class="sub">${spot.skips} skipped word${spot.skips === 1 ? "" : "s"} over ${skips.runs} attempt${skips.runs === 1 ? "" : "s"}</span> — ` +
+        `“${shadeSkips(sp.text, spot.start, spot.end, skips)}” Read this passage aloud slowly a few times before your next run.`,
+    );
+
+  // Early vs recent: up to three attempts from each end, never overlapping.
+  if (n >= 2) {
+    const k = Math.min(3, Math.floor(n / 2));
+    const early = tries.slice(0, k);
+    const recent = tries.slice(-k);
+    const d0 = Math.round(avg((h) => h.scores.overall, recent) - avg((h) => h.scores.overall, early));
+    const moves = dims
+      .map(([key, label]) => ({ label, d: avg((h) => h.scores[key], recent) - avg((h) => h.scores[key], early) }))
+      .sort((a, b) => b.d - a.d);
+    const up = moves[0];
+    const down = moves[moves.length - 1];
+    let trend = `<b>Trend</b> — your score is ${d0 > 0 ? `up ${d0}` : d0 < 0 ? `down ${-d0}` : "flat"} from your first ${k === 1 ? "attempt" : `${k} attempts`} to your latest.`;
+    if (up && up.d >= 5) trend += ` Biggest gain: ${up.label.toLowerCase()} (${signed(up.d)}).`;
+    if (down && down.d <= -5) trend += ` Slipping: ${down.label.toLowerCase()} (${signed(down.d)}).`;
+    out.push(trend);
+  }
+
+  out.push(`<b>Last attempt</b> — ${escapeHtml(generateTips(latest)[0])}`);
+  return out;
+}
+
+// A speech's own page: name (editable), headline numbers, a progress chart,
+// every attempt, and the script itself.
+function speechPageHtml(sp: Speech): string {
+  const tries = history.filter((h) => h.speech === sp.id);
+  const n = tries.length;
+  const head =
+    `<div class="panel prof-head"><div class="panel-head">` +
+    `<button type="button" class="ctl" data-back>← Speeches</button><div class="speech-actions">` +
+    `<button type="button" class="ctl" data-practice="${sp.id}" data-tip="Load it into the read-along on the Live tab">Practice</button>` +
+    `<button type="button" class="ctl" data-delete="${sp.id}" data-tip="Delete this speech — its sessions stay in your history">Delete</button></div></div>` +
+    `<button type="button" class="prof-name speech-name" data-rename data-tip="Rename or change color"><span class="speech-dot" style="--c:${speechColor(sp)}"></span>${escapeHtml(sp.title)}</button>` +
+    `<span class="sub">${countWords(sp.text)} words · ${n} attempt${n === 1 ? "" : "s"} · added ${fmtDate(Number(sp.id))}</span></div>`;
+  const skips = skipCounts(sp, tries);
+  const script =
+    `<div class="panel"><div class="panel-head"><span class="label">Script</span>` +
+    (skips.runs ? `<span class="sub">shaded words: skipped in ${skips.runs} tracked attempt${skips.runs === 1 ? "" : "s"}</span>` : "") +
+    `</div><p class="speech-text">${shadeSkips(sp.text, 0, sp.text.length, skips)}</p></div>`;
+  if (!n) return head + `<div class="panel"><span class="sub">No attempts yet — press Practice to read it aloud.</span></div>` + script;
+
+  const scores = tries.map((h) => h.scores.overall);
+  const best = tries.reduce((a, h) => (h.scores.overall > a.scores.overall ? h : a));
+  const last = scores[n - 1];
+  const acc = tries.map((h) => h.script?.accuracy ?? 0);
+  const tiles =
+    `<div class="tiles">` +
+    statTile(String(n), "attempts", `since ${fmtDate(tries[0].ts)}`, "Recordings read against this speech") +
+    statTile(`${best.scores.overall} ${grade(best.scores.overall)}`, "best score", fmtDate(best.ts), "Highest delivery score on this speech") +
+    statTile(`${last} ${grade(last)}`, "latest", n > 1 ? `${signed(last - scores[0])} since first` : "first attempt", "Score on your most recent attempt") +
+    statTile(`${Math.max(...acc)}%`, "best accuracy", `latest ${acc[n - 1]}%`, "Share of the script's words you matched") +
+    statTile(String(Math.round(mean(tries.map((h) => h.wpm)))), "avg wpm", `${mean(tries.map((h) => h.fillersPerMin)).toFixed(1)} fillers/min`, "Average pace across attempts") +
+    `</div>`;
+
+  const m = METRICS[speechMetric];
+  const pts = m.scriptOnly ? tries.filter((h) => h.script) : tries;
+  const segs = SPEECH_METRICS.map(
+    (k) => `<button type="button" role="radio" data-smetric="${k}" aria-checked="${k === speechMetric}">${METRICS[k].name}</button>`,
+  ).join("");
+  const chart =
+    `<div class="panel"><div class="panel-head"><span class="label">Progress · ${m.name}</span>` +
+    `<div class="seg" role="radiogroup" aria-label="Metric">${segs}</div></div>${plotHtml(pts, m, pts[0]?.ts ?? Date.now(), Date.now())}</div>`;
+
+  const rows = tries
+    .map(
+      (h, i) =>
+        `<tr><td>${i + 1}</td><td>${fmtDate(h.ts)}</td><td>${formatTimestamp(h.durationMs)}</td><td>${Math.round(h.wpm)}</td>` +
+        `<td>${h.fillersPerMin.toFixed(1)}</td><td>${h.script ? `${h.script.accuracy}%` : "—"}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
+    )
+    .reverse()
+    .join("");
+  const table =
+    `<div class="panel"><span class="label">Attempts</span><table class="prof-table">` +
+    `<tr><th>#</th><th>Date</th><th>Speaking</th><th>WPM</th><th>Fillers/min</th><th>Accuracy</th><th>Score</th></tr>${rows}</table></div>`;
+  const overview =
+    `<div class="panel"><span class="label">What to work on</span><ul class="overview">` +
+    speechOverview(tries, sp, skips).map((t) => `<li>${t}</li>`).join("") +
+    `</ul></div>`;
+  return head + tiles + overview + chart + table + script;
+}
+
+let ndColor = SPEECH_COLORS[0][0];
+let ndFromLive = false;
+let ndEditing = ""; // id of the speech being renamed; "" = creating one
+
+function setNewSpeechColor(c: string) {
+  ndColor = c;
+  const box = $("nd-colors");
+  if (box)
+    box.innerHTML = SPEECH_COLORS.map(
+      ([hex, name]) => `<button type="button" class="swatch" role="radio" style="--c:${hex}" data-ndcolor="${hex}" aria-checked="${hex === c}" aria-label="${name}" data-tip="${name}"></button>`,
+    ).join("");
+}
+
+// The speech popup: creates a speech, or (with `edit`) renames and recolors
+// one, in which case the script field is hidden.
+function openSpeechDialog(text: string, fromLive: boolean, edit?: Speech) {
+  const nd = $<HTMLDialogElement>("speech-dialog");
+  const name = $<HTMLInputElement>("nd-name");
+  const area = $<HTMLTextAreaElement>("nd-text");
+  if (!nd || !name || !area) return;
+  ndFromLive = fromLive;
+  ndEditing = edit?.id ?? "";
+  setText("nd-title", edit ? "Rename speech" : "New speech");
+  area.required = !edit;
+  area.hidden = !!edit;
+  $("nd-load")?.toggleAttribute("hidden", !!edit);
+  name.value = edit?.title ?? text.trim().split("\n")[0].trim().slice(0, 60);
+  area.value = text;
+  setNewSpeechColor(edit ? speechColor(edit) : SPEECH_COLORS[speeches.length % SPEECH_COLORS.length][0]);
+  nd.returnValue = "";
+  nd.showModal();
+  (text || edit ? name : area).focus();
+  if (edit) name.select();
+}
+
+function practiceSpeech(id: string) {
+  openSpeech(id);
+  showView("live");
+  toggleScript(true);
 }
 
 // --- Profile & settings --------------------------------------------------------
@@ -1935,6 +2357,7 @@ const DRILL_KEY = "speech.drillSecs";
 const GAIN_KEY = "speech.levelGain";
 const PAUSE_KEY = "speech.pauseMs";
 const HOVER_KEY = "speech.hoverFx";
+const COUNTDOWN_KEY = "speech.timerCountdown";
 const CORRECT_KEY = "speech.accurateCorrection";
 let accurateCorrection = true;
 
@@ -1962,7 +2385,8 @@ const DAY_MS = 86_400_000;
 
 // Trend chart metrics (profile). `max` pins the y-axis top; otherwise it's the
 // data max rounded up to a nice number. Every axis starts at zero.
-const METRICS: Record<string, { name: string; get: (h: SessionSummary) => number; fmt: (v: number) => string; max?: number }> = {
+// `scriptOnly` plots only sessions read against a script.
+const METRICS: Record<string, { name: string; get: (h: SessionSummary) => number; fmt: (v: number) => string; max?: number; scriptOnly?: boolean }> = {
   score: { name: "Score", get: (h) => h.scores.overall, fmt: (v) => String(Math.round(v)), max: 100 },
   wpm: { name: "Pace (wpm)", get: (h) => h.wpm, fmt: (v) => `${Math.round(v)} wpm` },
   fillers: { name: "Fillers/min", get: (h) => h.fillersPerMin, fmt: (v) => `${v.toFixed(1)}/min` },
@@ -1970,10 +2394,12 @@ const METRICS: Record<string, { name: string; get: (h: SessionSummary) => number
   pitch: { name: "Pitch range", get: (h) => h.pitchRange, fmt: (v) => `${v.toFixed(1)} st` },
   speaking: { name: "Speaking time", get: (h) => h.durationMs / 60_000, fmt: (v) => formatTimestamp(v * 60_000) },
   words: { name: "Words", get: (h) => h.words, fmt: (v) => `${Math.round(v)} words` },
+  accuracy: { name: "Script accuracy", get: (h) => h.script?.accuracy ?? 0, fmt: (v) => `${Math.round(v)}%`, max: 100, scriptOnly: true },
 };
 const RANGES: Array<[string, number]> = [["7D", 7], ["30D", 30], ["90D", 90], ["1Y", 365], ["All", Infinity]];
 let profMetric = "score";
 let profRange = "All";
+let profSpeech = ""; // "" = all sessions, else a saved speech id
 
 function niceCeil(v: number): number {
   if (v <= 0) return 1;
@@ -1986,8 +2412,29 @@ function trendHtml(): string {
   const m = METRICS[profMetric];
   const days = RANGES.find((r) => r[0] === profRange)?.[1] ?? Infinity;
   const now = Date.now();
-  const pts = history.filter((h) => now - h.ts <= days * DAY_MS);
+  if (!speechTitle(profSpeech)) profSpeech = ""; // deleted since
+  const pts = history.filter(
+    (h) => now - h.ts <= days * DAY_MS && (!profSpeech || h.speech === profSpeech) && (!m.scriptOnly || h.script),
+  );
   const t0 = days === Infinity ? (pts[0]?.ts ?? now) : now - days * DAY_MS;
+  const ranges = RANGES.map(([r]) => `<button type="button" role="radio" data-range="${r}" aria-checked="${r === profRange}">${r}</button>`).join("");
+  const opts = Object.entries(METRICS)
+    .map(([k, v]) => `<option value="${k}"${k === profMetric ? " selected" : ""}>${v.name}</option>`)
+    .join("");
+  const speechSel = speeches.length
+    ? `<select id="prof-speech" class="ctl" aria-label="Speech"><option value="">All sessions</option>` +
+      speeches.map((sp) => `<option value="${sp.id}"${sp.id === profSpeech ? " selected" : ""}>${escapeHtml(sp.title)}</option>`).join("") +
+      `</select>`
+    : "";
+  return (
+    `<div class="panel"><div class="panel-head"><span class="label">${escapeHtml(speechTitle(profSpeech) ?? "All time")} · ${m.name}</span>` +
+    `<div class="trend-filters">${speechSel}<select id="prof-metric" class="ctl" aria-label="Metric">${opts}</select>` +
+    `<div class="seg" role="radiogroup" aria-label="Time frame">${ranges}</div></div></div>${plotHtml(pts, m, t0, now)}</div>`
+  );
+}
+
+// One point per session on a time axis from t0 to now.
+function plotHtml(pts: SessionSummary[], m: (typeof METRICS)[string], t0: number, now: number): string {
   const span = Math.max(1, now - t0);
   const hi = m.max ?? niceCeil(Math.max(0, ...pts.map(m.get)));
   const x = (ts: number) => ((ts - t0) / span) * 100;
@@ -1999,13 +2446,9 @@ function trendHtml(): string {
         `<div class="pt" style="left:${x(h.ts).toFixed(2)}%;top:${y(m.get(h)).toFixed(2)}%" data-tip="${fmtDate(h.ts)} · ${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))} — ${m.fmt(m.get(h))}"></div>`,
     )
     .join("");
-  const ranges = RANGES.map(([r]) => `<button type="button" role="radio" data-range="${r}" aria-checked="${r === profRange}">${r}</button>`).join("");
-  const opts = Object.entries(METRICS)
-    .map(([k, v]) => `<option value="${k}"${k === profMetric ? " selected" : ""}>${v.name}</option>`)
-    .join("");
   const yLabels = [hi, hi / 2, 0].map((v) => `<span>${m.fmt(v)}</span>`).join("");
   const xLabels = [t0, t0 + span / 2, now].map((t) => `<span>${fmtDate(t)}</span>`).join("");
-  const plot = pts.length
+  return pts.length
     ? `<div class="pace-grid trend-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot">` +
       `<div class="trend-plot${pts.length > 60 ? " dense" : ""}"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">` +
       `<line x1="0" y1="50" x2="100" y2="50" stroke="currentColor" stroke-opacity="0.06" vector-effect="non-scaling-stroke" />` +
@@ -2013,11 +2456,6 @@ function trendHtml(): string {
       `<polyline points="${line}" fill="none" style="stroke:var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
       `</svg>${dots}</div><div class="x-labels">${xLabels}</div></div></div>`
     : `<div class="empty">No sessions in this range.</div>`;
-  return (
-    `<div class="panel"><div class="panel-head"><span class="label">All time · ${m.name}</span>` +
-    `<div class="trend-filters"><select id="prof-metric" class="ctl" aria-label="Metric">${opts}</select>` +
-    `<div class="seg" role="radiogroup" aria-label="Time frame">${ranges}</div></div></div>${plot}</div>`
-  );
 }
 
 // GitHub-style grid: 53 weeks of days (columns = weeks, rows = Sun–Sat),
@@ -2057,6 +2495,20 @@ function activityHtml(): string {
   );
 }
 
+function statTile(value: string, unit: string, sub: string, tip: string): string {
+  return `<div class="tile" data-tip="${escapeHtml(tip)}"><div class="card-top"><span class="big">${value}</span><span class="unit">${unit}</span></div><span class="delta flat">${sub}</span></div>`;
+}
+
+// What a session was read against: a saved speech (links to its page), an
+// unsaved script, or nothing (free speaking). Script sessions show accuracy.
+function practisedCell(h: SessionSummary): string {
+  const acc = h.script ? ` <span class="sub">${h.script.accuracy}%</span>` : "";
+  const sp = speeches.find((x) => x.id === h.speech);
+  if (sp)
+    return `<button type="button" class="link-btn" data-goto="${sp.id}" data-tip="Open this speech"><span class="speech-dot" style="--c:${speechColor(sp)}"></span>${escapeHtml(sp.title)}</button>${acc}`;
+  return h.script ? `Script${acc}` : `<span class="sub">Free</span>`;
+}
+
 function renderProfile() {
   const body = $("prof-body");
   if (!body) return;
@@ -2068,8 +2520,7 @@ function renderProfile() {
   }
   const scores = history.map((h) => h.scores.overall);
   const avg = Math.round(mean(scores));
-  const tile = (value: string, unit: string, sub: string, tip: string) =>
-    `<div class="tile" data-tip="${tip}"><div class="card-top"><span class="big">${value}</span><span class="unit">${unit}</span></div><span class="delta flat">${sub}</span></div>`;
+  const tile = statTile;
   const speakingMs = history.reduce((a, h) => a + h.durationMs, 0);
   const words = history.reduce((a, h) => a + h.words, 0);
   const tiles =
@@ -2093,7 +2544,7 @@ function renderProfile() {
     .reverse()
     .map(
       (h) =>
-        `<tr><td>${fmtDate(h.ts)}</td><td>${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))}</td><td>${formatTimestamp(h.durationMs)}</td>` +
+        `<tr><td>${fmtDate(h.ts)}</td><td>${practisedCell(h)}</td><td>${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))}</td><td>${formatTimestamp(h.durationMs)}</td>` +
         `<td>${Math.round(h.wpm)}</td><td>${h.fillersPerMin.toFixed(1)}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
     )
     .join("");
@@ -2103,9 +2554,11 @@ function renderProfile() {
     activityHtml() +
     trendHtml() +
     `<div class="panel"><span class="label">Recent sessions</span><table class="prof-table">` +
-    `<tr><th>Date</th><th>Context</th><th>Speaking</th><th>WPM</th><th>Fillers/min</th><th>Score</th></tr>${rows}</table></div>`;
-  const metricSel = $<HTMLSelectElement>("prof-metric");
-  if (metricSel) enhanceSelect(metricSel);
+    `<tr><th>Date</th><th>Practised</th><th>Context</th><th>Speaking</th><th>WPM</th><th>Fillers/min</th><th>Score</th></tr>${rows}</table></div>`;
+  for (const id of ["prof-speech", "prof-metric"]) {
+    const sel = $<HTMLSelectElement>(id);
+    if (sel) enhanceSelect(sel);
+  }
 }
 
 // Report → transcript: switch back to the live view and flash the line.
@@ -2144,6 +2597,22 @@ window.addEventListener("DOMContentLoaded", () => {
   if (ribbonCanvas) ribbon = new Ribbon(ribbonCanvas, "idle");
   const shardsCanvas = document.querySelector<HTMLCanvasElement>("#shards");
   if (shardsCanvas) new Shards(shardsCanvas, shardsCanvas.parentElement!);
+  // The scope drags the window only once a held pointer actually moves.
+  // data-tauri-drag-region starts a WM move on every press and maximizes on
+  // double-click, so spam-clicking the scope's click effect stalled the app.
+  const scope = shardsCanvas?.parentElement;
+  let pressAt: { x: number; y: number } | null = null;
+  scope?.addEventListener("pointerdown", (e) => {
+    pressAt = e.button === 0 && (e.target === scope || (e.target as Element).matches(".ribbon, .countdown")) ? { x: e.clientX, y: e.clientY } : null;
+  });
+  scope?.addEventListener("pointerup", () => (pressAt = null));
+  scope?.addEventListener("pointerleave", () => (pressAt = null));
+  scope?.addEventListener("pointermove", (e) => {
+    if (pressAt && e.buttons === 1 && Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) > 4) {
+      pressAt = null;
+      getCurrentWindow().startDragging();
+    }
+  });
   const sparkEl = $("pace-spark");
   if (sparkEl) new ResizeObserver(() => drawSpark()).observe(sparkEl);
 
@@ -2198,10 +2667,39 @@ window.addEventListener("DOMContentLoaded", () => {
       bindBtn?.blur(); // ends capture via the blur handler
       return;
     }
+    // Esc on a speech's page goes back to the list (the popup and open
+    // dropdowns handle their own Esc).
+    if (
+      e.key === "Escape" &&
+      document.body.dataset.view === "speeches" &&
+      speechPage &&
+      !(e.target as Element).closest("dialog, .dd")
+    ) {
+      speechPage = "";
+      renderSpeeches();
+      return;
+    }
+    // Tab / Shift+Tab step through Live, Stats (when enabled) and Speeches.
+    // Text fields and the popup keep Tab for moving focus. Matched on
+    // e.code: GTK reports Shift+Tab's key as "ISO_Left_Tab".
+    if (
+      e.code === "Tab" &&
+      !e.ctrlKey && !e.altKey && !e.metaKey &&
+      !(e.target as Element).closest("input:not([type=checkbox], [type=range]), textarea, dialog, [contenteditable]")
+    ) {
+      e.preventDefault();
+      const tabs = TAB_VIEWS.filter(([, id]) => !$<HTMLButtonElement>(id)?.disabled);
+      const at = tabs.findIndex(([v]) => v === document.body.dataset.view);
+      const n = tabs.length;
+      // From Profile/Settings, Tab enters at the first page, Shift+Tab at the last.
+      const next = at < 0 ? (e.shiftKey ? n - 1 : 0) : (at + (e.shiftKey ? -1 : 1) + n) % n;
+      $(tabs[next][1])?.click();
+      return;
+    }
     if (e.code !== recordKey || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     // Starts only from the live tab; a running recording can be stopped from anywhere.
     if (!recording && document.body.dataset.view !== "live") return;
-    if ((e.target as Element).closest("input, textarea, select, .dd, .timer-menu, [contenteditable]")) return;
+    if ((e.target as Element).closest("input, textarea, select, .dd, .timer-menu, dialog, [contenteditable]")) return;
     e.preventDefault();
     (document.activeElement as HTMLElement | null)?.blur();
     if (!recordBtn?.disabled) void toggleRecording();
@@ -2209,6 +2707,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const profBody = $("prof-body");
   profBody?.addEventListener("click", (e) => {
+    const go = (e.target as Element).closest<HTMLElement>("[data-goto]")?.dataset.goto;
+    if (go) {
+      speechPage = go;
+      return showView("speeches");
+    }
     const r = (e.target as Element).closest<HTMLElement>("[data-range]")?.dataset.range;
     if (r) {
       profRange = r;
@@ -2217,10 +2720,10 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   profBody?.addEventListener("change", (e) => {
     const t = e.target as HTMLSelectElement;
-    if (t.id === "prof-metric") {
-      profMetric = t.value;
-      renderProfile();
-    }
+    if (t.id === "prof-metric") profMetric = t.value;
+    else if (t.id === "prof-speech") profSpeech = t.value;
+    else return;
+    renderProfile();
   });
 
   const nameInput = $<HTMLInputElement>("prof-name");
@@ -2322,10 +2825,10 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Boolean toggles: stored as "0"/"1", default on.
-  const bindToggle = (id: string, key: string, apply: (on: boolean) => void) => {
+  // Boolean toggles: stored as "0"/"1", default `def`.
+  const bindToggle = (id: string, key: string, apply: (on: boolean) => void, def = true) => {
     const box = $<HTMLInputElement>(id);
-    const on = load(key) !== "0";
+    const on = (load(key) ?? (def ? "1" : "0")) !== "0";
     apply(on);
     if (!box) return;
     box.checked = on;
@@ -2336,6 +2839,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   bindToggle("set-correct", CORRECT_KEY, (on) => (accurateCorrection = on));
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
+  bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);
 
   // Two-click confirm: first click arms the button for 3 s.
   const clearBtn = $<HTMLButtonElement>("set-clear");
@@ -2367,13 +2871,122 @@ window.addEventListener("DOMContentLoaded", () => {
     if (m) jumpToLine(Number(m.dataset.index));
   });
 
-  scriptInput?.addEventListener("input", () => setScript(scriptInput?.value ?? ""));
+  // Editing a saved speech updates it in place.
+  scriptInput?.addEventListener("input", () => {
+    setScript(scriptInput?.value ?? "");
+    const sp = speeches.find((s) => s.id === currentSpeech);
+    if (sp) {
+      sp.text = scriptText;
+      saveSpeeches();
+    }
+  });
+  // A loaded file starts out unsaved rather than overwriting the open speech.
   scriptFile?.addEventListener("change", async () => {
     const file = scriptFile?.files?.[0];
     if (!file) return;
-    const text = await file.text();
-    if (scriptInput) scriptInput.value = text;
-    setScript(text);
+    currentSpeech = "";
+    saveSpeeches();
+    renderSpeechPicker();
+    loadScript(await file.text());
+  });
+
+  try {
+    const parsed = JSON.parse(load(SPEECHES_KEY) ?? "[]");
+    if (Array.isArray(parsed)) speeches = parsed;
+  } catch {
+    // corrupt entry; start with no saved speeches
+  }
+  currentSpeech = speechTitle(load(SPEECH_KEY) ?? "") ? load(SPEECH_KEY)! : "";
+  const speechSel = $<HTMLSelectElement>("speech-sel");
+  if (speechSel) enhanceSelect(speechSel);
+  renderSpeechPicker();
+  speechSel?.addEventListener("change", () => openSpeech(speechSel.value));
+  speechPage = load(SPEECH_PAGE_KEY) ?? "";
+  $("speeches-btn")?.addEventListener("click", () => showView("speeches"));
+  const speechesEl = $("speeches");
+  speechesEl?.addEventListener("click", (e) => {
+    const b = (e.target as Element).closest<HTMLElement>(
+      "[data-new], [data-rename], [data-practice], [data-open], [data-back], [data-delete], [data-smetric], [data-cfilter]",
+    );
+    const d = b?.dataset;
+    if (!b || !d) return;
+    if (d.practice) return practiceSpeech(d.practice);
+    if (d.new !== undefined) return openSpeechDialog("", false);
+    if (d.rename !== undefined) {
+      const sp = speeches.find((x) => x.id === speechPage);
+      return sp && openSpeechDialog("", false, sp);
+    }
+    if (d.delete) {
+      if (!confirmClick(b)) return;
+      deleteSpeech(d.delete);
+      speechPage = "";
+    } else if (d.open) speechPage = d.open;
+    else if (d.back !== undefined) speechPage = "";
+    else if (d.smetric) speechMetric = d.smetric;
+    else if (d.cfilter !== undefined) speechFilter = d.cfilter;
+    renderSpeeches();
+    if (d.open || d.back !== undefined) speechesEl.scrollTop = 0;
+  });
+  speechesEl?.addEventListener("change", (e) => {
+    const t = e.target as HTMLSelectElement;
+    if (t.id !== "speech-sort") return;
+    speechSort = t.value;
+    renderSpeeches();
+  });
+  speechesEl?.addEventListener("input", (e) => {
+    const t = e.target as HTMLInputElement;
+    // Searching swaps just the rows so the search box keeps focus.
+    if (t.id === "speech-q") {
+      speechQuery = t.value;
+      const table = $("speech-table");
+      if (table) table.innerHTML = speechRowsHtml();
+    }
+  });
+  // Save opens the new-speech popup with the script box's text; on a saved
+  // speech the button is Clear instead, emptying the box for a new script.
+  $("speech-save")?.addEventListener("click", () => {
+    if (currentSpeech) openSpeech("");
+    else openSpeechDialog(scriptText, true);
+  });
+
+  // New-speech popup. Saving from the Live tab puts the speech in the
+  // read-along; saving from the Speeches list opens its page.
+  const nd = $<HTMLDialogElement>("speech-dialog");
+  $("nd-cancel")?.addEventListener("click", () => nd?.close());
+  $("nd-colors")?.addEventListener("click", (e) => {
+    const c = (e.target as Element).closest<HTMLElement>("[data-ndcolor]")?.dataset.ndcolor;
+    if (c) setNewSpeechColor(c);
+  });
+  $<HTMLInputElement>("nd-file")?.addEventListener("change", async (e) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    const text = $<HTMLTextAreaElement>("nd-text");
+    if (file && text) text.value = await file.text();
+    input.value = "";
+  });
+  nd?.addEventListener("close", () => {
+    const edited = speeches.find((x) => x.id === ndEditing);
+    if (edited) {
+      if (nd.returnValue !== "save") return;
+      edited.title = $<HTMLInputElement>("nd-name")?.value.trim() || edited.title;
+      edited.color = ndColor;
+      saveSpeeches();
+      renderSpeechPicker();
+      renderSpeeches();
+      return;
+    }
+    const text = $<HTMLTextAreaElement>("nd-text")?.value ?? "";
+    if (nd.returnValue !== "save" || !text.trim()) return;
+    const name = $<HTMLInputElement>("nd-name")?.value.trim() || text.trim().split("\n")[0].trim().slice(0, 60);
+    const id = String(Date.now());
+    speeches.push({ id, title: name, text, color: ndColor });
+    saveSpeeches();
+    if (ndFromLive) openSpeech(id);
+    else {
+      renderSpeechPicker();
+      speechPage = id;
+      renderSpeeches();
+    }
   });
 
   // Restore a saved script, if any.

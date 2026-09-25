@@ -19,7 +19,9 @@ const SWAP_MAX = 140; // ms between symbol swaps per cell (slowest)
 const GLYPH_FONT = '500 11px "IBM Plex Mono", ui-monospace, monospace';
 const GLYPHS = "01<>/\\|=+-*#%&$@?!{}[]:;~^\u2591\u2592\u2593\u00b7";
 
-type Ring = { x: number; y: number; r: number; g: number; w: number[] };
+// A ring's centre and wobble never change, only r grows, so each cell's
+// distance and wobble factor are computed once at spawn instead of every frame.
+type Ring = { x: number; y: number; r: number; g: number; dist: Float32Array; wob: Float32Array };
 
 export class Shards {
   private ctx: CanvasRenderingContext2D;
@@ -39,14 +41,16 @@ export class Shards {
   private lastRing: { x: number; y: number } | null = null;
   private lastMove = 0;
   private lastTick = performance.now();
+  private atlas = document.createElement("canvas"); // GLYPHS pre-rendered: row 0 white, row 1 tail color
+  private atlasKey = "";
 
   constructor(private canvas: HTMLCanvasElement, host: HTMLElement) {
     this.ctx = canvas.getContext("2d")!;
     new ResizeObserver(() => this.setup()).observe(canvas);
     host.addEventListener("mousemove", (e) => this.move(e));
     host.addEventListener("mouseleave", () => { this.lastRing = null; this.gdir = null; });
-    // pointerdown, not click: the ribbon canvas is a Tauri drag region, so a
-    // press may turn into a window drag and never produce a click.
+    // pointerdown, not click: a press that moves turns into a window drag
+    // (see main.ts) and never produces a click.
     host.addEventListener("pointerdown", (e) => { if (e.button === 0) this.press(e); });
     const loop = () => { this.tick(); requestAnimationFrame(loop); };
     requestAnimationFrame(loop);
@@ -60,6 +64,7 @@ export class Shards {
     this.cols = Math.ceil(r.width / CELL);
     this.rows = Math.ceil(r.height / CELL);
     const n = this.cols * this.rows;
+    this.rings = []; // their per-cell caches are sized to the old grid
     this.f = new Float32Array(n);
     this.hash = new Float32Array(n);
     this.gl = new Float32Array(n); this.gc = new Uint8Array(n); this.gt = new Float32Array(n);
@@ -67,10 +72,17 @@ export class Shards {
   }
 
   private spawn(x: number, y: number) {
-    if (this.rings.length > 160) return;
+    if (!this.f.length || this.rings.length > 160) return;
     if (this.rings.some((r) => r.g === this.gid && Math.hypot(x - r.x, y - r.y) < r.r - 2)) return;
     const R = Math.random, P = () => R() * 6.283;
-    this.rings.push({ x, y, r: 0, g: this.gid, w: [.12 + R() * .1, P(), .08 + R() * .08, P(), .05 + R() * .05, P(), .03 + R() * .03, P()] });
+    const w = [.12 + R() * .1, P(), .08 + R() * .08, P(), .05 + R() * .05, P(), .03 + R() * .03, P()];
+    const { cols } = this, cs = CELL, n = this.f.length, dist = new Float32Array(n), wob = new Float32Array(n);
+    for (let k = 0; k < n; k++) {
+      const dx = (k % cols) * cs + cs / 2 - x, dy = ((k / cols) | 0) * cs + cs / 2 - y, th = Math.atan2(dy, dx);
+      dist[k] = Math.hypot(dx, dy);
+      wob[k] = 1 + w[0] * Math.sin(2 * th + w[1]) + w[2] * Math.sin(3 * th + w[3]) + w[4] * Math.sin(5 * th + w[5]) + w[6] * Math.sin(9 * th + w[7]);
+    }
+    this.rings.push({ x, y, r: 0, g: this.gid, dist, wob });
   }
 
   private newGroup() {
@@ -85,8 +97,27 @@ export class Shards {
     return { x: e.clientX - b.left, y: e.clientY - b.top };
   }
 
+  // fillText per lit cell per frame is what made the scramble lag; blit from a
+  // sheet instead. Rebuilt only when dpr or the theme's --blue-2 changes.
+  private buildAtlas() {
+    const tail = getComputedStyle(document.documentElement).getPropertyValue("--blue-2").trim() || "#4aa8ff";
+    const key = tail + this.dpr;
+    if (key === this.atlasKey) return;
+    this.atlasKey = key;
+    const a = this.atlas, cs = CELL, d = this.dpr;
+    a.width = Math.ceil(GLYPHS.length * cs * d); a.height = Math.ceil(2 * cs * d);
+    const c = a.getContext("2d")!;
+    c.setTransform(d, 0, 0, d, 0, 0);
+    c.font = GLYPH_FONT; c.textAlign = "center"; c.textBaseline = "middle";
+    ["#ffffff", tail].forEach((col, row) => {
+      c.fillStyle = col;
+      for (let i = 0; i < GLYPHS.length; i++) c.fillText(GLYPHS[i], i * cs + cs / 2, row * cs + cs / 2);
+    });
+  }
+
   private press(e: MouseEvent) {
     const { x, y } = this.local(e);
+    this.buildAtlas();
     if (this.f.length && this.waves.length <= 8) this.waves.push({ x, y, t0: performance.now() });
     // hover trail resumes in a fresh group after the press
     this.newGroup(); this.gdir = null;
@@ -108,15 +139,13 @@ export class Shards {
         if (d < R && d > R - cs * SCR_WIDTH && amp > gl[k]) gl[k] = amp;
       }
     }
-    ctx.font = GLYPH_FONT;
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    const tail = getComputedStyle(document.documentElement).getPropertyValue("--blue-2").trim() || "#4aa8ff";
+    const { atlas } = this, ds = cs * this.dpr;
     for (let k = 0; k < gl.length; k++) {
       const h = gl[k]; if (h < .03) { gl[k] = 0; continue; }
       if (now >= gt[k]) { gc[k] = (Math.random() * n) | 0; gt[k] = now + SWAP_MIN + Math.random() * (SWAP_MAX - SWAP_MIN); }
-      ctx.fillStyle = h > .6 ? "#ffffff" : tail; // fresh front white, tail cools to the accent
       ctx.globalAlpha = Math.min(1, h * 1.2);
-      ctx.fillText(GLYPHS[gc[k]], (k % cols) * cs + cs / 2, ((k / cols) | 0) * cs + cs / 2);
+      // fresh front white (row 0), tail cools to the accent (row 1)
+      ctx.drawImage(atlas, gc[k] * ds, h > .6 ? 0 : ds, ds, ds, (k % cols) * cs, ((k / cols) | 0) * cs, cs, cs);
       gl[k] = h * SCR_DECAY;
     }
     ctx.globalAlpha = 1;
@@ -163,25 +192,26 @@ export class Shards {
     this.lastTick = now;
     for (const rg of this.rings) rg.r += SPEED * dt;
 
+    // per-cell nearest ring edge for each group, in scratch arrays indexed by the
+    // group's slot (Infinity = group absent, -1e9 = cell is inside its hollow)
+    const rings = this.rings, gids = [...new Set(rings.map((r) => r.g))], ng = gids.length;
+    const slot = rings.map((r) => gids.indexOf(r.g)), gsd = new Float64Array(ng), gamp = new Float64Array(ng);
     for (let k = 0; k < f.length; k++) {
       let h = f[k] * (f[k] > .9 ? DECAY * .9 : DECAY);
-      if (this.rings.length) {
-        const x = (k % cols) * cs + cs / 2, y = ((k / cols) | 0) * cs + cs / 2;
-        const G: Record<number, { sd: number; amp: number }> = {};
-        for (const rg of this.rings) {
-          const dx = x - rg.x, dy = y - rg.y, dist = Math.hypot(dx, dy);
+      if (ng) {
+        gsd.fill(Infinity);
+        for (let i = 0; i < rings.length; i++) {
+          const rg = rings[i], j = slot[i], dist = rg.dist[k];
           if (dist > rg.r * 1.55 + cs * 2) continue;
-          if (dist < rg.r * .45 - band * 2 - cs * 2) { G[rg.g] = { sd: -1e9, amp: 0 }; continue; }
-          const th = Math.atan2(dy, dx), w = rg.w;
-          const wob = 1 + w[0] * Math.sin(2 * th + w[1]) + w[2] * Math.sin(3 * th + w[3]) + w[4] * Math.sin(5 * th + w[5]) + w[6] * Math.sin(9 * th + w[7]);
-          const d = dist - rg.r * wob, g = G[rg.g];
-          if (!g || d < g.sd) G[rg.g] = { sd: d, amp: 1 - rg.r / maxR * .5 };
+          if (dist < rg.r * .45 - band * 2 - cs * 2) { gsd[j] = -1e9; gamp[j] = 0; continue; }
+          const d = dist - rg.r * rg.wob[k];
+          if (d < gsd[j]) { gsd[j] = d; gamp[j] = 1 - rg.r / maxR * .5; }
         }
-        for (const id in G) {
-          const sd = G[id].sd + (hash[k] - .5) * cs * .6, fw = cs * 1.6;
+        for (let j = 0; j < ng; j++) {
+          const sd = gsd[j] + (hash[k] - .5) * cs * .6, fw = cs * 1.6;
           if (sd < fw && sd > -band * 2) {
             const t = sd >= 0 ? 1 - Math.pow(sd / fw, 2) : Math.pow(1 + sd / (band * 2), 3);
-            const a = G[id].amp * 1.6 * t; if (a > h) h = a;
+            const a = gamp[j] * 1.6 * t; if (a > h) h = a;
           }
         }
       }

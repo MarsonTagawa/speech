@@ -19,6 +19,9 @@
         <button id="stats-btn" class="nav-btn" type="button" disabled data-tip="Session report">
           <svg viewBox="0 0 24 24"><line x1="18" x2="18" y1="20" y2="10" /><line x1="12" x2="12" y1="20" y2="4" /><line x1="6" x2="6" y1="20" y2="14" /></svg>STATS
         </button>
+        <button id="speeches-btn" class="nav-btn" type="button" data-tip="Speeches — your saved scripts and progress on each">
+          <svg viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" /></svg>SPCH
+        </button>
         <div class="rail-spacer" data-tauri-drag-region></div>
         <button id="profile-btn" class="nav-btn" type="button" data-tip="Profile — your progress across sessions">
           <svg viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>PROF
@@ -32,7 +35,8 @@
       <main class="view view-live">
         <section class="scope">
           <canvas id="shards" class="ribbon" aria-hidden="true"></canvas>
-          <canvas id="ribbon" class="ribbon" aria-hidden="true" data-tauri-drag-region></canvas>
+          <canvas id="ribbon" class="ribbon" aria-hidden="true"></canvas>
+          <div id="countdown" class="countdown" data-tip="Time left on the timer"></div>
           <div class="scope-grid"></div>
           <div class="scope-tl">
             <div id="status-pill" class="pill">
@@ -85,10 +89,14 @@
           <div id="script-pane" class="script-pane" hidden>
             <div class="script-head">
               <span class="label">Script</span>
+              <div class="script-tools">
+              <select id="speech-sel" aria-label="Saved speech"></select>
+              <button id="speech-save" class="file-btn" type="button">Save</button>
               <label class="file-btn">
                 Load .txt
                 <input id="script-file" type="file" accept=".txt,text/plain" hidden />
               </label>
+              </div>
             </div>
             <textarea
               id="script-input"
@@ -155,6 +163,8 @@
         <div id="report-body"></div>
       </main>
 
+      <main id="speeches" class="view view-speeches"></main>
+
       <main class="view view-profile">
         <div class="panel prof-head">
           <input id="prof-name" class="prof-name" type="text" placeholder="Your name" maxlength="40" spellcheck="false" aria-label="Name" />
@@ -183,6 +193,10 @@
               <option value="1000">1.0 s</option>
             </select>
           </div>
+          <label class="set-row">
+            <span>Timer countdown<span class="sub">While a timer is set, show a big countdown in place of the ribbon</span></span>
+            <input id="set-countdown" type="checkbox" role="switch" />
+          </label>
         </div>
         <div class="panel">
           <span class="label">Transcription</span>
@@ -241,6 +255,22 @@
     </div>
 
     <div id="tip" class="tip"></div>
+    <dialog id="speech-dialog" class="modal" aria-labelledby="nd-title">
+      <form method="dialog" class="panel">
+        <span id="nd-title" class="label">New speech</span>
+        <input id="nd-name" class="ctl" type="text" maxlength="60" spellcheck="false" placeholder="Name — defaults to the first line" aria-label="Name" />
+        <div id="nd-colors" class="swatches" role="radiogroup" aria-label="Color"></div>
+        <textarea id="nd-text" class="script-input" rows="8" spellcheck="false" required placeholder="Paste the speech you want to practise, or load a .txt" aria-label="Script"></textarea>
+        <div class="speech-actions">
+          <label id="nd-load" class="file-btn">
+            Load .txt
+            <input id="nd-file" type="file" accept=".txt,text/plain" hidden />
+          </label>
+          <button id="nd-cancel" class="ctl" type="button">Cancel</button>
+          <button class="ctl" value="save">Save</button>
+        </div>
+      </form>
+    </dialog>
     <div id="timer-menu" class="dd-list timer-menu" role="menu" aria-label="Timer length" hidden>
       <button type="button" role="menuitem" data-s="0">Off</button>
       <button type="button" role="menuitem" data-s="30">30 s</button>
