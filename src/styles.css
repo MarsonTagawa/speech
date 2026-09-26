@@ -199,6 +199,7 @@ body[data-view="live"] #live-btn,
 body[data-view="report"] #stats-btn,
 body[data-view="profile"] #profile-btn,
 body[data-view="speeches"] #speeches-btn,
+body[data-view="drills"] #drills-btn,
 body[data-view="history"] #history-btn,
 body[data-view="settings"] #settings-btn {
   background: color-mix(in srgb, var(--blue) 18%, transparent);
@@ -403,6 +404,7 @@ body[data-view="live"] .view-live,
 body[data-view="report"] .view-report,
 body[data-view="profile"] .view-profile,
 body[data-view="speeches"] .view-speeches,
+body[data-view="drills"] .view-drills,
 body[data-view="history"] .view-history,
 body[data-view="settings"] .view-settings {
   display: flex;
@@ -845,6 +847,35 @@ body.timer-countdown.has-timer .countdown {
   padding: 0 2px;
 }
 
+/* Memorise drill: the script box would give later chunks away, so it hides.
+   While recording, words not yet said are masked; they reveal as you say them. */
+.script-pane[data-memory] .script-input {
+  display: none;
+}
+body.recording .script-pane[data-memory] :is(.script-pending, .script-current) {
+  display: inline-block;
+  color: transparent;
+}
+body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-current) {
+  opacity: 1;
+  box-shadow: inset 0 -1px var(--ink-3);
+}
+body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-current)::first-letter {
+  color: var(--ink-2);
+}
+
+.chunk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.chunk-bar[hidden] {
+  display: none;
+}
+
 .script-progress {
   font-size: 10px;
   color: var(--ink-2);
@@ -1033,6 +1064,7 @@ body.timer-countdown.has-timer .countdown {
 .view-report,
 .view-profile,
 .view-speeches,
+.view-drills,
 .view-history,
 .view-settings {
   padding: 14px 16px 16px;
@@ -1166,6 +1198,48 @@ body.timer-countdown.has-timer .countdown {
 .rep-transcript {
   flex: 0 0 auto;
 }
+
+/* Coach: white avatar with a ribbon-style halo in the report hero, reading out the tips. */
+.coach {
+  flex: 1;
+  min-width: 0;
+  max-width: 340px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.coach-avatar {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  position: relative;
+}
+/* Halo (src/halo.ts) overhangs the avatar for the wisps; avatar paints on top. */
+.coach-halo {
+  position: absolute;
+  inset: -30%;
+  width: 160%;
+  height: 160%;
+  pointer-events: none;
+}
+.coach-avatar .bs-avatar { position: relative; }
+.coach-bubble {
+  position: relative; /* above the halo's overhang */
+  min-width: 0;
+  padding: 7px 10px;
+  border: 0.5px solid var(--edge-2);
+  border-radius: 10px 10px 10px 2px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: color-mix(in srgb, var(--ink) 85%, transparent);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  text-wrap: pretty;
+  cursor: pointer;
+}
+.coach-bubble:empty { display: none; }
+.coach-bubble small { display: block; margin-top: 4px; opacity: 0.5; }
 
 /* Word spoken at the jumped-to time; held, then faded (the mark is removed on animationend). */
 .word-hit {
@@ -1434,6 +1508,7 @@ body.timer-countdown.has-timer .countdown {
 /* These views scroll; keep panels at their natural height. */
 .view-profile > *,
 .view-speeches > *,
+.view-drills > *,
 .view-history > *,
 .view-settings > * {
   flex-shrink: 0;
@@ -1936,7 +2011,8 @@ body.no-hover-fx #shards {
   .rep-vr {
     display: none;
   }
-  .rep-tip {
+  .rep-tip,
+  .coach {
     max-width: none;
     flex-basis: 100%;
   }

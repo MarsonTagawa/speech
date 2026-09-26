@@ -4,14 +4,14 @@
 
 export type RibbonMode = "idle" | "listening" | "thinking" | "speaking";
 
-const MODES: Record<RibbonMode, any> = {
+export const MODES: Record<RibbonMode, any> = {
   idle: { label: "Idle", amp: 0.10, speed: 0.09, ab: 1.0, glow: 0.30, spread: 0.32, width: 0.075, split: 0.00 },
   listening: { label: "Listening", amp: 0.24, speed: 0.30, ab: 1.3, glow: 0.55, spread: 0.40, width: 0.125, split: 0.18 },
   thinking: { label: "Thinking", amp: 0.13, speed: 0.62, ab: 1.7, glow: 0.36, spread: 0.28, width: 0.070, split: 0.08 },
   speaking: { label: "Speaking", amp: 0.26, speed: 0.48, ab: 1.8, glow: 0.52, spread: 0.40, width: 0.105, split: 0.16 },
 };
 
-const PROPS = {
+export const PROPS = {
   strands: 5,
   blueColor: "#1a37ff",
   greenColor: "#2bff8a",
@@ -20,17 +20,17 @@ const PROPS = {
   aberration: 1.4,
 };
 
-function hexToRgb(h: string): number[] {
+export function hexToRgb(h: string): number[] {
   const s = String(h || "#ffffff").replace("#", "");
   const f = s.length === 3 ? s.split("").map((c) => c + c).join("") : s;
   const n = parseInt(f, 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
-const rgba = (c: number[], a: number) => "rgba(" + c[0] + "," + c[1] + "," + c[2] + "," + a + ")";
+export const rgba = (c: number[], a: number) => "rgba(" + c[0] + "," + c[1] + "," + c[2] + "," + a + ")";
 
 // rotate a colour's hue (deg) and optionally boost saturation — used to spread one
 // anchor colour into a small prism of neighbouring wavelengths
-function hueShift(c: number[], deg: number, sat?: number): number[] {
+export function hueShift(c: number[], deg: number, sat?: number): number[] {
   const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255;
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
   let h = 0;
@@ -53,7 +53,21 @@ function hueShift(c: number[], deg: number, sat?: number): number[] {
   const m = l - cc / 2;
   return [Math.round((rp[0] + m) * 255), Math.round((rp[1] + m) * 255), Math.round((rp[2] + m) * 255)];
 }
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+// full prism: violet→cyan on one edge, yellow→red on the other. `o` is the
+// offset in edge-thickness units, `a` the alpha. Shared with the coach halo.
+export function prism(deep: number[], cool: number[], warm: number[]) {
+  return [
+    { o: -1.80, c: hueShift(deep, -10, 1.5), a: 0.30 },
+    { o: -1.55, c: deep, a: 0.38 },
+    { o: -1.18, c: hueShift(cool, -34, 1.6), a: 0.52 },
+    { o: -0.86, c: cool, a: 0.82 },
+    { o: -0.50, c: hueShift(cool, 30, 1.5), a: 0.46 },
+    { o: 0.50, c: hueShift(warm, 34, 1.5), a: 0.46 },
+    { o: 0.85, c: warm, a: 0.76 },
+    { o: 1.15, c: hueShift(warm, 8, 1.6), a: 0.38 },
+  ];
+}
+export const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 export class Ribbon {
   props = PROPS;
@@ -328,17 +342,7 @@ export class Ribbon {
     }
 
     const ab = P.ab * abScale * 0.34; // in units of local sheet thickness
-    // full prism: violet→cyan on the upper edge, yellow→red on the lower one
-    const spectrum = [
-      { o: -1.80, c: hueShift(deep, -10, 1.5), a: 0.30 },
-      { o: -1.55, c: deep, a: 0.38 },
-      { o: -1.18, c: hueShift(cool, -34, 1.6), a: 0.52 },
-      { o: -0.86, c: cool, a: 0.82 },
-      { o: -0.50, c: hueShift(cool, 30, 1.5), a: 0.46 },
-      { o: 0.50, c: hueShift(warm, 34, 1.5), a: 0.46 },
-      { o: 0.85, c: warm, a: 0.76 },
-      { o: 1.15, c: hueShift(warm, 8, 1.6), a: 0.38 },
-    ];
+    const spectrum = prism(deep, cool, warm);
     for (let i = 0; i < 3; i++) {
       const sp = P.split == null ? 1 : P.split;
       const depth = (1 - i * 0.28) * (i === 0 ? 1 : 0.30 + 0.70 * sp);

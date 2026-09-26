@@ -7,8 +7,13 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
 import { Ribbon } from "./ribbon";
+import { Halo } from "./halo";
 import { Shards } from "./shards";
 import { troubleSpots } from "./passages";
+import { DRILLS, MEMORISE, drillById } from "./drills";
+import { chunkSpeech, type Chunk } from "./chunks";
+import { createAvatar } from "@bible-strong/avatar-web";
+import strobi from "./strobi.avatar.json";
 
 let ribbon: Ribbon | null = null;
 
@@ -737,6 +742,43 @@ interface ScriptToken {
 }
 
 const SCRIPT_KEY = "speech.script";
+// Memorise drill: a saved speech's chunk ladder, masked while recording (CSS
+// does the masking) — "letters" shows first letters, "hidden" nothing.
+const MEMORY_KEY = "speech.memory";
+const MEMO_SPEECH_KEY = "speech.memoSpeech";
+let memoMask = "letters";
+let memoSpeech = ""; // speech picked for the drill
+let sessionMemory = "";
+const MEMORY_LABELS: Record<string, string> = { letters: "first letters", hidden: "hidden" };
+const MASK_RANK: Record<string, number> = { "": 0, letters: 1, hidden: 2 };
+
+// Chunk ladder: a saved speech split into chunks, learned cumulatively — step k
+// reads chunks 1..k. The read-along only matches up to the step's end, so a
+// step's attempts are the speech's sessions scored against that many words.
+let chunks: Chunk[] = []; // the loaded speech's chunks while memorising; [] = off
+let chunkStep = 0; // 1-based; 0 = pick the first step not yet passed
+let scriptEnd = Infinity; // char end of the range the read-along matches
+
+// Words the read-along scores at each step. [] when the text has one chunk.
+function ladder(text: string): number[] {
+  const cs = chunkSpeech(text);
+  if (cs.length < 2) return [];
+  const toks = tokenizeWithOffsets(text);
+  return cs.map((c) => toks.filter((t) => t.end <= c.end).length);
+}
+
+// A step passes at ≥90% accuracy with a mask at least as strict as the current one.
+function stepPassed(speechId: string, words: number): boolean {
+  return history.some(
+    (h) =>
+      h.speech === speechId &&
+      h.script?.total === words &&
+      h.script.accuracy >= 90 &&
+      (MASK_RANK[h.memory ?? ""] ?? 0) >= MASK_RANK[memoMask],
+  );
+}
+
+const stepLabel = (k: number) => (k === 1 ? "chunk 1" : `chunks 1–${k}`);
 let scriptText = "";
 let scriptTokens: ScriptToken[] = [];
 // One <span> per script token, built once when the script is set. Re-aligning
@@ -951,7 +993,7 @@ function buildScriptDisplay() {
     html += `<span class="script-tok script-pending">${escapeHtml(scriptText.slice(t.start, t.end))}</span>`;
     pos = t.end;
   }
-  html += escapeHtml(scriptText.slice(pos));
+  html += escapeHtml(scriptText.slice(pos, scriptEnd));
   scriptDisplay.innerHTML = html;
   scriptSpans = Array.from(scriptDisplay.querySelectorAll<HTMLElement>(".script-tok"));
   scriptSpanState = scriptSpans.map(() => "script-pending");
@@ -1108,14 +1150,38 @@ function openSpeech(id: string) {
 
 function setScript(text: string) {
   scriptText = text;
-  scriptTokens = tokenizeWithOffsets(text);
   try {
     localStorage.setItem(SCRIPT_KEY, text);
   } catch {
     // storage unavailable; script just won't persist
   }
+  chunkStep = 0;
+  refreshScript();
+}
+
+// Re-derives the matched range (the chunk step, or the whole script) and
+// redraws the read-along from the start.
+function refreshScript() {
+  const sp = speeches.find((x) => x.id === currentSpeech);
+  const steps = sp && sp.text === scriptText ? ladder(scriptText) : [];
+  chunks = activeDrill === MEMORISE && steps.length ? chunkSpeech(scriptText) : [];
+  if (chunks.length && !(chunkStep >= 1 && chunkStep <= chunks.length)) {
+    const open = steps.findIndex((w) => !stepPassed(sp!.id, w));
+    chunkStep = open < 0 ? chunks.length : open + 1;
+  }
+  scriptEnd = chunks.length ? chunks[chunkStep - 1].end : Infinity;
+  scriptTokens = tokenizeWithOffsets(scriptText).filter((t) => t.end <= scriptEnd);
   buildScriptDisplay();
   renderScriptMatch();
+
+  const bar = $("chunk-bar");
+  bar?.toggleAttribute("hidden", !chunks.length);
+  if (chunks.length && sp) {
+    const passed = stepPassed(sp.id, steps[chunkStep - 1]);
+    setText("chunk-label", `Step ${chunkStep} / ${chunks.length} · ${stepLabel(chunkStep)}${passed ? " ✓" : ""}`);
+    $<HTMLButtonElement>("chunk-prev")!.disabled = chunkStep <= 1;
+    $<HTMLButtonElement>("chunk-next")!.disabled = chunkStep >= chunks.length;
+  }
 }
 
 // Feeds a segment into the read-along state and re-aligns. Called for every
@@ -1281,6 +1347,7 @@ function setRecordingUi(on: boolean) {
   recordBtn.dataset.tip = label;
   $("rec-label")?.classList.toggle("on", on);
   $("live-btn")?.classList.toggle("recording", on);
+  document.body.classList.toggle("recording", on); // memorise masks only while reciting
 }
 
 // Wall-clock session timer on the scope; also counts the timer (drill) down
@@ -1404,6 +1471,8 @@ async function toggleRecording() {
       reportVisible = false;
       reportPending = false;
       scriptUsed = !$("script-pane")?.hidden;
+      sessionDrill = activeDrill;
+      sessionMemory = scriptUsed && activeDrill === MEMORISE ? memoMask : "";
       const statsBtn = $<HTMLButtonElement>("stats-btn");
       if (statsBtn) statsBtn.disabled = true;
       await stopMicTest(false);
@@ -1421,6 +1490,7 @@ async function toggleRecording() {
       await invoke("stop_recording");
       recording = false;
       stopClock();
+      if (activeDrill !== MEMORISE) endDrill(); // memorising stays armed for retries
       setRecordingUi(false);
       ribbon?.setMode("idle");
       ribbon?.setLevel(0); // no more level events once stopped; settle to rest
@@ -1454,6 +1524,8 @@ function resetSession() {
   tokensByIndex.clear();
   renderScriptMatch();
   resetStats();
+  sessionDrill = "";
+  endDrill();
   renderReport(); // no words → disables STATS and returns to live
   recordStartedAt = 0;
   tickClock();
@@ -1545,6 +1617,8 @@ interface SessionSummary {
   script: { total: number; hits: number; misses: number; subs: number; accuracy: number; missed?: number[] } | null;
   preset: string;
   speech?: string; // saved speech id, when read against one
+  drill?: string; // drill id, when run from the Drills tab
+  memory?: string; // read-along mask ("letters" | "hidden"), when one was on
   saved?: boolean; // starred in Stats/History
   pace?: PaceData; // absent on sessions saved before it was kept
   scores: Scores;
@@ -1670,6 +1744,8 @@ function computeSummary(): SessionSummary {
     script,
     preset: currentPreset,
     speech: script && currentSpeech ? currentSpeech : undefined,
+    drill: sessionDrill || undefined,
+    memory: script && sessionMemory ? sessionMemory : undefined,
     saved: currentSaved || undefined,
     scores,
   };
@@ -1765,8 +1841,16 @@ async function saveSession() {
   try {
     const session = JSON.stringify({ ...computeSummary(), pace: paceData() });
     history = parseHistory(await invoke<string>("save_session", { session, detail: sessionDetail() }));
+    // A passed ladder step moves on to the next one.
+    const last = history[history.length - 1];
+    if (chunks.length && !recording && chunkStep < chunks.length && last?.speech === currentSpeech &&
+        last.script?.total === scriptTokens.length && stepPassed(currentSpeech, scriptTokens.length)) {
+      chunkStep++;
+      refreshScript();
+    }
     if (document.body.dataset.view === "speeches") renderSpeeches();
     if (document.body.dataset.view === "history") renderHistory();
+    if (document.body.dataset.view === "drills") renderDrills();
   } catch (e) {
     appendError(`Couldn't save session: ${e}`);
   }
@@ -1928,7 +2012,7 @@ function reportHeroHtml(s: SessionSummary, prev: SessionSummary | undefined, num
   return (
     `<div class="rep-hero">` +
     ringHtml(c.overall, `Delivery score — ${c.overall} of 100, grade ${grade(c.overall)}`) +
-    `<div class="rep-title"><h2>Session ${num} report ${starHtml(s.ts)}</h2><div class="sub">${fmtDate(s.ts)} · ${formatTimestamp(lengthMs)} · ${PRESETS[s.preset]?.name ?? s.preset}${title ? ` · ${escapeHtml(title)}` : ""} · medium.en</div></div>` +
+    `<div class="rep-title"><h2>Session ${num} report ${starHtml(s.ts)}</h2><div class="sub">${fmtDate(s.ts)} · ${formatTimestamp(lengthMs)} · ${PRESETS[s.preset]?.name ?? s.preset}${title ? ` · ${escapeHtml(title)}` : ""} · medium.en</div>${drillLineHtml(s)}</div>` +
     (d === null
       ? ""
       : `<div class="rep-delta" data-tip="Score change since session ${num - 1}"><div class="num ${tone(d)}">${signed(d)}</div><div class="sub">vs session ${num - 1}</div></div>`) +
@@ -1966,13 +2050,18 @@ function renderReport() {
   if (!body) return;
   if (totalWords === 0) {
     reportVisible = false;
+    coachTips = [];
     if (statsBtn) statsBtn.disabled = true;
     if (document.body.dataset.view === "report") showView("live");
     return;
   }
   reportVisible = true;
   if (statsBtn) statsBtn.disabled = false;
-  body.innerHTML = reportBodyHtml(computeSummary(), live, paceData());
+  const summary = computeSummary();
+  body.innerHTML = reportBodyHtml(summary, live, paceData());
+  // The coach stands in for the hero's static top tip (re-inserted each render).
+  if (coachEl) body.querySelector(".rep-tip")?.replaceWith(coachEl);
+  coachSay(generateTips(summary));
   const rt = $("report-transcript");
   if (rt) rt.innerHTML = transcriptCopyHtml(liveLinesHtml());
 }
@@ -2039,6 +2128,50 @@ function paceChartHtml(p: PaceData, preset: Preset): string {
 
 // The Stats report for summary `s`, drawn from its per-line data `L`: the
 // live session's, or a saved session's detail in History.
+// Report coach: the avatar types out the improvement tips one at a time; click
+// the bubble for the next. renderReport re-runs as late corrections land, so it
+// only restarts when the tips actually change.
+const coachEl = document.getElementById("coach"); // held: report re-renders detach it
+let coach: ReturnType<typeof createAvatar> | null = null;
+let halo: Halo | null = null;
+let coachTips: string[] = [];
+let coachIdx = 0;
+let coachTimer = 0;
+
+function coachSay(tips: string[]) {
+  if (tips.join("\n") === coachTips.join("\n")) return;
+  coachTips = tips;
+  coachIdx = 0;
+  const mount = coachEl?.querySelector<HTMLElement>(".coach-avatar");
+  if (!mount) return;
+  const haloCanvas = mount.querySelector("canvas");
+  if (haloCanvas) halo ??= new Halo(haloCanvas);
+  coach ??= createAvatar(mount, { definition: strobi, defaultAnimation: "idle", size: "100%", ariaLabel: "Coach" });
+  coachSpeak();
+}
+
+function coachSpeak() {
+  const el = coachEl?.querySelector<HTMLElement>(".coach-bubble");
+  const text = coachTips[coachIdx];
+  if (!el || !coach || !text) return;
+  const count = coachTips.length > 1 ? `<small>${coachIdx + 1}/${coachTips.length} · click for next</small>` : "";
+  el.setAttribute("aria-label", text);
+  clearInterval(coachTimer);
+  coach.play("curious");
+  halo?.setMode("speaking");
+  let n = matchMedia("(prefers-reduced-motion: reduce)").matches ? text.length : 0;
+  const tick = () => {
+    el.innerHTML = escapeHtml(text.slice(0, ++n)) + (n >= text.length ? count : "");
+    if (n >= text.length) {
+      clearInterval(coachTimer);
+      coach?.play("idle");
+      halo?.setMode("idle");
+    }
+  };
+  tick();
+  coachTimer = window.setInterval(tick, 22);
+}
+
 function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
   const c = s.scores;
   const preset = PRESETS[s.preset];
@@ -2221,15 +2354,134 @@ const TAB_VIEWS: Array<[string, string]> = [
   ["live", "live-btn"],
   ["report", "stats-btn"],
   ["speeches", "speeches-btn"],
+  ["drills", "drills-btn"],
   ["history", "history-btn"],
 ];
 
-function showView(view: "live" | "report" | "profile" | "speeches" | "history" | "settings") {
+function showView(view: "live" | "report" | "profile" | "speeches" | "drills" | "history" | "settings") {
   document.body.dataset.view = view;
   if (view !== "settings") void stopMicTest(false);
   if (view === "profile") renderProfile();
   if (view === "speeches") renderSpeeches();
   if (view === "history") renderHistory();
+  if (view === "drills") renderDrills();
+}
+
+// --- Drills --------------------------------------------------------------------
+// Start arms a drill: its timer and goal apply to the next recording, which is
+// tagged with the drill id. Stopping (or Reset) disarms it and restores the
+// user's own timer. Results are judged from history, so nothing extra is stored.
+let activeDrill = ""; // armed drill; "" = none
+let sessionDrill = ""; // drill the current/last recording ran
+
+function drillResult(s: SessionSummary) {
+  const d = drillById(s.drill);
+  const p = PRESETS[s.preset] ?? PRESETS.conversation;
+  return d && { d, ...d.judge(s, [p.wpmLow, p.wpmHigh]) };
+}
+
+function drillLineHtml(s: SessionSummary): string {
+  const r = drillResult(s);
+  return r
+    ? `<div class="sub">Drill · ${escapeHtml(r.d.name)} · <span class="${r.pass ? "up" : "down"}">${r.pass ? "✓ passed" : "✗ missed"}</span> · ${escapeHtml(r.value)}</div>`
+    : "";
+}
+
+const randomPrompt = () => PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
+
+// The prompt line above the transcript: a topic, prefixed by the armed drill's goal.
+function showPrompt(topic?: string) {
+  const el = $("practice-prompt");
+  if (!el) return;
+  const d = drillById(activeDrill);
+  el.textContent = d ? `${d.name}: ${d.goal}.${topic ? ` Topic: ${topic}` : ""}` : (topic ?? "");
+  el.removeAttribute("hidden");
+}
+
+function startDrill(id: string) {
+  const d = drillById(id);
+  if (!d || recording || (id === MEMORISE && !speechTitle(memoSpeech))) return;
+  endDrill();
+  activeDrill = id;
+  drillMs = d.secs * 1000;
+  tickClock();
+  if (id === MEMORISE) openSpeech(memoSpeech); // lands on the first unpassed step
+  else if (d.script) {
+    openSpeech("");
+    loadScript(d.script);
+  }
+  const reads = id === MEMORISE || !!d.script;
+  toggleScript(reads);
+  applyMemory();
+  showPrompt(reads ? undefined : randomPrompt());
+  showView("live");
+}
+
+function endDrill() {
+  if (!activeDrill) return;
+  const wasMemorise = activeDrill === MEMORISE;
+  activeDrill = "";
+  drillMs = (Number(load(DRILL_KEY)) || 0) * 1000;
+  tickClock();
+  $("practice-prompt")?.setAttribute("hidden", "");
+  applyMemory();
+  if (wasMemorise) refreshScript(); // back to the whole script
+}
+
+function applyMemory() {
+  const pane = $("script-pane");
+  if (activeDrill === MEMORISE) pane?.setAttribute("data-memory", memoMask);
+  else pane?.removeAttribute("data-memory");
+}
+
+// The memorise drill's panel: pick a speech and mask, see the ladder.
+function memoriseHtml(): string {
+  const d = drillById(MEMORISE)!;
+  const head = `<div class="panel-head"><span class="label">${escapeHtml(d.name)}</span>`;
+  if (!speeches.length)
+    return `<div class="panel">${head}</div><div class="empty">Save a speech on the Speeches tab to memorise it.</div></div>`;
+  if (!speechTitle(memoSpeech)) memoSpeech = speeches[0].id;
+  const sp = speeches.find((x) => x.id === memoSpeech)!;
+  const steps = ladder(sp.text);
+  const climbed = steps.filter((w) => stepPassed(sp.id, w)).length;
+  const tries = history.filter((h) => h.drill === MEMORISE && h.speech === sp.id);
+  const last = tries[tries.length - 1];
+  const r = last && drillResult(last);
+  const opt = (v: string, label: string, cur: string) => `<option value="${v}"${v === cur ? " selected" : ""}>${escapeHtml(label)}</option>`;
+  return (
+    `<div class="panel">${head}<button type="button" class="ctl" data-drill="${MEMORISE}" data-tip="Set it up on the Live tab">Start</button></div>` +
+    `<span class="sub">${escapeHtml(d.goal)}</span><div class="speech-filters">` +
+    `<select id="memo-speech" class="ctl" aria-label="Speech">${speeches.map((x) => opt(x.id, x.title, memoSpeech)).join("")}</select>` +
+    `<select id="memo-mask" class="ctl" aria-label="Mask">${opt("letters", "First letters", memoMask)}${opt("hidden", "Hidden", memoMask)}</select></div>` +
+    `<span class="sub">${steps.length ? `Ladder ${climbed} / ${steps.length} steps` : "Whole speech — too short to split"}` +
+    (r ? ` · last <span class="${r.pass ? "up" : "down"}">${r.pass ? "✓" : "✗"}</span> ${escapeHtml(r.value)}, ${fmtDate(last.ts)}` : "") +
+    `</span></div>`
+  );
+}
+
+function renderDrills() {
+  const el = $("drills");
+  if (!el) return;
+  const rows = DRILLS.filter((d) => d.id !== MEMORISE).map((d) => {
+    const tries = history.filter((h) => h.drill === d.id);
+    const passes = tries.filter((h) => drillResult(h)?.pass).length;
+    const last = tries[tries.length - 1];
+    const r = last && drillResult(last);
+    return (
+      `<tr><td>${escapeHtml(d.name)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
+      `<td>${tries.length ? `${passes}/${tries.length}` : "—"}</td>` +
+      `<td>${r ? `<span class="${r.pass ? "up" : "down"}">${r.pass ? "✓" : "✗"}</span> ${escapeHtml(r.value)}<div class="sub">${fmtDate(last.ts)}</div>` : "—"}</td>` +
+      `<td><button type="button" class="ctl" data-drill="${d.id}" data-tip="Set it up on the Live tab">Start</button></td></tr>`
+    );
+  }).join("");
+  el.innerHTML =
+    `<div class="panel"><div class="panel-head"><span class="label">Drills</span></div>` +
+    `<table class="prof-table"><tr><th>Drill</th><th>Passed</th><th>Last</th><th></th></tr>${rows}</table></div>` +
+    memoriseHtml();
+  for (const id of ["memo-speech", "memo-mask"]) {
+    const sel = $<HTMLSelectElement>(id);
+    if (sel) enhanceSelect(sel);
+  }
 }
 
 // Speeches view: the list of saved speeches, or one speech's own page.
@@ -2458,8 +2710,11 @@ function speechPageHtml(sp: Speech): string {
     `<button type="button" class="prof-name speech-name" data-rename data-tip="Rename or change color"><span class="speech-dot" style="--c:${speechColor(sp)}"></span>${escapeHtml(sp.title)}</button>` +
     `<span class="sub">${countWords(sp.text)} words · ${n} attempt${n === 1 ? "" : "s"} · added ${fmtDate(Number(sp.id))}</span></div>`;
   const skips = skipCounts(sp, tries);
+  const steps = ladder(sp.text);
+  const climbed = steps.filter((w) => stepPassed(sp.id, w)).length;
   const script =
     `<div class="panel"><div class="panel-head"><span class="label">Script</span>` +
+    (steps.length ? `<span class="sub" data-tip="Chunk steps passed at ≥90% with the current memory mask">ladder ${climbed}/${steps.length}</span>` : "") +
     (skips.runs ? `<span class="sub">shaded words: skipped in ${skips.runs} tracked attempt${skips.runs === 1 ? "" : "s"}</span>` : "") +
     `</div><p class="speech-text">${shadeSkips(sp.text, 0, sp.text.length, skips)}</p></div>`;
   if (!n) return head + `<div class="panel"><span class="sub">No attempts yet — press Practice to read it aloud.</span></div>` + script;
@@ -2467,13 +2722,14 @@ function speechPageHtml(sp: Speech): string {
   const scores = tries.map((h) => h.scores.overall);
   const best = tries.reduce((a, h) => (h.scores.overall > a.scores.overall ? h : a));
   const last = scores[n - 1];
-  const acc = tries.map((h) => h.script?.accuracy ?? 0);
+  // Accuracy over whole-speech runs only; a ladder step's 100% isn't the speech's.
+  const acc = tries.filter((h) => !steps.length || h.script?.total === steps[steps.length - 1]).map((h) => h.script?.accuracy ?? 0);
   const tiles =
     `<div class="tiles">` +
     statTile(String(n), "attempts", `since ${fmtDate(tries[0].ts)}`, "Recordings read against this speech") +
     statTile(`${best.scores.overall} ${grade(best.scores.overall)}`, "best score", fmtDate(best.ts), "Highest delivery score on this speech") +
     statTile(`${last} ${grade(last)}`, "latest", n > 1 ? `${signed(last - scores[0])} since first` : "first attempt", "Score on your most recent attempt") +
-    statTile(`${Math.max(...acc)}%`, "best accuracy", `latest ${acc[n - 1]}%`, "Share of the script's words you matched") +
+    statTile(acc.length ? `${Math.max(...acc)}%` : "—", "best accuracy", acc.length ? `latest ${acc[acc.length - 1]}%` : "no full runs yet", "Share of the script's words you matched") +
     statTile(String(Math.round(mean(tries.map((h) => h.wpm)))), "avg wpm", `${mean(tries.map((h) => h.fillersPerMin)).toFixed(1)} fillers/min`, "Average pace across attempts") +
     `</div>`;
 
@@ -2486,11 +2742,16 @@ function speechPageHtml(sp: Speech): string {
     `<div class="panel"><div class="panel-head"><span class="label">Progress · ${m.name}</span>` +
     `<div class="seg" role="radiogroup" aria-label="Metric">${segs}</div></div>${plotHtml(pts, m, pts[0]?.ts ?? Date.now(), Date.now())}</div>`;
 
+  // Partial ladder runs, labelled by their step.
+  const partLabel = (total: number) => {
+    const k = steps.indexOf(total) + 1;
+    return k && k < steps.length ? ` · ${stepLabel(k)}` : "";
+  };
   const rows = tries
     .map(
       (h, i) =>
         `<tr><td>${i + 1}</td><td>${fmtDate(h.ts)}</td><td>${formatTimestamp(h.durationMs)}</td><td>${Math.round(h.wpm)}</td>` +
-        `<td>${h.fillersPerMin.toFixed(1)}</td><td>${h.script ? `${h.script.accuracy}%` : "—"}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
+        `<td>${h.fillersPerMin.toFixed(1)}</td><td>${h.script ? `${h.script.accuracy}%${h.memory ? ` · ${MEMORY_LABELS[h.memory] ?? h.memory}` : ""}${partLabel(h.script.total)}` : "—"}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
     )
     .reverse()
     .join("");
@@ -3179,7 +3440,7 @@ window.addEventListener("DOMContentLoaded", () => {
       renderSpeeches();
       return;
     }
-    // Tab / Shift+Tab step through Live, Stats (when enabled), Speeches and History.
+    // Tab / Shift+Tab step through Live, Stats (when enabled), Speeches, Drills and History.
     // Text fields and the popup keep Tab for moving focus. Matched on
     // e.code: GTK reports Shift+Tab's key as "ISO_Left_Tab".
     if (
@@ -3403,6 +3664,10 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  coachEl?.querySelector(".coach-bubble")?.addEventListener("click", () => {
+    coachIdx = (coachIdx + 1) % Math.max(1, coachTips.length);
+    coachSpeak();
+  });
   $("report-body")?.addEventListener("click", (e) => {
     const star = (e.target as Element).closest<HTMLElement>("[data-star]");
     if (star) return void toggleSaved(Number(star.dataset.star));
@@ -3446,6 +3711,11 @@ window.addEventListener("DOMContentLoaded", () => {
   speechPage = load(SPEECH_PAGE_KEY) ?? "";
   $("speeches-btn")?.addEventListener("click", () => showView("speeches"));
   $("history-btn")?.addEventListener("click", () => showView("history"));
+  $("drills-btn")?.addEventListener("click", () => showView("drills"));
+  $("drills")?.addEventListener("click", (e) => {
+    const id = (e.target as Element).closest<HTMLElement>("[data-drill]")?.dataset.drill;
+    if (id) startDrill(id);
+  });
   const histEl = $("history");
   histEl?.addEventListener("click", (e) => {
     const b = (e.target as Element).closest<HTMLElement>("[data-star], [data-goto], [data-open], [data-back], [data-hsaved], [data-range]");
@@ -3618,18 +3888,35 @@ window.addEventListener("DOMContentLoaded", () => {
     .then((json) => {
       history = parseHistory(json);
       renderSessionLabel();
+      if (!recording) {
+        chunkStep = 0;
+        refreshScript();
+      }
     })
     .catch(() => {
       // no history available; numbering starts at 1
     });
 
   // Practice: random prompt, timer.
-  const promptEl = $("practice-prompt");
-  $("prompt-btn")?.addEventListener("click", () => {
-    if (!promptEl) return;
-    promptEl.textContent = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
-    promptEl.removeAttribute("hidden");
+  $("prompt-btn")?.addEventListener("click", () => showPrompt(randomPrompt()));
+  memoMask = load(MEMORY_KEY) === "hidden" ? "hidden" : "letters";
+  memoSpeech = load(MEMO_SPEECH_KEY) ?? "";
+  $("drills")?.addEventListener("change", (e) => {
+    const t = e.target as HTMLSelectElement;
+    if (t.id === "memo-speech") save(MEMO_SPEECH_KEY, (memoSpeech = t.value));
+    else if (t.id === "memo-mask") save(MEMORY_KEY, (memoMask = t.value));
+    else return;
+    if (activeDrill === MEMORISE) endDrill(); // armed for the old choice
+    renderDrills();
   });
+  const step = (d: number) => {
+    if (recording) return;
+    chunkStep += d;
+    refreshScript();
+  };
+  $("chunk-prev")?.addEventListener("click", () => step(-1));
+  $("chunk-next")?.addEventListener("click", () => step(1));
+  refreshScript();
 
   listen<TranscriptSegment>("transcript_segment", (event) => {
     const segment = withPreviewPrefix(event.payload);

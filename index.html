@@ -22,6 +22,9 @@
         <button id="speeches-btn" class="nav-btn" aria-label="Speeches" type="button" data-tip="Speeches — your saved scripts and progress on each">
           <svg viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" /></svg>
         </button>
+        <button id="drills-btn" class="nav-btn" aria-label="Drills" type="button" data-tip="Drills — short timed exercises, each targeting one skill">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" /></svg>
+        </button>
         <button id="history-btn" class="nav-btn" aria-label="History" type="button" data-tip="History — past sessions and their stats">
           <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l4 2" /></svg>
         </button>
@@ -102,6 +105,11 @@
               </label>
               </div>
             </div>
+            <div id="chunk-bar" class="chunk-bar" hidden>
+              <button id="chunk-prev" class="ctl" type="button" aria-label="Previous step">‹</button>
+              <span id="chunk-label"></span>
+              <button id="chunk-next" class="ctl" type="button" aria-label="Next step">›</button>
+            </div>
             <textarea
               id="script-input"
               class="script-input"
@@ -166,9 +174,15 @@
       <main id="report" class="view view-report">
         <div id="report-body"></div>
         <section id="report-transcript" class="panel rep-transcript"></section>
+        <div id="coach" class="coach">
+          <div class="coach-avatar"><canvas class="coach-halo"></canvas></div>
+          <button class="coach-bubble" type="button" data-tip="Next tip"></button>
+        </div>
       </main>
 
       <main id="speeches" class="view view-speeches"></main>
+
+      <main id="drills" class="view view-drills"></main>
 
       <main id="history" class="view view-history"></main>
 
