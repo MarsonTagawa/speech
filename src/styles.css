@@ -1213,13 +1213,14 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   height: 64px;
   flex: none;
   position: relative;
+  cursor: pointer; /* click for a boop (coachBoop) */
 }
 /* Halo (src/halo.ts) overhangs the avatar for the wisps; avatar paints on top. */
 .coach-halo {
   position: absolute;
-  inset: -30%;
-  width: 160%;
-  height: 160%;
+  inset: -50%; /* room for the click sparks (~2.2 body radii out) */
+  width: 200%;
+  height: 200%;
   pointer-events: none;
 }
 .coach-avatar .bs-avatar { position: relative; }

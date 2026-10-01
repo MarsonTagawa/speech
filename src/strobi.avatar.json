@@ -26,19 +26,19 @@
       "eyes": {
         "left": {
           "width": 20,
-          "height": 50,
+          "height": 42,
           "x": 0,
           "y": -7,
           "angle": 0
         },
         "right": {
           "width": 20,
-          "height": 50,
+          "height": 42,
           "x": 0,
           "y": -7,
           "angle": 0
         },
-        "spacing": 35
+        "spacing": 55
       },
       "perspective": 1,
       "motion": {

@@ -19,6 +19,9 @@ export class Halo {
   mode: RibbonMode = "idle";
   private p = { ...MODES.idle };
   private phase = 0; // integrated like Ribbon's, so speed changes never snap
+  private boost = 0; // pulse(): 1 → 0, swells and spins up the wisps and glow on top of the mode
+  // pulse() sparks: angle, distance from centre and speed in body radii, life 1 → 0
+  private sparks: { a: number; d: number; v: number; life: number; c: number[] }[] = [];
   private last = performance.now();
   private raf = 0;
   private ctx: CanvasRenderingContext2D | null;
@@ -38,6 +41,16 @@ export class Halo {
     this.mode = mode;
   }
 
+  // A brief flare (decays over ~0.8s) and a burst of sparks off his outline, e.g. when he's clicked.
+  pulse() {
+    this.boost = 1;
+    if (still) return;
+    for (let i = 0; i < 26; i++) {
+      const c = TINTS[i % TINTS.length];
+      this.sparks.push({ a: Math.random() * Math.PI * 2, d: 1, v: 1.5 + Math.random() * 2.5, life: 0.7 + Math.random() * 0.3, c });
+    }
+  }
+
   destroy() {
     cancelAnimationFrame(this.raf);
   }
@@ -54,9 +67,12 @@ export class Halo {
     const target = MODES[this.mode];
     const k = 1 - Math.pow(0.001, dt);
     for (const key of ["amp", "speed", "ab", "glow"] as const) this.p[key] = lerp(this.p[key], target[key], k);
-    if (!still) this.phase += this.p.speed * dt;
+    this.boost = Math.max(0, this.boost - dt / 0.8);
+    const b = this.boost * this.boost; // eased out
+    if (!still) this.phase += this.p.speed * (1 + 6 * b) * dt; // pulse spins the wisps up
 
-    const P = this.p, cx = w / 2, cy = h / 2;
+    const P = { amp: this.p.amp * (1 + 2.5 * b), ab: this.p.ab * (1 + b), glow: this.p.glow + b };
+    const cx = w / 2, cy = h / 2;
     const R = (cv.parentElement?.clientWidth ?? w) * BODY;
     const TAU = Math.PI * 2;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -93,14 +109,14 @@ export class Halo {
       const a0 = dir * this.phase * TAU * (0.55 + j * 0.12) + j * 1.9;
       const len = Math.PI * (0.55 + 0.25 * Math.sin(this.phase * 3 + j));
       const c = TINTS[j % TINTS.length];
-      ctx.lineWidth = Math.max(0.7, R * 0.035 * (0.6 + 0.4 * ((j + 1) % 2)));
+      ctx.lineWidth = Math.max(0.7, R * 0.035 * (0.6 + 0.4 * ((j + 1) % 2)) * (1 + 1.5 * b));
       let px = 0, py = 0;
       for (let s = 0; s <= N; s++) {
         const u = s / N, a = a0 + u * len;
         const r = R * (1.12 + j * 0.05 + (0.1 + P.amp * 0.6) * Math.sin(a * 3 + this.phase * TAU * 1.3 + j * 0.7));
         const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
         if (s) {
-          ctx.strokeStyle = rgba(c, 0.75 * Math.sin(Math.PI * u));
+          ctx.strokeStyle = rgba(c, (0.75 + 0.25 * b) * Math.sin(Math.PI * u));
           ctx.beginPath();
           ctx.moveTo(px, py);
           ctx.lineTo(x, y);
@@ -110,6 +126,18 @@ export class Halo {
         py = y;
       }
     }
+    // sparks: fly out from the outline, slowing and shrinking as they fade
+    for (const sp of this.sparks) {
+      sp.d += sp.v * dt;
+      sp.v *= Math.pow(0.04, dt); // drag
+      sp.life -= dt / 0.9;
+      if (sp.life <= 0) continue;
+      ctx.fillStyle = rgba(sp.c, sp.life);
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(sp.a) * sp.d * R, cy + Math.sin(sp.a) * sp.d * R, Math.max(0.6, R * 0.07 * sp.life), 0, TAU);
+      ctx.fill();
+    }
+    this.sparks = this.sparks.filter((sp) => sp.life > 0);
     ctx.globalCompositeOperation = "source-over";
   }
 }

@@ -12,7 +12,7 @@ import { Shards } from "./shards";
 import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { chunkSpeech, type Chunk } from "./chunks";
-import { createAvatar } from "@bible-strong/avatar-web";
+import { createAvatar, type AnimationKey } from "@bible-strong/avatar-web";
 import strobi from "./strobi.avatar.json";
 
 let ribbon: Ribbon | null = null;
@@ -2157,19 +2157,94 @@ function coachSpeak() {
   const count = coachTips.length > 1 ? `<small>${coachIdx + 1}/${coachTips.length} · click for next</small>` : "";
   el.setAttribute("aria-label", text);
   clearInterval(coachTimer);
-  coach.play("curious");
+  coachPlay("curious");
   halo?.setMode("speaking");
   let n = matchMedia("(prefers-reduced-motion: reduce)").matches ? text.length : 0;
   const tick = () => {
     el.innerHTML = escapeHtml(text.slice(0, ++n)) + (n >= text.length ? count : "");
     if (n >= text.length) {
       clearInterval(coachTimer);
-      coach?.play("idle");
+      coachPlay("idle");
       halo?.setMode("idle");
     }
   };
   tick();
   coachTimer = window.setInterval(tick, 22);
+}
+
+// Coach looks and leans towards the cursor once it's within ~3 avatar widths. His animations
+// glance around on their own, so while the cursor is near he holds the neutral
+// face and the eyes are offset towards it (eased in JS on the svg `transform`
+// attribute); the requested animation resumes when it leaves. `look` is the
+// current [-1, 1] gaze, `lookTo` its target.
+const look = { x: 0, y: 0 }, lookTo = { x: 0, y: 0 };
+let lookRaf = 0;
+let lookNear = false;
+let coachAnim: AnimationKey = "idle";
+
+// play() restarts even the running animation, so only switch when it differs.
+function coachPlay(anim: typeof coachAnim) {
+  coachAnim = anim;
+  const s = coach?.getState();
+  if (!lookNear && !(s?.activeAnimation === anim && s.status === "playing")) coach?.play(anim);
+}
+
+// Clicking him: he swells up laughing and the halo's ribbons flare, then he's
+// back to whatever he was doing (the look face if the cursor is still on him).
+let boopTimer = 0;
+function coachBoop() {
+  const mount = coachEl?.querySelector<HTMLElement>(".coach-avatar");
+  if (!coach || !mount) return;
+  coach.play("laughing");
+  halo?.pulse();
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    // Springy: pops past full size, dips under, settles. Each easing runs to the next keyframe.
+    const grow = (s: number, offset: number, easing = "ease-in-out") => ({ transform: `scale(${s})`, offset, easing });
+    mount.animate(
+      [grow(1, 0, "cubic-bezier(.2, 1.4, .5, 1)"), grow(1.22, 0.28), grow(0.95, 0.55), grow(1.03, 0.78), grow(1, 1)],
+      { duration: 750 },
+    );
+  }
+  clearTimeout(boopTimer);
+  boopTimer = window.setTimeout(() => {
+    if (lookNear) coach?.setExpression("neutral");
+    else coach?.play(coachAnim);
+  }, 650);
+}
+
+function coachLookAt(e: PointerEvent) {
+  const r = coachEl?.querySelector(".coach-avatar svg")?.getBoundingClientRect();
+  if (!coach || !r?.width) return;
+  const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+  const d = Math.hypot(dx, dy) || 1;
+  const near = d < r.width * 3;
+  if (near !== lookNear) {
+    lookNear = near;
+    if (near) coach.setExpression("neutral");
+    else coach.play(coachAnim);
+  }
+  const m = near ? Math.min(1, (2 * d) / r.width) : 0;
+  lookTo.x = (dx / d) * m;
+  lookTo.y = (dy / d) * m;
+  lookRaf ||= requestAnimationFrame(coachLookFrame);
+}
+
+function coachLookFrame() {
+  look.x += (lookTo.x - look.x) * 0.2;
+  look.y += (lookTo.y - look.y) * 0.2;
+  const settled = Math.abs(lookTo.x - look.x) + Math.abs(lookTo.y - look.y) < 0.002;
+  if (settled) Object.assign(look, lookTo);
+  const mount = coachEl?.querySelector<HTMLElement>(".coach-avatar");
+  // Eyes: the two paths in the head-clipped <g>, in viewBox units (300 across),
+  // shifted towards the cursor and tilted with the lean.
+  mount
+    ?.querySelectorAll("svg > g > path")
+    .forEach((p) => p.setAttribute("transform", `translate(${look.x * 65} ${look.y * 50}) rotate(${look.x * 6})`));
+  // Lean: the body (and halo with it) shifts towards the cursor. Translate only:
+  // a CSS rotate gets rasterised by WebKitGTK and jags the edges; on a sphere
+  // the tilt reads from the eyes anyway.
+  if (mount) mount.style.transform = `translate(${look.x * 2.5}px, ${look.y}px)`;
+  lookRaf = settled ? 0 : requestAnimationFrame(coachLookFrame);
 }
 
 function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
@@ -3668,6 +3743,8 @@ window.addEventListener("DOMContentLoaded", () => {
     coachIdx = (coachIdx + 1) % Math.max(1, coachTips.length);
     coachSpeak();
   });
+  window.addEventListener("pointermove", coachLookAt);
+  coachEl?.querySelector(".coach-avatar")?.addEventListener("click", coachBoop);
   $("report-body")?.addEventListener("click", (e) => {
     const star = (e.target as Element).closest<HTMLElement>("[data-star]");
     if (star) return void toggleSaved(Number(star.dataset.star));
