@@ -6,7 +6,7 @@ import "@fontsource/ibm-plex-mono/400-italic.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
-import { Ribbon } from "./ribbon";
+import { Ribbon, hexToRgb } from "./ribbon";
 import { Halo } from "./halo";
 import { Shards } from "./shards";
 import { troubleSpots } from "./passages";
@@ -657,20 +657,135 @@ const etaByIndex = new Map<number, number>(); // projected correction time (perf
 let countdownEnd = 0; // projected end of the whole pass, for the overall bar
 let correctShown = 0; // overall bar fill; only moves forward as the ETA is re-learned
 
-// Overall "Correcting…" overlay covering the transcript, from Stop until corrections_done.
+// Overall "Correcting…" overlay covering the transcript, from Stop until
+// corrections_done: coach + halo, the pass's bar, a pip per line, and the line
+// being re-decoded. Ends with a short celebration (finishCorrecting).
 let loadingCoach: ReturnType<typeof createAvatar> | null = null;
+let correctHalo: Halo | null = null;
+const GREEN_RGB = hexToRgb("#30d158");
+const passLines: number[] = []; // draft lines this pass corrects, in order (a pip each)
+let decodeDraft = ""; // the decoding line's draft text, to diff its correction against
+let decodeLanded = 0; // index whose corrected text is shown (rendered once so its flash plays)
+let celebrateTimer = 0;
+
 function showCorrectBar(on: boolean) {
   const mount = document.querySelector<HTMLElement>(".correct-coach");
   if (on && mount && !loadingCoach) {
     // The halo skips drawing while the overlay is hidden, so it lives for the session.
-    new Halo(mount.querySelector("canvas")!).setMode("thinking");
+    correctHalo = new Halo(mount.querySelector("canvas")!);
     loadingCoach = createAvatar(mount, { definition: strobi, defaultAnimation: "thinking", size: "100%", ariaLabel: "Coach thinking" });
+  } else if (on) {
+    loadingCoach?.play("thinking"); // last pass left him celebrating
   }
+  if (on) correctHalo?.setMode("thinking");
+  clearTimeout(celebrateTimer);
   correctShown = 0;
   countdownEnd = 0;
-  $("correct-bar")?.toggleAttribute("hidden", !on);
-  $("correct-bar")?.style.setProperty("--p", "0");
+  passLines.length = 0;
+  decodeLanded = 0;
+  const bar = $("correct-bar");
+  bar?.toggleAttribute("hidden", !on);
+  bar?.classList.remove("done", "leaving");
+  bar?.style.setProperty("--p", "0");
+  const pips = $("correct-pips");
+  if (pips) pips.innerHTML = "";
+  $("correct-line")?.setAttribute("hidden", "");
   setText("correct-label", "Correcting…");
+}
+
+// Pips fill green as lines land; each landing (bar the last, which gets the
+// big celebration) throws a few green sparks off the halo.
+function renderPips(sparks = true) {
+  const box = $("correct-pips");
+  if (!box) return;
+  while (box.children.length < passLines.length) box.append(document.createElement("i"));
+  passLines.forEach((index, k) => {
+    const pip = box.children[k];
+    const done = !segmentEls.get(index)?.classList.contains("draft");
+    if (sparks && done && !pip.classList.contains("done") && k < passLines.length - 1) correctHalo?.pulse(7, 0.45, GREEN_RGB);
+    pip.classList.toggle("done", done);
+    pip.classList.toggle("now", !done && index === lastCorrection?.index);
+  });
+}
+
+const GLYPHS = "abcdefghijklmnopqrstuvwxyz·:/";
+const normWord = (w: string) => w.toLowerCase().replace(/[^a-z0-9']/g, "");
+const wordSpan = (w: string, cls = "") => `<span${cls && ` class="${cls}"`}>${escapeHtml(w)}</span>`;
+
+function showDecodeLine(index: number) {
+  const el = segmentEls.get(index);
+  const box = $("correct-line");
+  if (!el || !box) return;
+  decodeDraft = el.querySelector(".seg-text")?.textContent ?? "";
+  box.hidden = false;
+  box.classList.remove("corrected");
+  box.classList.add("draft");
+  box.querySelector(".seg-ts")!.textContent = el.querySelector(".seg-ts")?.textContent ?? "";
+}
+
+// While decoding, a scramble front sweeps the draft toward the line's projected
+// end (stalling short of it until the correction lands); then the corrected
+// text, words the correction changed in green.
+function renderDecodeLine(now: number) {
+  const box = $("correct-line");
+  const cur = lastCorrection;
+  if (!box || box.hidden || !cur) return;
+  box.querySelector(".count")!.textContent = `line ${passLines.indexOf(cur.index) + 1} / ${passLines.length}`;
+  const text = box.querySelector(".seg-text")!;
+  const el = segmentEls.get(cur.index);
+  if (el && !el.classList.contains("draft")) {
+    if (decodeLanded === cur.index) return;
+    decodeLanded = cur.index;
+    box.classList.replace("draft", "corrected");
+    const was = new Set(decodeDraft.split(/\s+/).map(normWord));
+    const words = (el.querySelector(".seg-text")?.textContent ?? "").split(/\s+/).filter(Boolean);
+    text.innerHTML = words.map((w) => wordSpan(w, was.has(normWord(w)) ? "" : "changed")).join("");
+    return;
+  }
+  const eta = etaByIndex.get(cur.index) ?? now;
+  const local = Math.min(0.92, (now - cur.at) / Math.max(1, eta - cur.at));
+  const words = decodeDraft.split(/\s+/).filter(Boolean);
+  const seed = Math.floor(now / 55);
+  text.innerHTML = words
+    .map((w, k) => {
+      const pos = (k + 1) / words.length;
+      if (local >= pos) return wordSpan(w);
+      if (local < pos - 0.12) return wordSpan(w, "ahead");
+      const scrambled = [...w].map((c, j) => (/[a-z]/i.test(c) ? GLYPHS[(seed + k * 7 + j * 3) % GLYPHS.length] : c)).join("");
+      return wordSpan(scrambled, "front");
+    })
+    .join("");
+}
+
+// corrections_done: celebrate on the overlay, then fade it out and run `then`
+// (opens the report). Straight to `then` when the overlay isn't up.
+function finishCorrecting(then: () => void) {
+  const bar = $("correct-bar");
+  if (!bar || bar.hidden) {
+    resetCountdown();
+    then();
+    return;
+  }
+  cancelAnimationFrame(countdownRaf);
+  countdownRaf = 0;
+  etaByIndex.clear();
+  for (const el of segmentEls.values()) el.classList.remove("counting");
+  renderPips(false);
+  bar.classList.add("done");
+  bar.style.setProperty("--p", "1");
+  const n = passLines.length;
+  setText("correct-label", n ? `Corrected · ${n} line${n === 1 ? "" : "s"}` : "Corrected");
+  setStatus("Corrected");
+  correctHalo?.pulse();
+  correctHalo?.setMode("speaking");
+  loadingCoach?.play("celebrate");
+  celebrateTimer = window.setTimeout(() => {
+    bar.classList.add("leaving");
+    celebrateTimer = window.setTimeout(() => {
+      resetCountdown();
+      then();
+    }, 500);
+  }, 2200);
 }
 
 function utteranceMs(index: number): number {
@@ -694,10 +809,13 @@ function onCorrectionStarted(index: number) {
     const waiting = i >= index && el.classList.contains("draft");
     el.classList.toggle("counting", waiting);
     if (!waiting) continue;
+    if (!passLines.includes(i)) passLines.push(i);
     eta += utteranceMs(i) * correctionRtf;
     etaByIndex.set(i, eta);
   }
   countdownEnd = eta;
+  passLines.sort((a, b) => a - b);
+  showDecodeLine(index);
   if (!countdownRaf) countdownRaf = requestAnimationFrame(tickCountdown);
 }
 
@@ -721,6 +839,8 @@ function tickCountdown() {
     $("correct-bar")?.style.setProperty("--p", String(correctShown));
     setText("correct-label", `Correcting… ~${Math.max(0, Math.ceil((countdownEnd - now) / 1000))}s`);
   }
+  renderPips();
+  renderDecodeLine(now);
   countdownRaf = etaByIndex.size ? requestAnimationFrame(tickCountdown) : 0;
 }
 
@@ -1335,6 +1455,8 @@ function setStatus(text: string) {
   const pill = $("status-pill");
   pill?.classList.toggle("recording", text === "Recording");
   pill?.classList.toggle("error", text === "Error");
+  pill?.classList.toggle("correcting", text === "Correcting…");
+  pill?.classList.toggle("corrected", text === "Corrected");
 }
 
 // Start/stop hotkey, as a layout-independent KeyboardEvent.code.
@@ -4050,18 +4172,21 @@ window.addEventListener("DOMContentLoaded", () => {
   listen<number>("correction_started", (event) => onCorrectionStarted(event.payload));
 
   listen("corrections_done", () => {
-    resetCountdown();
     // Lines the pass didn't replace — medium heard only noise ("[BLANK_AUDIO]"),
     // its decode failed, or correction is off — never get a refined segment, so
     // settle them here: the fast text is final.
     for (const el of segmentEls.values()) el.classList.replace("draft", "final");
-    if (reportPending) {
-      reportPending = false;
-      renderReport();
-      if (reportVisible && document.body.dataset.view === "live") showView("report");
-    }
-    flushSave();
-    if (!recording) setStatus("Idle");
+    // A new recording or reset during the celebration cancels this (resetCountdown);
+    // both flush the save themselves.
+    finishCorrecting(() => {
+      if (reportPending) {
+        reportPending = false;
+        renderReport();
+        if (reportVisible && document.body.dataset.view === "live") showView("report");
+      }
+      flushSave();
+      if (!recording) setStatus("Idle");
+    });
   });
 
   listen<string>("transcription_error", (event) => {

@@ -88,7 +88,20 @@
 
         <section class="tpane">
           <div class="tfade"></div>
-          <div id="correct-bar" class="correct-bar" hidden><div class="correct-coach"><canvas class="coach-halo"></canvas></div><span id="correct-label">Correcting…</span><div class="bar"><i></i></div></div>
+          <div id="correct-bar" class="correct-bar" hidden>
+            <div class="correct-coach"><canvas class="coach-halo"></canvas></div>
+            <span id="correct-label">Correcting…</span>
+            <div class="correct-track">
+              <div class="bar"><i><b></b></i><span class="head"></span></div>
+              <div id="correct-pips" class="correct-pips"></div>
+            </div>
+            <div id="correct-line" class="correct-line draft" hidden>
+              <div class="seg-body">
+                <div class="seg-meta"><span class="seg-ts"></span><span class="seg-state"></span><span class="count"></span></div>
+                <p class="seg-text"></p>
+              </div>
+            </div>
+          </div>
           <p id="practice-prompt" class="practice-prompt" hidden></p>
           <div id="transcript" class="transcript">
             <p class="placeholder">Your transcript will appear here as you speak.</p>

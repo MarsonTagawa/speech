@@ -42,11 +42,12 @@ export class Halo {
   }
 
   // A brief flare (decays over ~0.8s) and a burst of sparks off his outline, e.g. when he's clicked.
-  pulse() {
-    this.boost = 1;
+  // Smaller/tinted for minor beats (a corrected line).
+  pulse(sparks = 26, strength = 1, tint?: number[]) {
+    this.boost = Math.max(this.boost, strength);
     if (still) return;
-    for (let i = 0; i < 26; i++) {
-      const c = TINTS[i % TINTS.length];
+    for (let i = 0; i < sparks; i++) {
+      const c = tint ?? TINTS[i % TINTS.length];
       this.sparks.push({ a: Math.random() * Math.PI * 2, d: 1, v: 1.5 + Math.random() * 2.5, life: 0.7 + Math.random() * 0.3, c });
     }
   }
