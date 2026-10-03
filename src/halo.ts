@@ -1,7 +1,10 @@
-// Coach halo: the Ribbon's look wrapped around a circle. The prism orbits the
-// avatar's outline (chromatic aberration that travels round him) and the
-// ribbon's filaments become wisps circling just outside it. Drawn on a canvas
-// behind the avatar svg; setMode() eases between the ribbon's modes.
+// Coach halo: the Ribbon's look wrapped around the avatar's silhouette. The
+// outline is read from the avatar's svg paths (head + arm nodes) whenever they
+// change, so it follows him as his animations turn him. The prism orbits the
+// outline (chromatic aberration that travels round him) and the ribbon's
+// filaments become wisps circling just outside it. Drawn on a canvas behind
+// the avatar svg; setMode() eases between the ribbon's modes.
+import { RADIUS } from "@bible-strong/avatar-core";
 import { MODES, PROPS, hexToRgb, hueShift, lerp, prism, rgba, type RibbonMode } from "./ribbon";
 
 const deep = hexToRgb(PROPS.blueColor);
@@ -10,10 +13,79 @@ const warm = hexToRgb(PROPS.redColor);
 const core = hexToRgb(PROPS.coreColor);
 const SPECTRUM = prism(deep, cool, warm);
 const TINTS = [deep, cool, core, hueShift(warm, 34, 1.4), warm];
-// ponytail: assumes a round body filling 80% of the avatar box (Strobi's
-// 240-unit sphere in a 300-unit viewBox); read it from the definition if other avatars land.
-const BODY = 0.4;
-const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+// Body radius as a fraction of the avatar box: the 120-unit sphere in a 300-unit viewBox.
+const BODY = RADIUS / 300;
+const TAU = Math.PI * 2;
+const S = 360; // silhouette samples round the circle
+
+// Outline radius per angle (in body radii) from svg path data in viewBox units:
+// the furthest point of any path along each angle, then the body/arm notches
+// filled in with a triangle blur so the halo hugs rather than kinks.
+// ponytail: an arc path is taken as a circle round the origin (avatar-core's
+// head), other paths by their points (fine for its dense bezier nodes).
+export function silhouette(ds: string[]): Float32Array {
+  const raw = new Float32Array(S).fill(1), out = new Float32Array(S), soft = 7;
+  for (const d of ds) {
+    const n = (d.match(/-?\d*\.?\d+/g) ?? []).map(Number);
+    if (d.includes("A")) {
+      for (let i = 0; i < S; i++) raw[i] = Math.max(raw[i], n[2] / RADIUS);
+      continue;
+    }
+    // Walk the point sequence (on-curve and control points: a polyline hugging
+    // the curve) in ~1-unit steps, so every angle it crosses gets a radius even
+    // where the path's points are sparse (a foreshortened arm).
+    for (let k = 0; k + 1 < n.length; k += 2) {
+      const x0 = n[k], y0 = n[k + 1], x1 = n[(k + 2) % (n.length & ~1)], y1 = n[(k + 3) % (n.length & ~1)];
+      const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0)));
+      for (let t = 0; t < steps; t++) {
+        const x = x0 + ((x1 - x0) * t) / steps, y = y0 + ((y1 - y0) * t) / steps;
+        const i = Math.round((((Math.atan2(y, x) + TAU) % TAU) / TAU) * S) % S;
+        raw[i] = Math.max(raw[i], Math.hypot(x, y) / RADIUS);
+      }
+    }
+  }
+  for (let i = 0; i < S; i++) {
+    let sum = 0, w = 0;
+    for (let k = -soft; k <= soft; k++) {
+      const wk = soft + 1 - Math.abs(k);
+      sum += raw[(i + k + S) % S] * wk;
+      w += wk;
+    }
+    out[i] = Math.max(raw[i], sum / w);
+  }
+  return out;
+}
+
+function edge(sh: Float32Array, a: number) {
+  const f = ((((a / TAU) % 1) + 1) % 1) * S, i = Math.floor(f), t = f - i;
+  return sh[i % S] * (1 - t) + sh[(i + 1) % S] * t;
+}
+
+function outline(ctx: CanvasRenderingContext2D, sh: Float32Array, cx: number, cy: number, R: number, pad = 0) {
+  ctx.beginPath();
+  for (let i = 0; i <= 120; i++) {
+    const a = (i / 120) * TAU, r = R * (edge(sh, a) + pad);
+    const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+    if (i) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+  }
+  ctx.closePath();
+}
+
+// Strokes the outline blurred by `blur` px. WebKitGTK ignores ctx.filter (an
+// unblurred stroke shows as a thick band), so the stroke is drawn far off-canvas
+// and only its shadow, which does blur, lands. Shadow offset/blur are in device
+// pixels, and shadowBlur is twice the gaussian's sigma.
+const OFF = 10000;
+function blurOutline(ctx: CanvasRenderingContext2D, sh: Float32Array, dpr: number, color: string, blur: number, cx: number, cy: number, R: number, pad = 0) {
+  ctx.shadowColor = color;
+  ctx.shadowBlur = blur * 2 * dpr;
+  ctx.shadowOffsetX = OFF * dpr;
+  outline(ctx, sh, cx - OFF, cy, R, pad);
+  ctx.stroke();
+}
+
+const still = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 export class Halo {
   mode: RibbonMode = "idle";
@@ -25,6 +97,9 @@ export class Halo {
   private last = performance.now();
   private raf = 0;
   private ctx: CanvasRenderingContext2D | null;
+  private shape = new Float32Array(S).fill(1); // round until the avatar svg appears
+  private shapeKey = "";
+  private watch: MutationObserver;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext("2d");
@@ -35,6 +110,21 @@ export class Halo {
       this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
+    // The avatar redraws in its own rAF, which can run after ours in the same
+    // frame; redraw (without advancing time) the moment its paths change, so
+    // the outline never trails his arms by a frame.
+    this.watch = new MutationObserver(() => this.readShape() && this.step(0));
+    if (canvas.parentElement) this.watch.observe(canvas.parentElement, { subtree: true, childList: true, attributeFilter: ["d"] });
+  }
+
+  // Re-reads the outline from the avatar's svg (beside the canvas); true if it changed.
+  private readShape() {
+    const ds = [...(this.canvas.parentElement?.querySelectorAll("svg > path") ?? [])].map((p) => p.getAttribute("d") ?? "");
+    const key = ds.join();
+    if (key === this.shapeKey) return false;
+    this.shapeKey = key;
+    this.shape = silhouette(ds);
+    return true;
   }
 
   setMode(mode: RibbonMode) {
@@ -48,12 +138,14 @@ export class Halo {
     if (still) return;
     for (let i = 0; i < sparks; i++) {
       const c = tint ?? TINTS[i % TINTS.length];
-      this.sparks.push({ a: Math.random() * Math.PI * 2, d: 1, v: 1.5 + Math.random() * 2.5, life: 0.7 + Math.random() * 0.3, c });
+      const a = Math.random() * TAU;
+      this.sparks.push({ a, d: edge(this.shape, a), v: 1.5 + Math.random() * 2.5, life: 0.7 + Math.random() * 0.3, c });
     }
   }
 
   destroy() {
     cancelAnimationFrame(this.raf);
+    this.watch.disconnect();
   }
 
   private step(dt: number) {
@@ -65,6 +157,7 @@ export class Halo {
       cv.width = Math.round(w * dpr);
       cv.height = Math.round(h * dpr);
     }
+    this.readShape();
     const target = MODES[this.mode];
     const k = 1 - Math.pow(0.001, dt);
     for (const key of ["amp", "speed", "ab", "glow"] as const) this.p[key] = lerp(this.p[key], target[key], k);
@@ -75,36 +168,33 @@ export class Halo {
     const P = { amp: this.p.amp * (1 + 2.5 * b), ab: this.p.ab * (1 + b), glow: this.p.glow + b };
     const cx = w / 2, cy = h / 2;
     const R = (cv.parentElement?.clientWidth ?? w) * BODY;
-    const TAU = Math.PI * 2;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
     ctx.globalCompositeOperation = "lighter";
 
-    // bloom hugging the outline
-    const bl = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 1.7);
-    bl.addColorStop(0, rgba(core, 0.35 * P.glow + 0.1));
-    bl.addColorStop(0.4, rgba(cool, 0.05 * P.glow));
-    bl.addColorStop(1, rgba(core, 0));
-    ctx.fillStyle = bl;
-    ctx.fillRect(0, 0, w, h);
+    // bloom hugging the outline: wide blurred strokes along the silhouette
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#000"; // only the shadow shows; its alpha comes from shadowColor
+    ctx.lineWidth = R * 0.5;
+    blurOutline(ctx, this.shape, dpr, rgba(core, 0.3 * P.glow + 0.08), R * 0.3, cx, cy, R, 0.05);
+    ctx.lineWidth = R * 0.9;
+    blurOutline(ctx, this.shape, dpr, rgba(cool, 0.04 * P.glow), R * 0.3, cx, cy, R, 0.3);
 
-    // aberration: the prism as rings, each nudged along a direction that
+    // aberration: the prism as outlines, each nudged along a direction that
     // orbits the body, so the colour split travels round him
     const th = this.phase * TAU * 0.8;
     const ab = P.ab * PROPS.aberration * R * 0.03;
-    ctx.filter = `blur(${(R * 0.035).toFixed(1)}px)`;
     ctx.lineWidth = R * 0.09;
     for (const f of SPECTRUM) {
-      ctx.strokeStyle = rgba(f.c, f.a);
-      ctx.beginPath();
-      ctx.arc(cx + Math.cos(th) * f.o * ab, cy + Math.sin(th) * f.o * ab, R, 0, TAU);
-      ctx.stroke();
+      blurOutline(ctx, this.shape, dpr, rgba(f.c, f.a), R * 0.035, cx + Math.cos(th) * f.o * ab, cy + Math.sin(th) * f.o * ab, R);
+      ctx.fill(); // a ring nudged outward would lift off his edge; fill the gap (the rest hides behind him)
     }
-    ctx.filter = "none";
+    ctx.shadowColor = "transparent";
+    ctx.shadowOffsetX = 0;
 
     // wisps: the ribbon's filaments bent into arcs, alternate ones counter-
     // rotating, radius wobbling with the mode's amplitude, faded at both ends
-    const N = 36;
+    const N = 48;
     for (let j = 0; j < PROPS.strands; j++) {
       const dir = j % 2 ? -1 : 1;
       const a0 = dir * this.phase * TAU * (0.55 + j * 0.12) + j * 1.9;

@@ -769,6 +769,8 @@ fn run_correction_worker(app: AppHandle, rx: Receiver<CorrectionJob>, generation
                     let t = std::time::Instant::now();
                     *slot = Some((model.clone(), whisper::load_model(&app, &model)?));
                     eprintln!("[whisper] {model} loaded in {:?}", t.elapsed());
+                    // The UI's countdown projects the load, then starts the decode clock here.
+                    let _ = app.emit("correction_loaded", t.elapsed().as_millis() as u64);
                 }
                 whisper::run(&mut slot.as_mut().unwrap().1, &job.audio, true)
             });

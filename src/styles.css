@@ -1229,9 +1229,9 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
 /* Halo (src/halo.ts) overhangs the avatar for the wisps; avatar paints on top. */
 .coach-halo {
   position: absolute;
-  inset: -50%; /* room for the click sparks (~2.2 body radii out) */
-  width: 200%;
-  height: 200%;
+  inset: -75%; /* room for the arms' halo and the click sparks */
+  width: 250%;
+  height: 250%;
   pointer-events: none;
 }
 .coach-avatar .bs-avatar { position: relative; }
@@ -1305,8 +1305,8 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   position: relative;
   flex: 0 0 auto;
   margin: clamp(2px, 4cqh, 32px) 0;
-  width: clamp(36px, min(26cqh, 22cqw), 180px);
-  height: clamp(36px, min(26cqh, 22cqw), 180px);
+  width: clamp(48px, min(36cqh, 30cqw), 240px);
+  height: clamp(48px, min(36cqh, 30cqw), 240px);
   animation: coachIn 650ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transition: transform 650ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }

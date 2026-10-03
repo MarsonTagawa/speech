@@ -658,6 +658,9 @@ document.addEventListener("mouseover", (e) => {
 // correction time — the audio queued ahead of it × `correctionRtf` — resynced on
 // every `correction_started`.
 let correctionRtf = 0.15; // medium decode time ÷ audio length; learned as lines land
+// Medium is loaded fresh each pass, before the first line decodes (correction_loaded).
+const LOAD_MS_KEY = "speech.correctionLoadMs";
+let correctionLoadMs = Number(load(LOAD_MS_KEY)) || 3000;
 let countdownStart = 0;
 let countdownRaf = 0;
 let lastCorrection: { index: number; at: number } | null = null;
@@ -788,11 +791,10 @@ function finishCorrecting(then: () => void) {
   correctHalo?.setMode("speaking");
   loadingCoach?.play("celebrate");
   celebrateTimer = window.setTimeout(() => {
+    // `then` opens the report first, so the fade never uncovers the transcript.
+    then();
     bar.classList.add("leaving");
-    celebrateTimer = window.setTimeout(() => {
-      resetCountdown();
-      then();
-    }, 500);
+    celebrateTimer = window.setTimeout(resetCountdown, 500);
   }, 2200);
 }
 
@@ -803,16 +805,35 @@ function utteranceMs(index: number): number {
 
 function onCorrectionStarted(index: number) {
   const now = performance.now();
+  // `at` = when the line's decode starts; the first waits for the model load.
+  let at = now;
   if (lastCorrection) {
-    // The gap between starts is the previous line's decode time.
+    // The gap between decode starts is the previous line's decode time.
     const ms = utteranceMs(lastCorrection.index);
     if (ms > 0) correctionRtf = (correctionRtf + (now - lastCorrection.at) / ms) / 2;
   } else {
     countdownStart = now;
+    at += correctionLoadMs;
   }
-  lastCorrection = { index, at: now };
+  lastCorrection = { index, at };
+  projectEtas();
+  showDecodeLine(index);
+  if (!countdownRaf) countdownRaf = requestAnimationFrame(tickCountdown);
+}
+
+function onCorrectionLoaded(ms: number) {
+  correctionLoadMs = ms;
+  save(LOAD_MS_KEY, String(ms));
+  if (!lastCorrection) return;
+  lastCorrection.at = performance.now();
+  projectEtas();
+}
+
+function projectEtas() {
+  if (!lastCorrection) return;
+  const { index } = lastCorrection;
   etaByIndex.clear();
-  let eta = now;
+  let eta = lastCorrection.at;
   for (const [i, el] of segmentEls) {
     const waiting = i >= index && el.classList.contains("draft");
     el.classList.toggle("counting", waiting);
@@ -823,8 +844,6 @@ function onCorrectionStarted(index: number) {
   }
   countdownEnd = eta;
   passLines.sort((a, b) => a - b);
-  showDecodeLine(index);
-  if (!countdownRaf) countdownRaf = requestAnimationFrame(tickCountdown);
 }
 
 function tickCountdown() {
@@ -845,7 +864,8 @@ function tickCountdown() {
   if (countdownEnd) {
     correctShown = Math.max(correctShown, Math.min(1, (now - countdownStart) / Math.max(1, countdownEnd - countdownStart)));
     $("correct-bar")?.style.setProperty("--p", String(correctShown));
-    setText("correct-label", `Correcting… ~${Math.max(0, Math.ceil((countdownEnd - now) / 1000))}s`);
+    const verb = lastCorrection && now < lastCorrection.at ? "Loading model…" : "Correcting…";
+    setText("correct-label", `${verb} ~${Math.max(0, Math.ceil((countdownEnd - now) / 1000))}s`);
   }
   renderPips();
   renderDecodeLine(now);
@@ -2409,9 +2429,10 @@ function coachSpeak() {
 // Coach looks and leans towards the cursor once it's within ~3 avatar widths.
 // His animations glance around on their own, so while the cursor is near he's
 // parked on the neutral face; once the avatar stops drawing (status "stopped")
-// the eyes are redrawn here from avatar-core with his head turned towards the
-// cursor, so they curve round the sphere. When it leaves, the head turns back
-// to centre before his idle animation resumes. `look` is the current
+// the eyes and body are redrawn here from avatar-core with his head turned
+// towards the cursor, so the eyes curve round the sphere and his arms swing
+// round with him. When it leaves, the head turns back to centre before his
+// idle animation resumes. `look` is the current
 // [-1, 1] gaze, `lookTo` its target.
 const strobiDef = strobi as unknown as AvatarDefinition;
 const NEUTRAL = expressionFromDefinition("neutral", strobiDef.expressions.neutral);
@@ -2474,6 +2495,13 @@ function coachLookFrame() {
     const turn = { ...NEUTRAL, headY: look.x * 40, headX: -look.y * 35, headZ: look.x * 8 };
     for (const k of EYE_SHAPE) turn[k] += (JOYFUL[k] - NEUTRAL[k]) * joy;
     const g = renderAvatarExpression(strobiDef, turn).geometry;
+    // Body too, so his arms swing round with the head: avatar-web's svg is
+    // [back nodes..., head, front nodes...] as direct paths, plus the head's clip path.
+    const svg = mount?.querySelector("svg");
+    const body = svg?.querySelectorAll(":scope > path") ?? [];
+    const nBack = (body.length - 1) / 2;
+    body.forEach((p, i) => p.setAttribute("d", i < nBack ? g.backPaths[i] ?? "" : i === nBack ? g.headPath : g.frontPaths[i - nBack - 1] ?? ""));
+    svg?.querySelector("clipPath > path")?.setAttribute("d", g.headPath);
     const [l, r] = mount?.querySelectorAll("svg > g > path") ?? [];
     l?.setAttribute("d", g.leftPath);
     l?.setAttribute("opacity", g.leftVisible ? "1" : "0");
@@ -4290,6 +4318,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   listen<number>("correction_started", (event) => onCorrectionStarted(event.payload));
+  listen<number>("correction_loaded", (event) => onCorrectionLoaded(event.payload));
 
   listen("corrections_done", () => {
     // Lines the pass didn't replace — medium heard only noise ("[BLANK_AUDIO]"),
