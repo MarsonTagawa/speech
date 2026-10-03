@@ -85,7 +85,7 @@ function blurOutline(ctx: CanvasRenderingContext2D, sh: Float32Array, dpr: numbe
   ctx.stroke();
 }
 
-const still = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+export const still = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 export class Halo {
   mode: RibbonMode = "idle";
@@ -100,13 +100,24 @@ export class Halo {
   private shape = new Float32Array(S).fill(1); // round until the avatar svg appears
   private shapeKey = "";
   private watch: MutationObserver;
+  // Knobs for small halos (the flappy coach): extra glow, a lower resolution
+  // cap, and the costly bloom + aberration re-rendered only every Nth frame
+  // (blitted from a cache between).
+  gain = 1;
+  maxDpr = 2;
+  cacheEvery = 1;
+  paused = false;
+  private cache: HTMLCanvasElement | null = null;
+  private frameN = 0;
 
-  constructor(private canvas: HTMLCanvasElement) {
+  // follow = false: keep the round body outline instead of tracking the
+  // avatar svg beside the canvas (fast-flapping arms trailed as ghost arms).
+  constructor(private canvas: HTMLCanvasElement, private follow = true) {
     this.ctx = canvas.getContext("2d");
     const loop = (now: number) => {
       const dt = Math.min(0.05, (now - this.last) / 1000);
       this.last = now;
-      this.step(dt);
+      if (!this.paused) this.step(dt);
       this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
@@ -114,7 +125,7 @@ export class Halo {
     // frame; redraw (without advancing time) the moment its paths change, so
     // the outline never trails his arms by a frame.
     this.watch = new MutationObserver(() => this.readShape() && this.step(0));
-    if (canvas.parentElement) this.watch.observe(canvas.parentElement, { subtree: true, childList: true, attributeFilter: ["d"] });
+    if (follow && canvas.parentElement) this.watch.observe(canvas.parentElement, { subtree: true, childList: true, attributeFilter: ["d"] });
   }
 
   // Re-reads the outline from the avatar's svg (beside the canvas); true if it changed.
@@ -152,12 +163,12 @@ export class Halo {
     const cv = this.canvas, ctx = this.ctx;
     const w = cv.clientWidth, h = cv.clientHeight;
     if (!ctx || w < 8 || h < 8) return; // hidden view: skip the draw
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
     if (cv.width !== Math.round(w * dpr)) {
       cv.width = Math.round(w * dpr);
       cv.height = Math.round(h * dpr);
     }
-    this.readShape();
+    const reshaped = this.follow && this.readShape();
     const target = MODES[this.mode];
     const k = 1 - Math.pow(0.001, dt);
     for (const key of ["amp", "speed", "ab", "glow"] as const) this.p[key] = lerp(this.p[key], target[key], k);
@@ -165,32 +176,50 @@ export class Halo {
     const b = this.boost * this.boost; // eased out
     if (!still) this.phase += this.p.speed * (1 + 6 * b) * dt; // pulse spins the wisps up
 
-    const P = { amp: this.p.amp * (1 + 2.5 * b), ab: this.p.ab * (1 + b), glow: this.p.glow + b };
+    const P = { amp: this.p.amp * (1 + 2.5 * b), ab: this.p.ab * (1 + b), glow: (this.p.glow + b) * this.gain };
     const cx = w / 2, cy = h / 2;
     const R = (cv.parentElement?.clientWidth ?? w) * BODY;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+
+    const heavy = (ctx: CanvasRenderingContext2D) => {
+      ctx.globalCompositeOperation = "lighter";
+      // bloom hugging the outline: wide blurred strokes along the silhouette
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#000"; // only the shadow shows; its alpha comes from shadowColor
+      ctx.lineWidth = R * 0.5;
+      blurOutline(ctx, this.shape, dpr, rgba(core, 0.3 * P.glow + 0.08), R * 0.3, cx, cy, R, 0.05);
+      ctx.lineWidth = R * 0.9;
+      blurOutline(ctx, this.shape, dpr, rgba(cool, 0.04 * P.glow), R * 0.3, cx, cy, R, 0.3);
+
+      // aberration: the prism as outlines, each nudged along a direction that
+      // orbits the body, so the colour split travels round him
+      const th = this.phase * TAU * 0.8;
+      const ab = P.ab * PROPS.aberration * R * 0.03;
+      ctx.lineWidth = R * 0.09;
+      for (const f of SPECTRUM) {
+        blurOutline(ctx, this.shape, dpr, rgba(f.c, f.a), R * 0.035, cx + Math.cos(th) * f.o * ab, cy + Math.sin(th) * f.o * ab, R);
+        ctx.fill(); // a ring nudged outward would lift off his edge; fill the gap (the rest hides behind him)
+      }
+      ctx.shadowColor = "transparent";
+      ctx.shadowOffsetX = 0;
+      ctx.globalCompositeOperation = "source-over";
+    };
+    if (this.cacheEvery > 1) {
+      const cc = (this.cache ??= document.createElement("canvas"));
+      const fresh = cc.width !== cv.width || cc.height !== cv.height;
+      if (fresh) (cc.width = cv.width), (cc.height = cv.height);
+      if (fresh || reshaped || this.frameN++ % this.cacheEvery === 0) {
+        const cctx = cc.getContext("2d")!;
+        cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        cctx.clearRect(0, 0, w, h);
+        heavy(cctx);
+      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(cc, 0, 0);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    } else heavy(ctx);
     ctx.globalCompositeOperation = "lighter";
-
-    // bloom hugging the outline: wide blurred strokes along the silhouette
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = "#000"; // only the shadow shows; its alpha comes from shadowColor
-    ctx.lineWidth = R * 0.5;
-    blurOutline(ctx, this.shape, dpr, rgba(core, 0.3 * P.glow + 0.08), R * 0.3, cx, cy, R, 0.05);
-    ctx.lineWidth = R * 0.9;
-    blurOutline(ctx, this.shape, dpr, rgba(cool, 0.04 * P.glow), R * 0.3, cx, cy, R, 0.3);
-
-    // aberration: the prism as outlines, each nudged along a direction that
-    // orbits the body, so the colour split travels round him
-    const th = this.phase * TAU * 0.8;
-    const ab = P.ab * PROPS.aberration * R * 0.03;
-    ctx.lineWidth = R * 0.09;
-    for (const f of SPECTRUM) {
-      blurOutline(ctx, this.shape, dpr, rgba(f.c, f.a), R * 0.035, cx + Math.cos(th) * f.o * ab, cy + Math.sin(th) * f.o * ab, R);
-      ctx.fill(); // a ring nudged outward would lift off his edge; fill the gap (the rest hides behind him)
-    }
-    ctx.shadowColor = "transparent";
-    ctx.shadowOffsetX = 0;
 
     // wisps: the ribbon's filaments bent into arcs, alternate ones counter-
     // rotating, radius wobbling with the mode's amplitude, faded at both ends

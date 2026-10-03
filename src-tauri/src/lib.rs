@@ -2,6 +2,7 @@ mod audio;
 mod history;
 mod models;
 mod pitch;
+mod screenshot;
 mod vad;
 mod whisper;
 
@@ -96,7 +97,8 @@ pub fn run() {
             history::load_session_detail,
             history::session_clip,
             history::list_sessions,
-            history::clear_sessions
+            history::clear_sessions,
+            screenshot::screenshot
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

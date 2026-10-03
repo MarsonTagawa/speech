@@ -14,7 +14,7 @@ import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
-import { createAvatar } from "@bible-strong/avatar-web";
+import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
 
@@ -149,9 +149,9 @@ let scriptUsed = false;
 // Set at Stop; the report opens once the correction pass finishes (corrections_done).
 let reportPending = false;
 
-// The report re-renders live as deferred corrections trickle in after stop, so
-// this tracks whether it's on screen (see renderStats).
-let reportVisible = false;
+// The report's own copy of the finished session, taken at corrections_done so
+// the live view can reset for the next attempt. null = no report.
+let reportSnap: { s: SessionSummary; d: Detail } | null = null;
 
 // Filler detection runs in two tiers:
 //
@@ -446,9 +446,6 @@ function renderStats() {
   drawSpark(series);
   setText("peak-label", `peak ${Math.max(0, ...series.map((p) => p.wpm))}`);
   setLiveRing(s.words > 0 ? s.scores.overall : null);
-
-  // Keep the report in sync as deferred corrections/analyses trickle in after stop.
-  if (reportVisible) renderReport();
 }
 
 function setWidth(id: string, frac: number) {
@@ -527,8 +524,32 @@ function setLiveRing(score: number | null) {
   ring.style.setProperty("--c", g ? GRADE_COLOR[g] : "#30d158");
   setText("live-score", score === null ? "–" : String(score));
   setText("live-grade", g);
+  setLiveCoach(g);
   ring.dataset.tip = score === null ? "Delivery score — appears once you start speaking" : `Delivery score — ${score} of 100 so far, grade ${g}`;
 }
+
+// Live coach: an avatar in the transcript corner whose loop follows the live grade.
+const MOOD: Record<string, AnimationKey> = { "": "listening", A: "excited", B: "happy", C: "listening", D: "confused", E: "sad" };
+let liveCoach: ReturnType<typeof createAvatar> | null = null;
+let liveHalo: Halo | null = null;
+let liveMood: AnimationKey = "listening";
+function setLiveCoach(g: string) {
+  const mount = $("live-coach");
+  if (!mount) return;
+  if (!liveCoach) {
+    // Always on screen while live: the flappy halo's cheaper settings.
+    liveHalo = new Halo(mount.querySelector("canvas")!);
+    liveHalo.gain = 1.3;
+    liveHalo.maxDpr = 1;
+    liveHalo.cacheEvery = 3;
+    liveCoach = createAvatar(mount, { definition: strobi, defaultAnimation: "listening", size: "100%", ariaLabel: "Coach" });
+  }
+  liveHalo?.setMode(g ? "listening" : "idle");
+  if (MOOD[g] === liveMood) return;
+  liveMood = MOOD[g];
+  if (!liveFollow.near) liveCoach.play(liveMood); // else he plays it once the cursor leaves
+}
+const liveFollow = coachFollower(() => $("live-coach"), () => liveCoach, () => liveHalo, () => liveMood, 1.5);
 
 // --- Per-utterance waveform --------------------------------------------------
 // A small amplitude sparkline drawn under each committed line, with the VAD-
@@ -774,22 +795,45 @@ function renderDecodeLine(now: number) {
 
 // corrections_done: celebrate on the overlay, then fade it out and run `then`
 // (opens the report). Straight to `then` when the overlay isn't up.
-const FLAPPY_ANIM = { ready: "happy", play: "excited", dead: "scared" } as const;
+// Best flappy score, shared by the overlay game and the one in Settings.
+const FLAPPY_BEST_KEY = "speech.flappyBest";
+const flappyBest = () => Number(load(FLAPPY_BEST_KEY)) || 0;
+function saveFlappyBest(best: number) {
+  save(FLAPPY_BEST_KEY, String(best));
+  renderFlappyBest();
+}
+function renderFlappyBest() {
+  const best = flappyBest();
+  setText("flappy-best", `Best ${best} · also press Space while it's correcting`);
+  setText("fd-best", `best ${best}`);
+}
 
-// Space on the overlay swaps the coach for the flappy game (he's the bird), then flaps.
+// Settings → Minigame → Play: the same board in a popup. Space flaps anywhere
+// in it but on its buttons (the record hotkey ignores keys inside dialogs).
+let playGame: Flappy | null = null;
+function openFlappyDialog() {
+  const dlg = $<HTMLDialogElement>("flappy-dialog");
+  const board = $("play-game");
+  if (!dlg || !board) return;
+  playGame ??= new Flappy(board, saveFlappyBest);
+  playGame.best = flappyBest();
+  renderFlappyBest();
+  dlg.showModal();
+  board.focus();
+  playGame.start();
+}
+
+// Space on the overlay swaps the coach for the flappy game (he's the bird), already flapping.
 function correctingSpace() {
   const bar = $("correct-bar");
   if (!bar || bar.classList.contains("done")) return;
   if (!bar.classList.contains("playing")) {
-    const canvas = document.querySelector<HTMLCanvasElement>("#correct-game canvas");
-    const mount = document.querySelector<HTMLElement>(".flappy-coach");
-    if (!canvas || !mount) return;
-    if (!correctGame) {
-      const coach = createAvatar(mount, { definition: strobi, defaultAnimation: "happy", size: "100%", ariaLabel: "Coach as the flappy bird" });
-      correctGame = new Flappy(canvas, mount, (mode) => coach.play(FLAPPY_ANIM[mode]));
-    }
+    const board = $("correct-game");
+    if (!board) return;
+    correctGame ??= new Flappy(board, saveFlappyBest, true); // plain: blends into the overlay
+    correctGame.best = flappyBest();
     bar.classList.add("playing");
-    correctGame.start();
+    correctGame.start(true);
   } else correctGame?.flap();
 }
 
@@ -970,6 +1014,7 @@ let scriptTokens: ScriptToken[] = [];
 // span's current state class so we can skip unchanged spans.
 let scriptSpans: HTMLElement[] = [];
 let scriptSpanState: string[] = [];
+let scriptEndTimer = 0; // pending auto-stop once the script's last word is read
 // Cached normalized word tokens per utterance index (interim or final). Only the
 // changed segment is re-tokenized per event, so building the spoken sequence
 // stays cheap instead of re-parsing the whole transcript each time. Interim-to-
@@ -1228,6 +1273,9 @@ function renderScriptMatch() {
   if (recording && recordStartedAt) {
     const at = Math.round((performance.now() - recordStartedAt) / 100) * 100;
     while (reachedMs.length < cursor) reachedMs.push(at);
+    // Read to the last word: stop shortly after, so its tail isn't clipped.
+    if (scriptUsed && cursor >= scriptTokens.length && !scriptEndTimer)
+      scriptEndTimer = window.setTimeout(() => recording && void toggleRecording(), 1000);
   }
 
   const pct = Math.round((hits / scriptTokens.length) * 100);
@@ -1294,11 +1342,18 @@ function renderSpeechPicker() {
     sel.value = currentSpeech;
     syncSelect(sel);
   }
+  syncGhostBtn();
   const btn = $("speech-save");
   if (btn) {
     btn.textContent = currentSpeech ? "Clear" : "Save";
     btn.dataset.tip = currentSpeech ? "Clear the box to start a new script — the speech stays saved" : "Save this script as a speech";
   }
+}
+
+// The ghost caret only applies to a saved speech.
+function syncGhostBtn() {
+  const btn = $("ghost-btn");
+  if (btn) btn.hidden = !currentSpeech;
 }
 
 // Two-click confirm: the first click relabels the button "Sure?" for 3 s and
@@ -1329,9 +1384,16 @@ function loadScript(text: string) {
   setScript(text);
 }
 
+// Shows/hides the script text box; a saved speech opens with it hidden.
+function showScriptBox(on: boolean) {
+  $("script-pane")?.classList.toggle("box-hidden", !on);
+  setText("script-box-btn", on ? "Hide box" : "Edit text");
+}
+
 // Puts a saved speech (or, for "", a blank script) in the read-along box.
 function openSpeech(id: string) {
   currentSpeech = id;
+  showScriptBox(!id);
   saveSpeeches();
   renderSpeechPicker();
   loadScript(speeches.find((s) => s.id === id)?.text ?? "");
@@ -1584,7 +1646,7 @@ function bestAttemptTimes(): number[] | null {
   let best: SessionSummary | undefined;
   for (const h of history)
     if (h.speech === currentSpeech && h.script?.total === scriptTokens.length && h.script.times?.length &&
-        (!best || h.scores.overall > best.scores.overall)) best = h;
+      (!best || h.scores.overall > best.scores.overall)) best = h;
   return best?.script?.times ?? null;
 }
 
@@ -1635,6 +1697,7 @@ function setLevelMeter(level: number) {
 const MIC_HINT = "Talk for a few seconds, then stop to hear it back";
 let micTesting = false;
 let micAudio: AudioContext | null = null;
+let micClip: Float32Array | null = null; // the last test's audio, for Replay
 async function startMicTest() {
   const btn = $<HTMLButtonElement>("mic-test-btn");
   try {
@@ -1645,6 +1708,7 @@ async function startMicTest() {
   }
   micTesting = true;
   if (btn) btn.textContent = "Stop";
+  $("mic-replay")?.setAttribute("hidden", "");
   setText("mic-status", "Listening — speak normally");
 }
 async function stopMicTest(playBack: boolean) {
@@ -1665,12 +1729,16 @@ async function stopMicTest(playBack: boolean) {
     $("mic-speech")?.classList.remove("on");
   }
   const samples = new Float32Array(buf);
-  if (!playBack || !samples.length) {
-    setText("mic-status", MIC_HINT);
-    return;
-  }
-  setText("mic-status", `Playing back ${(samples.length / 16000).toFixed(1)} s…`);
-  playSamples(samples, () => setText("mic-status", MIC_HINT));
+  if (samples.length) micClip = samples;
+  $("mic-replay")?.toggleAttribute("hidden", !micClip);
+  if (playBack && samples.length) playMicClip();
+  else setText("mic-status", MIC_HINT);
+}
+
+function playMicClip() {
+  if (!micClip) return;
+  setText("mic-status", `Playing back ${(micClip.length / 16000).toFixed(1)} s…`);
+  playSamples(micClip, () => setText("mic-status", MIC_HINT));
 }
 
 // Plays 16 kHz mono samples, cutting off whatever clip was already playing
@@ -1694,12 +1762,16 @@ function playSamples(samples: Float32Array, onEnd: () => void) {
 
 // A report transcript's timestamp plays that line from the session's saved
 // audio (history.rs session_clip); clicking it again while playing stops it.
-async function playLine(ts: number, el: HTMLElement, L: Lines) {
-  if (el.classList.contains("playing")) return void clipSrc?.stop();
+function playLine(ts: number, el: HTMLElement, L: Lines) {
   const t = L.timing.get(Number(el.closest<HTMLElement>("[data-index]")?.dataset.index));
-  if (!t) return;
+  if (t) return playClip(ts, el, t.start, t.end);
+}
+
+// Plays session `ts` from `startMs` to `endMs`, marking `el` .playing meanwhile.
+async function playClip(ts: number, el: HTMLElement, startMs: number, endMs: number) {
+  if (el.classList.contains("playing")) return void clipSrc?.stop();
   try {
-    const buf = await invoke<ArrayBuffer>("session_clip", { ts, startMs: Math.round(t.start), endMs: Math.round(t.end) });
+    const buf = await invoke<ArrayBuffer>("session_clip", { ts, startMs: Math.round(startMs), endMs: Math.round(endMs) });
     el.classList.add("playing");
     playSamples(new Float32Array(buf), () => el.classList.remove("playing"));
   } catch (e) {
@@ -1711,28 +1783,20 @@ async function toggleRecording() {
   if (!recordBtn || (!recording && correcting())) return;
 
   recordBtn.disabled = true;
+  clearTimeout(scriptEndTimer);
+  scriptEndTimer = 0;
   try {
     if (!recording) {
       prepEndsAt = 0; // starting early skips the rest of a drill's prep
       flushSave();
       resetCountdown();
-      // The backend restarts utterance indices each session; drop stale
-      // line references so a new session's index 1 starts a fresh line.
-      segmentEls.clear();
-      previewChunks.clear();
-      finalized.clear();
-      refinedIndices.clear();
-      tokensByIndex.clear();
-      reachedMs = [];
-      renderScriptMatch(); // reset read-along highlights to the start
-      resetStats();
-      reportVisible = false;
+      clearLive();
+      reportSnap = null;
       reportPending = false;
       scriptUsed = !$("script-pane")?.hidden;
       sessionDrill = activeDrill;
       sessionMemory = scriptUsed && activeDrill === MEMORISE ? memoMask : "";
-      const statsBtn = $<HTMLButtonElement>("stats-btn");
-      if (statsBtn) statsBtn.disabled = true;
+      renderReport(); // no snapshot → disables STATS
       await stopMicTest(false);
       ghostTimes = scriptUsed ? bestAttemptTimes() : null;
       sessionStartTs = Date.now();
@@ -1776,6 +1840,19 @@ function resetSession() {
   flushSave();
   reportPending = false;
   resetCountdown();
+  clearLive();
+  reportSnap = null;
+  sessionDrill = "";
+  endDrill();
+  renderReport(); // no snapshot → disables STATS and returns to live
+  $("practice-prompt")?.setAttribute("hidden", "");
+  setStatus("Idle");
+}
+
+// Empties the live view — transcript, metrics, clock, read-along highlights.
+// The backend restarts utterance indices each session, so stale line
+// references are dropped too and a new session's index 1 starts a fresh line.
+function clearLive() {
   segmentEls.clear();
   previewChunks.clear();
   finalized.clear();
@@ -1784,16 +1861,11 @@ function resetSession() {
   reachedMs = [];
   renderScriptMatch();
   resetStats();
-  sessionDrill = "";
-  endDrill();
-  renderReport(); // no words → disables STATS and returns to live
   recordStartedAt = 0;
   tickClock();
-  $("practice-prompt")?.setAttribute("hidden", "");
   if (transcriptEl)
     transcriptEl.innerHTML =
       '<p class="placeholder">Your transcript will appear here as you speak.</p>';
-  setStatus("Idle");
 }
 
 function toggleScript(open?: boolean) {
@@ -2117,7 +2189,7 @@ async function saveSession() {
     // A passed ladder step moves on to the next one.
     const last = history[history.length - 1];
     if (chunks.length && !recording && chunkStep < chunks.length && last?.speech === currentSpeech &&
-        last.script?.total === scriptTokens.length && stepPassed(currentSpeech, scriptTokens.length)) {
+      last.script?.total === scriptTokens.length && stepPassed(currentSpeech, scriptTokens.length)) {
       chunkStep++;
       refreshScript();
     }
@@ -2183,6 +2255,7 @@ async function toggleSaved(ts: number) {
   }
   if (document.body.dataset.view === "report") renderReport();
   if (document.body.dataset.view === "history") renderHistory();
+  if ($<HTMLDialogElement>("session-dialog")?.open) renderSessionPop();
 }
 
 function starHtml(ts: number): string {
@@ -2321,22 +2394,52 @@ function renderReport() {
   const body = $("report-body");
   const statsBtn = $<HTMLButtonElement>("stats-btn");
   if (!body) return;
-  if (totalWords === 0) {
-    reportVisible = false;
+  if (!reportSnap) {
     coachTips = [];
     if (statsBtn) statsBtn.disabled = true;
     if (document.body.dataset.view === "report") showView("live");
     return;
   }
-  reportVisible = true;
   if (statsBtn) statsBtn.disabled = false;
-  const summary = computeSummary();
-  body.innerHTML = reportBodyHtml(summary, live, paceData());
+  const { s, d } = reportSnap;
+  body.innerHTML = reportBodyHtml(s, d.L, s.pace!);
   // The coach stands in for the hero's static top tip (re-inserted each render).
   if (coachEl) body.querySelector(".rep-tip")?.replaceWith(coachEl);
-  coachSay(generateTips(summary));
+  body.querySelector(".rep-title h2")?.insertAdjacentHTML("beforeend", SHOT_BTN);
+  coachSay(generateTips(s));
   const rt = $("report-transcript");
-  if (rt) rt.innerHTML = transcriptCopyHtml(liveLinesHtml());
+  if (rt) rt.innerHTML = transcriptCopyHtml(d.lines);
+}
+
+// Report screenshot (screenshot.rs): the visible report, copied to the
+// clipboard, or saved to Downloads on Shift-click. Any platform.
+const SHOT_TIP = "Copy screenshot · Shift-click to save it to Downloads";
+const SHOT_BTN = `<button type="button" class="ctl shot-btn" data-shot aria-label="Copy screenshot" data-tip="${SHOT_TIP}"><svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" /><circle cx="12" cy="13" r="3" /></svg></button>`;
+async function shootReport(btn: HTMLElement, save: boolean) {
+  const r = $("report")?.getBoundingClientRect();
+  if (!r || !reportSnap) return;
+  const at = new Date(reportSnap.s.ts);
+  const name = `speech-report-${new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16).replace(/[T:]/g, "-")}.png`;
+  document.body.classList.add("snapping"); // hides the tooltip and this button
+  await new Promise(requestAnimationFrame);
+  await new Promise(requestAnimationFrame);
+  let msg: string;
+  try {
+    const png = await invoke<ArrayBuffer>("screenshot", { x: r.left, y: r.top, w: r.width, h: r.height, viewW: innerWidth, name: save ? name : null, copy: !save });
+    // Windows hands the copy back to the page (screenshot.rs).
+    if (png.byteLength) await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]);
+    msg = save ? `Saved to Downloads as ${name}` : "Copied to clipboard";
+  } catch (e) {
+    msg = `Screenshot failed: ${e}`;
+  }
+  document.body.classList.remove("snapping");
+  btn.dataset.tip = msg;
+  setText("tip", msg);
+  btn.classList.add("done");
+  setTimeout(() => {
+    btn.dataset.tip = SHOT_TIP;
+    btn.classList.remove("done");
+  }, 2500);
 }
 
 // Every live transcript line's markup (fillers, waveform), in order.
@@ -2344,9 +2447,13 @@ function liveLinesHtml(): Array<[number, string]> {
   return [...segmentEls].sort((a, b) => a[0] - b[0]).map(([i, el]) => [i, el.outerHTML]);
 }
 
-// Full transcript below the fold: copies of the session's lines.
+// Full transcript below the fold: copies of the session's lines, with a
+// whole-session replay (bindReport).
 function transcriptCopyHtml(lines: Array<[number, string]>): string {
-  return `<span class="label">Transcript</span>` + lines.map(([, html]) => html).join("");
+  return (
+    `<div class="panel-head"><span class="label">Transcript</span><button type="button" class="ctl replay-btn" data-replay aria-label="Replay session" data-tip="Replay the whole session's audio"></button></div>` +
+    lines.map(([, html]) => html).join("")
+  );
 }
 
 // A session's pace, second by second — all the pace chart draws. Saved with
@@ -2443,109 +2550,151 @@ function coachSpeak() {
   halo?.setMode("speaking");
   let n = matchMedia("(prefers-reduced-motion: reduce)").matches ? text.length : 0;
   const tick = () => {
-    el.innerHTML = escapeHtml(text.slice(0, ++n)) + (n >= text.length ? count : "");
+    n += 2;
+    el.innerHTML = escapeHtml(text.slice(0, n)) + (n >= text.length ? count : "");
     if (n >= text.length) {
       clearInterval(coachTimer);
       halo?.setMode("idle");
     }
   };
   tick();
-  coachTimer = window.setInterval(tick, 22);
+  coachTimer = window.setInterval(tick, 16);
 }
 
-// Coach looks and leans towards the cursor once it's within ~3 avatar widths.
+// Coach looks and leans towards the cursor once it's within `reach` avatar widths.
 // His animations glance around on their own, so while the cursor is near he's
 // parked on the neutral face; once the avatar stops drawing (status "stopped")
 // the eyes and body are redrawn here from avatar-core with his head turned
 // towards the cursor, so the eyes curve round the sphere and his arms swing
-// round with him. When it leaves, the head turns back to centre before his
-// idle animation resumes. `look` is the current
-// [-1, 1] gaze, `lookTo` its target.
+// round with him. When it leaves, he turns straight to his animation's opening
+// face and the animation picks up from there. Clicking him (boop): he swells
+// up, the halo's ribbons flare and spark, and his eyes go joyful for a moment
+// while he keeps looking at the cursor. One follower per coach (report, live).
 const strobiDef = strobi as unknown as AvatarDefinition;
 const NEUTRAL = expressionFromDefinition("neutral", strobiDef.expressions.neutral);
 const JOYFUL = expressionFromDefinition("joyful-wide", strobiDef.expressions["joyful-wide"]);
 const EYE_SHAPE = ["widthLeft", "widthRight", "heightLeft", "heightRight", "spacing", "positionXLeft", "positionXRight", "positionYLeft", "positionYRight", "leftAngle", "rightAngle"] as const;
-const look = { x: 0, y: 0 }, lookTo = { x: 0, y: 0 };
-let joy = 0; // 0 → 1 blends the eyes from neutral to joyful (coachBoop)
-let joyUntil = 0;
-let lookRaf = 0;
-let lookNear = false;
-
-// Clicking him: he swells up, the halo's ribbons flare and spark, and his eyes
-// go joyful for a moment while he keeps looking at the cursor.
-function coachBoop() {
-  const mount = coachEl?.querySelector<HTMLElement>(".coach-avatar");
-  if (!mount) return;
-  halo?.pulse();
-  joyUntil = performance.now() + 500;
-  lookRaf ||= requestAnimationFrame(coachLookFrame);
-  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    // Springy: pops past full size, dips under, settles. Each easing runs to the next keyframe.
-    const grow = (s: number, offset: number, easing = "ease-in-out") => ({ transform: `scale(${s})`, offset, easing });
-    mount.animate(
-      [grow(1, 0, "cubic-bezier(.2, 1.4, .5, 1)"), grow(1.22, 0.28), grow(0.95, 0.55), grow(1.03, 0.78), grow(1, 1)],
-      { duration: 750 },
-    );
+const openings = new Map<AnimationKey, { key: ExpressionKey; face: typeof NEUTRAL }>();
+function opening(a: AnimationKey) {
+  let o = openings.get(a);
+  if (!o) {
+    const key = strobiDef.animations[a].steps[0].expression;
+    openings.set(a, (o = { key, face: expressionFromDefinition(key, strobiDef.expressions[key]) }));
   }
+  return o;
 }
 
-function coachLookAt(e: PointerEvent) {
-  const r = coachEl?.querySelector(".coach-avatar svg")?.getBoundingClientRect();
-  if (!coach || !r?.width) return;
-  const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
-  const d = Math.hypot(dx, dy) || 1;
-  const near = d < r.width * 3;
-  if (near !== lookNear) {
-    lookNear = near;
-    if (near) coach.setExpression("neutral");
-  }
-  const m = near ? Math.min(1, (2 * d) / r.width) : 0;
-  lookTo.x = (dx / d) * m;
-  lookTo.y = (dy / d) * m;
-  lookRaf ||= requestAnimationFrame(coachLookFrame);
-}
+function coachFollower(
+  mountOf: () => HTMLElement | null | undefined,
+  avatarOf: () => ReturnType<typeof createAvatar> | null,
+  haloOf: () => Halo | null,
+  anim: () => AnimationKey, // what he goes back to when the cursor leaves
+  reach = 3, // tracking radius, in avatar widths
+) {
+  const look = { x: 0, y: 0 }, lookTo = { x: 0, y: 0 }; // current [-1, 1] gaze and its target
+  let joy = 0; // 0 → 1 blends the eyes from neutral to joyful (boop)
+  let home = 0; // 0 → 1 blends the face from neutral to anim()'s opening once the cursor leaves
+  let joyUntil = 0;
+  let raf = 0;
+  let near = false;
 
-// Runs while the cursor is near (waiting for the avatar to park, then tracking)
-// and until the head has turned back to centre after it leaves.
-function coachLookFrame() {
-  const mount = coachEl?.querySelector<HTMLElement>(".coach-avatar");
-  const parked = coach?.getState().status === "stopped";
-  if (parked) {
-    look.x += (lookTo.x - look.x) * 0.2;
-    look.y += (lookTo.y - look.y) * 0.2;
-  } else Object.assign(look, { x: 0, y: 0 }); // the avatar's drawing: turn in from centre once it parks
-  const joyTo = performance.now() < joyUntil ? 1 : 0;
-  joy = Math.abs(joyTo - joy) < 0.002 ? joyTo : joy + (joyTo - joy) * 0.25;
-  const settled = Math.abs(lookTo.x - look.x) + Math.abs(lookTo.y - look.y) < 0.002 && joy === joyTo && !joyTo;
-  if (parked) {
-    // Head turned (y), tipped (x) and tilted into the lean (z), in degrees.
-    const turn = { ...NEUTRAL, headY: look.x * 40, headX: -look.y * 35, headZ: look.x * 8 };
-    for (const k of EYE_SHAPE) turn[k] += (JOYFUL[k] - NEUTRAL[k]) * joy;
-    const g = renderAvatarExpression(strobiDef, turn).geometry;
-    // Body too, so his arms swing round with the head: avatar-web's svg is
-    // [back nodes..., head, front nodes...] as direct paths, plus the head's clip path.
-    const svg = mount?.querySelector("svg");
-    const body = svg?.querySelectorAll(":scope > path") ?? [];
-    const nBack = (body.length - 1) / 2;
-    body.forEach((p, i) => p.setAttribute("d", i < nBack ? g.backPaths[i] ?? "" : i === nBack ? g.headPath : g.frontPaths[i - nBack - 1] ?? ""));
-    svg?.querySelector("clipPath > path")?.setAttribute("d", g.headPath);
-    const [l, r] = mount?.querySelectorAll("svg > g > path") ?? [];
-    l?.setAttribute("d", g.leftPath);
-    l?.setAttribute("opacity", g.leftVisible ? "1" : "0");
-    r?.setAttribute("d", g.rightPath);
-    r?.setAttribute("opacity", g.rightVisible ? "1" : "0");
+  function frame() {
+    const mount = mountOf(), coach = avatarOf();
+    const parked = coach?.getState().status === "stopped";
+    const homeTo = near ? 0 : 1;
+    const ease = near ? 0.2 : 0.08; // turning away is slower than tracking
+    if (parked) {
+      look.x += (lookTo.x - look.x) * ease;
+      look.y += (lookTo.y - look.y) * ease;
+      home = Math.abs(homeTo - home) < 0.002 ? homeTo : home + (homeTo - home) * ease;
+    } else {
+      // The avatar's drawing: turn in from neutral once it parks.
+      Object.assign(look, { x: 0, y: 0 });
+      home = 0;
+    }
+    const joyTo = performance.now() < joyUntil ? 1 : 0;
+    joy = Math.abs(joyTo - joy) < 0.002 ? joyTo : joy + (joyTo - joy) * 0.25;
+    const settled = Math.abs(lookTo.x - look.x) + Math.abs(lookTo.y - look.y) < 0.002 && joy === joyTo && !joyTo && home === homeTo;
+    const back = opening(anim());
+    if (parked) {
+      const turn = { ...NEUTRAL };
+      for (const k of [...EYE_SHAPE, "headX", "headY", "headZ"] as const) turn[k] += (back.face[k] - NEUTRAL[k]) * home;
+      // Head turned (y), tipped (x) and tilted into the lean (z), in degrees.
+      turn.headY += look.x * 40;
+      turn.headX -= look.y * 35;
+      turn.headZ += look.x * 8;
+      for (const k of EYE_SHAPE) turn[k] += (JOYFUL[k] - NEUTRAL[k]) * joy;
+      const g = renderAvatarExpression(strobiDef, turn).geometry;
+      // Body too, so his arms swing round with the head: avatar-web's svg is
+      // [back nodes..., head, front nodes...] as direct paths, plus the head's clip path.
+      const svg = mount?.querySelector("svg");
+      const body = svg?.querySelectorAll(":scope > path") ?? [];
+      const nBack = (body.length - 1) / 2;
+      body.forEach((p, i) => p.setAttribute("d", i < nBack ? g.backPaths[i] ?? "" : i === nBack ? g.headPath : g.frontPaths[i - nBack - 1] ?? ""));
+      svg?.querySelector("clipPath > path")?.setAttribute("d", g.headPath);
+      const [l, r] = mount?.querySelectorAll("svg > g > path") ?? [];
+      l?.setAttribute("d", g.leftPath);
+      l?.setAttribute("opacity", g.leftVisible ? "1" : "0");
+      r?.setAttribute("d", g.rightPath);
+      r?.setAttribute("opacity", g.rightVisible ? "1" : "0");
+    }
+    // Lean: the body (and halo with it) shifts towards the cursor. Translate only:
+    // a CSS rotate gets rasterised by WebKitGTK and jags the edges.
+    if (mount) mount.style.transform = `translate(${look.x * 2.5}px, ${look.y}px)`;
+    if (!near && (settled || !parked)) {
+      // At the opening face (or left before he parked): hand the eyes back to the
+      // animation. play() eases in from the avatar's last drawn face — neutral,
+      // not what's drawn here — so snap its face to the opening first: the second
+      // setExpression is a no-op change, which draws it without a transition.
+      if (parked) {
+        coach?.setExpression(back.key);
+        coach?.setExpression(back.key);
+      }
+      if (!coach?.getState().activeAnimation) coach?.play(anim());
+      raf = 0;
+      return;
+    }
+    raf = requestAnimationFrame(frame);
   }
-  // Lean: the body (and halo with it) shifts towards the cursor. Translate only:
-  // a CSS rotate gets rasterised by WebKitGTK and jags the edges.
-  if (mount) mount.style.transform = `translate(${look.x * 2.5}px, ${look.y}px)`;
-  if (!lookNear && (settled || !parked)) {
-    // Back at centre (or left before he parked): hand the eyes back to the animation.
-    if (!coach?.getState().activeAnimation) coach?.play("idle");
-    lookRaf = 0;
-    return;
-  }
-  lookRaf = requestAnimationFrame(coachLookFrame);
+
+  return {
+    get near() {
+      return near;
+    },
+    lookAt(e: PointerEvent) {
+      const coach = avatarOf();
+      const r = mountOf()?.querySelector("svg")?.getBoundingClientRect();
+      if (!coach || !r?.width) return;
+      const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+      const d = Math.hypot(dx, dy) || 1;
+      const isNear = d < r.width * reach;
+      if (isNear !== near) {
+        near = isNear;
+        if (near) coach.setExpression("neutral");
+      }
+      const m = near ? Math.min(1, (2 * d) / r.width) : 0;
+      lookTo.x = (dx / d) * m;
+      lookTo.y = (dy / d) * m;
+      raf ||= requestAnimationFrame(frame);
+    },
+    boop() {
+      const mount = mountOf();
+      if (!mount) return;
+      haloOf()?.pulse();
+      joyUntil = performance.now() + 500;
+      raf ||= requestAnimationFrame(frame);
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        // Springy: pops past full size, dips under, settles. Each easing runs to the next keyframe.
+        const grow = (s: number, offset: number, easing = "ease-in-out") => ({ transform: `scale(${s})`, offset, easing });
+        mount.animate(
+          [grow(1, 0, "cubic-bezier(.2, 1.4, .5, 1)"), grow(1.22, 0.28), grow(0.95, 0.55), grow(1.03, 0.78), grow(1, 1)],
+          { duration: 750 },
+        );
+      }
+    },
+  };
 }
+const reportFollow = coachFollower(() => coachEl?.querySelector<HTMLElement>(".coach-avatar"), () => coach, () => halo, () => "idle");
 
 function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
   const c = s.scores;
@@ -2565,8 +2714,8 @@ function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
   const topN = rows[0]?.[1] ?? 1;
   const fillerRows = rows.length
     ? rows
-        .map(([w, n]) => `<div class="fw-row" data-tip="“${escapeHtml(w)}” — ${n} of ${s.fillers} fillers this session"><span>${escapeHtml(w)}</span><div class="fw-bar"><div style="width:${(n / topN) * 100}%"></div></div><span class="n">${n}</span></div>`)
-        .join("")
+      .map(([w, n]) => `<div class="fw-row" data-tip="“${escapeHtml(w)}” — ${n} of ${s.fillers} fillers this session"><span>${escapeHtml(w)}</span><div class="fw-bar"><div style="width:${(n / topN) * 100}%"></div></div><span class="n">${n}</span></div>`)
+      .join("")
     : `<div class="empty">No fillers — clean session.</div>`;
   const habits = s.crutch ? crutchHtml(s.crutch) : "";
 
@@ -2581,14 +2730,14 @@ function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
   const what = title ? "Attempt" : "Session";
   const trend = bars.length > 1 ? `<span class="${tone(c.overall - bars[0].score)}">${signed(c.overall - bars[0].score)} since ${bars[0].n}</span>` : "";
   const hist = bars
-    .map((b) => `<div class="hist-col${b.now ? " now" : ""}"${b.now ? "" : ` data-open="${b.ts}"`} data-tip="${what} ${b.n} — score ${b.score}${b.now ? "" : " · open in History"}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
+    .map((b) => `<div class="hist-col${b.now ? " now" : ""}"${b.now ? "" : ` data-open="${b.ts}"`} data-tip="${what} ${b.n} — score ${b.score}${b.now ? "" : " · click to open"}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
     .join("");
 
   const moments = keyMoments(preset, L);
   const momentsHtml = moments.length
     ? moments
-        .map((m) => `<button type="button" class="moment" data-index="${m.index}" data-ms="${m.ms}" data-tip="Jump to ${formatTimestamp(m.ms)} in the transcript"><span class="t">${formatTimestamp(m.ms)}</span><span class="bar" style="background:${m.color}"></span><span><b>${escapeHtml(m.title)}</b><span class="note">${escapeHtml(m.note)}</span></span></button>`)
-        .join("")
+      .map((m) => `<button type="button" class="moment" data-index="${m.index}" data-ms="${m.ms}" data-tip="Jump to ${formatTimestamp(m.ms)} in the transcript"><span class="t">${formatTimestamp(m.ms)}</span><span class="bar" style="background:${m.color}"></span><span><b>${escapeHtml(m.title)}</b><span class="note">${escapeHtml(m.note)}</span></span></button>`)
+      .join("")
     : `<div class="empty">Speak a little longer for highlights.</div>`;
 
   return (
@@ -2622,11 +2771,21 @@ function lineAt(ms: number, L = live): number | undefined {
   return at;
 }
 
-// How far across the report's pace plot the pointer is (0–1), and the session
-// time there.
-function plotFrac(plot: HTMLElement, clientX: number): number {
+// How far across the report's pace plot the pointer is (0–1), snapped onto a
+// filler dot within FILLER_SNAP_PX so the small dots are easy to hit (`filler`
+// = that dot's second), and the session time there.
+const FILLER_SNAP_PX = 12;
+function plotPoint(plot: HTMLElement, clientX: number, pace: PaceData): { frac: number; filler?: number } {
   const r = plot.getBoundingClientRect();
-  return Math.max(0, Math.min(1, (clientX - r.left) / Math.max(1, r.width)));
+  const frac = Math.max(0, Math.min(1, (clientX - r.left) / Math.max(1, r.width)));
+  const totalSec = Math.max(1, pace.wpm.length - 1);
+  let best = FILLER_SNAP_PX / Math.max(1, r.width);
+  let filler: number | undefined;
+  for (const sec of pace.fillerSecs) {
+    const d = Math.abs(Math.min(1, sec / totalSec) - frac);
+    if (d <= best) [best, filler] = [d, sec];
+  }
+  return filler === undefined ? { frac } : { frac: Math.min(1, filler / totalSec), filler };
 }
 const fracMs = (frac: number, pace: PaceData) => frac * Math.max(1, pace.wpm.length - 1) * 1000;
 
@@ -2655,9 +2814,9 @@ function paceTip(ms: number, pace: PaceData, L?: Lines): string {
 }
 
 // Pace plot / key moment → the matching line in that report's transcript copy.
-function jumpInCopy(root: Element, index: number, ms: number, L: Lines) {
+function jumpInCopy(root: Element, index: number, ms: number, L: Lines, filler = false) {
   const el = root.querySelector<HTMLElement>(`.rep-transcript [data-index="${index}"]`);
-  if (el) flashLine(el, index, ms, L);
+  if (el) flashLine(el, index, ms, L, filler);
 }
 
 // Pace plot hover: moves the cursor and fills the tip. Runs before the
@@ -2665,28 +2824,69 @@ function jumpInCopy(root: Element, index: number, ms: number, L: Lines) {
 function hoverPace(e: MouseEvent, pace: PaceData, L?: Lines) {
   const plot = (e.target as Element).closest<HTMLElement>(".pace-plot");
   if (!plot) return;
-  const frac = plotFrac(plot, e.clientX);
-  plot.dataset.tip = paceTip(fracMs(frac, pace), pace, L);
+  const { frac, filler } = plotPoint(plot, e.clientX, pace);
+  plot.dataset.tip = paceTip(filler === undefined ? fracMs(frac, pace) : fillerMs(filler, pace, L), pace, L);
   const cursor = plot.querySelector<HTMLElement>(".pace-cursor");
   if (cursor) cursor.style.left = `${frac * 100}%`;
+  plot.querySelectorAll(".dot").forEach((d, k) => d.classList.toggle("hot", pace.fillerSecs[k] === filler));
 }
 
-// Pace plot click → the line spoken there, in the report's transcript copy.
+// Pace plot click → the line spoken there, in the report's transcript copy; on
+// a filler dot, that line's fillers.
 function clickPace(e: MouseEvent, root: Element, pace: PaceData, L: Lines) {
   const plot = (e.target as Element).closest<HTMLElement>(".pace-plot");
   if (!plot) return;
-  const ms = fracMs(plotFrac(plot, e.clientX), pace);
+  const { frac, filler } = plotPoint(plot, e.clientX, pace);
+  const ms = filler === undefined ? fracMs(frac, pace) : fillerMs(filler, pace, L);
   const i = lineAt(ms, L);
-  if (i !== undefined) jumpInCopy(root, i, ms, L);
+  if (i !== undefined) jumpInCopy(root, i, ms, L, filler !== undefined);
 }
 
-// Scrolls a transcript line into view, flashes it, and marks the word spoken at `ms`.
-function flashLine(el: HTMLElement, index: number, ms: number, L = live) {
+// A filler dot sits at the second of its line's midpoint (perSecondPace), which
+// can fall before the line starts; this is that midpoint, so lineAt finds it.
+function fillerMs(sec: number, pace: PaceData, L?: Lines): number {
+  for (const [i, t] of L?.timing ?? [])
+    if ((L!.fillers.get(i) ?? 0) > 0 && Math.floor((t.start + t.end) / 2000) === sec) return (t.start + t.end) / 2;
+  return fracMs(sec / Math.max(1, pace.wpm.length - 1), pace);
+}
+
+// Scrolls a transcript line into view, flashes it, and marks the word spoken at
+// `ms` — or, for a filler dot, the line's fillers.
+function flashLine(el: HTMLElement, index: number, ms: number, L = live, filler = false) {
+  const fillers = filler ? el.querySelectorAll(".filler") : [];
+  fillers.forEach((f) => f.classList.remove("word-hit"));
   el.scrollIntoView({ block: "center", behavior: "smooth" });
   el.classList.remove("flash");
-  void el.offsetWidth; // restart the animation
+  void el.offsetWidth; // restart the animations
   el.classList.add("flash");
-  highlightWord(el, index, ms, L);
+  if (!fillers.length) return highlightWord(el, index, ms, L);
+  for (const f of fillers) {
+    f.classList.add("word-hit");
+    f.addEventListener("animationend", () => f.classList.remove("word-hit"), { once: true });
+  }
+}
+
+// Report interactions shared by the Stats tab, History's session page and the
+// session popup: replay, key moments, pace hover/click and line playback.
+// `cur` gives the shown session's ts, pace and per-line data (if still kept).
+function bindReport(root: HTMLElement | null, cur: () => { ts: number; pace: PaceData; L?: Lines } | null) {
+  root?.addEventListener("click", (e) => {
+    const t = e.target as Element;
+    const c = cur();
+    if (!c) return;
+    const replay = t.closest<HTMLElement>("[data-replay]");
+    if (replay) return void playClip(c.ts, replay, 0, c.pace.lengthMs + 1000);
+    if (!c.L) return;
+    const ts = t.closest<HTMLElement>(".rep-transcript .seg-ts");
+    if (ts) return void playLine(c.ts, ts, c.L);
+    const m = t.closest<HTMLElement>(".moment");
+    if (m) jumpInCopy(root, Number(m.dataset.index), Number(m.dataset.ms), c.L);
+    clickPace(e, root, c.pace, c.L);
+  });
+  root?.addEventListener("mousemove", (e) => {
+    const c = cur();
+    if (c) hoverPace(e, c.pace, c.L);
+  });
 }
 
 // Which of a line's `n` words was being spoken at session time `ms`. No word
@@ -2865,15 +3065,14 @@ function renderDrills() {
     const last = tries[tries.length - 1];
     const r = last && drillResult(last);
     return (
-      `<tr><td>${escapeHtml(d.name)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
+      `<tr data-drill="${d.id}" data-tip="Set it up on the Live tab"><td>${escapeHtml(d.name)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
       `<td>${tries.length ? `${passes}/${tries.length}` : "—"}</td>` +
-      `<td>${r ? `<span class="${r.pass ? "up" : "down"}">${r.pass ? "✓" : "✗"}</span> ${escapeHtml(r.value)}<div class="sub">${fmtDate(last.ts)}</div>` : "—"}</td>` +
-      `<td><button type="button" class="ctl" data-drill="${d.id}" data-tip="Set it up on the Live tab">Start</button></td></tr>`
+      `<td>${r ? `<span class="${r.pass ? "up" : "down"}">${r.pass ? "✓" : "✗"}</span> ${escapeHtml(r.value)}<div class="sub">${fmtDate(last.ts)}</div>` : "—"}</td></tr>`
     );
   }).join("");
   el.innerHTML =
     `<div class="panel"><div class="panel-head"><span class="label">Drills</span></div>` +
-    `<table class="prof-table"><tr><th>Drill</th><th>Passed</th><th>Last</th><th></th></tr>${rows}</table></div>` +
+    `<table class="prof-table"><tr><th>Drill</th><th>Passed</th><th>Last</th></tr>${rows}</table></div>` +
     memoriseHtml();
   for (const id of ["memo-speech", "memo-mask"]) {
     const sel = $<HTMLSelectElement>(id);
@@ -2921,11 +3120,11 @@ function speechListHtml(): string {
   const swatches =
     used.length > 1
       ? `<div class="swatches" role="group" aria-label="Filter by color">` +
-        `<button type="button" class="ctl" data-cfilter="" aria-pressed="${!speechFilter}">All</button>` +
-        used
-          .map(([c, n]) => `<button type="button" class="swatch" style="--c:${c}" data-cfilter="${c}" aria-pressed="${speechFilter === c}" aria-label="${n}" data-tip="Only ${n.toLowerCase()} speeches"></button>`)
-          .join("") +
-        `</div>`
+      `<button type="button" class="ctl" data-cfilter="" aria-pressed="${!speechFilter}">All</button>` +
+      used
+        .map(([c, n]) => `<button type="button" class="swatch" style="--c:${c}" data-cfilter="${c}" aria-pressed="${speechFilter === c}" aria-label="${n}" data-tip="Only ${n.toLowerCase()} speeches"></button>`)
+        .join("") +
+      `</div>`
       : "";
   const sorts = Object.entries(SPEECH_SORTS)
     .map(([k, v]) => `<option value="${k}"${k === speechSort ? " selected" : ""}>${v}</option>`)
@@ -2969,8 +3168,8 @@ function speechRowsHtml(): string {
       const y = (v: number) => 20 - (v / 100) * 20;
       const spark = scores.length
         ? `<svg class="speech-spark" viewBox="0 0 80 20" aria-hidden="true">` +
-          `<polyline points="${scores.map((v, i) => `${x(i)},${y(v)}`).join(" ")}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" />` +
-          `<circle cx="${x(scores.length - 1)}" cy="${y(last)}" r="2.5" fill="${color}" /></svg>`
+        `<polyline points="${scores.map((v, i) => `${x(i)},${y(v)}`).join(" ")}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" />` +
+        `<circle cx="${x(scores.length - 1)}" cy="${y(last)}" r="2.5" fill="${color}" /></svg>`
         : `<span class="sub">no attempts</span>`;
       const lastCell = scores.length
         ? `${last} ${grade(last)}${scores.length > 1 ? ` <span class="sub">${signed(last - scores[0])}</span>` : ""}`
@@ -3070,7 +3269,7 @@ function speechOverview(tries: SessionSummary[], sp: Speech, skips: SkipCounts):
   for (const spot of troubleSpots(sp.text, skips.tokens, skips.counts))
     out.push(
       `<b>Trouble spot</b> <span class="sub">${spot.skips} skipped word${spot.skips === 1 ? "" : "s"} over ${skips.runs} attempt${skips.runs === 1 ? "" : "s"}</span> — ` +
-        `“${shadeSkips(sp.text, spot.start, spot.end, skips)}” Read this passage aloud slowly a few times before your next run.`,
+      `“${shadeSkips(sp.text, spot.start, spot.end, skips)}” Read this passage aloud slowly a few times before your next run.`,
     );
 
   // Early vs recent: up to three attempts from each end, never overlapping.
@@ -3314,7 +3513,9 @@ const GAIN_KEY = "speech.levelGain";
 const PAUSE_KEY = "speech.pauseMs";
 const HOVER_KEY = "speech.hoverFx";
 const COUNTDOWN_KEY = "speech.timerCountdown";
+const COACH_KEY = "speech.coachPosition";
 const GHOST_KEY = "speech.ghost";
+const RIBBON_KEY = "speech.ribbon";
 const CORRECT_KEY = "speech.accurateCorrection";
 let accurateCorrection = true;
 
@@ -3383,6 +3584,25 @@ async function refreshModels() {
       return `<div class="set-row"><span>${m.id}<span class="sub">${note}</span></span>${action}</div>`;
     })
     .join("");
+  filterSettings(); // re-rendered rows keep the search applied
+}
+
+// Settings search: hides rows that don't mention the query, unless their
+// panel's own label does, and panels left with no rows.
+function filterSettings() {
+  const q = ($<HTMLInputElement>("set-search")?.value ?? "").trim().toLowerCase();
+  let shown = 0;
+  for (const panel of document.querySelectorAll<HTMLElement>(".view-settings > .panel")) {
+    const all = !!panel.querySelector(".label")?.textContent?.toLowerCase().includes(q);
+    let any = false;
+    for (const row of panel.querySelectorAll<HTMLElement>(".set-row")) {
+      row.hidden = !all && !row.textContent?.toLowerCase().includes(q);
+      any ||= !row.hidden;
+    }
+    panel.hidden = !!q && !any;
+    if (!panel.hidden) shown++;
+  }
+  $("set-empty")?.toggleAttribute("hidden", shown > 0);
 }
 
 async function downloadModel(id: string) {
@@ -3460,8 +3680,8 @@ function trendHtml(): string {
     .join("");
   const speechSel = speeches.length
     ? `<select id="prof-speech" class="ctl" aria-label="Speech"><option value="">All sessions</option>` +
-      speeches.map((sp) => `<option value="${sp.id}"${sp.id === profSpeech ? " selected" : ""}>${escapeHtml(sp.title)}</option>`).join("") +
-      `</select>`
+    speeches.map((sp) => `<option value="${sp.id}"${sp.id === profSpeech ? " selected" : ""}>${escapeHtml(sp.title)}</option>`).join("") +
+    `</select>`
     : "";
   return (
     `<div class="panel"><div class="panel-head"><span class="label">${escapeHtml(speechTitle(profSpeech) ?? "All time")} · ${m.name}</span>` +
@@ -3487,11 +3707,11 @@ function plotHtml(pts: SessionSummary[], m: (typeof METRICS)[string], t0: number
   const xLabels = [t0, t0 + span / 2, now].map((t) => `<span>${fmtDate(t)}</span>`).join("");
   return pts.length
     ? `<div class="pace-grid trend-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot">` +
-      `<div class="trend-plot${pts.length > 60 ? " dense" : ""}"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">` +
-      `<line x1="0" y1="50" x2="100" y2="50" stroke="currentColor" stroke-opacity="0.06" vector-effect="non-scaling-stroke" />` +
-      `<line x1="0" y1="100" x2="100" y2="100" stroke="currentColor" stroke-opacity="0.1" vector-effect="non-scaling-stroke" />` +
-      `<polyline points="${line}" fill="none" style="stroke:var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
-      `</svg>${dots}</div><div class="x-labels">${xLabels}</div></div></div>`
+    `<div class="trend-plot${pts.length > 60 ? " dense" : ""}"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">` +
+    `<line x1="0" y1="50" x2="100" y2="50" stroke="currentColor" stroke-opacity="0.06" vector-effect="non-scaling-stroke" />` +
+    `<line x1="0" y1="100" x2="100" y2="100" stroke="currentColor" stroke-opacity="0.1" vector-effect="non-scaling-stroke" />` +
+    `<polyline points="${line}" fill="none" style="stroke:var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />` +
+    `</svg>${dots}</div><div class="x-labels">${xLabels}</div></div></div>`
     : `<div class="empty">No sessions in this range.</div>`;
 }
 
@@ -3612,22 +3832,55 @@ async function openHistorySession(ts: number) {
   histPage = ts;
   if (histDetail?.ts !== ts) {
     histDetail = null;
-    try {
-      const json = await invoke<string | null>("load_session_detail", { ts });
-      if (json && histPage === ts) histDetail = parseDetail(ts, json);
-    } catch (e) {
-      appendError(`Couldn't load session: ${e}`);
-    }
+    const d = await loadDetail(ts);
+    if (histPage === ts) histDetail = d;
   }
   if (histPage === ts) renderHistory();
 }
 
-// The open session's pace series and per-line data, for the chart's hover/click.
-function histPace(): { pace: PaceData; L?: Lines } | null {
-  const s = history.find((h) => h.ts === histPage);
-  const L = histDetail?.ts === histPage ? histDetail.L : undefined;
+// A saved session's per-line data, if history.rs still keeps it.
+async function loadDetail(ts: number): Promise<Detail | null> {
+  try {
+    const json = await invoke<string | null>("load_session_detail", { ts });
+    return json ? parseDetail(ts, json) : null;
+  } catch (e) {
+    appendError(`Couldn't load session: ${e}`);
+    return null;
+  }
+}
+
+// A saved session's pace series and per-line data, for the chart's hover/click.
+function sessionPace(ts: number, detail: Detail | null): { pace: PaceData; L?: Lines } | null {
+  const s = history.find((h) => h.ts === ts);
+  const L = detail?.ts === ts ? detail.L : undefined;
   const pace = s?.pace ?? (L && paceData(L));
   return pace ? { pace, L } : null;
+}
+
+// A past session from the report's score trend, in a popup over the report.
+let popTs = 0;
+let popDetail: Detail | null = null;
+async function openSessionPop(ts: number) {
+  popTs = ts;
+  if (popDetail?.ts !== ts) {
+    popDetail = null;
+    const d = await loadDetail(ts);
+    if (popTs !== ts) return;
+    popDetail = d;
+  }
+  renderSessionPop();
+  const pop = $<HTMLDialogElement>("session-dialog");
+  if (pop && !pop.open) pop.showModal();
+  pop?.scrollTo(0, 0);
+}
+
+function renderSessionPop() {
+  const el = $("session-pop");
+  const i = history.findIndex((h) => h.ts === popTs);
+  if (!el) return;
+  if (i < 0) return $<HTMLDialogElement>("session-dialog")?.close(); // cleared since
+  const head = `<div class="panel"><div class="panel-head"><button type="button" class="ctl" data-pop-history>Open in History</button><button type="button" class="ctl" data-pop-close>Close</button></div></div>`;
+  el.innerHTML = sessionPageHtml(i, popDetail, head);
 }
 
 function renderHistory() {
@@ -3698,13 +3951,18 @@ function historyListHtml(): string {
 // the full Stats report; older ones get what the summary holds: the report's
 // hero, pace chart and tiles, the sub-score breakdown and tips.
 function historyPageHtml(i: number): string {
-  const s = history[i];
   const back = `<div class="panel"><div class="panel-head"><button type="button" class="ctl" data-back>← History</button></div></div>`;
-  if (histDetail?.ts === s.ts)
+  return sessionPageHtml(i, histDetail, back);
+}
+
+// Session `i`'s page under `head`: History's, or the report's popup.
+function sessionPageHtml(i: number, detail: Detail | null, head: string): string {
+  const s = history[i];
+  if (detail?.ts === s.ts)
     return (
-      back +
-      `<div class="hist-report">${reportBodyHtml(s, histDetail.L, s.pace ?? paceData(histDetail.L))}</div>` +
-      `<section class="panel rep-transcript">${transcriptCopyHtml(histDetail.lines)}</section>`
+      head +
+      `<div class="hist-report">${reportBodyHtml(s, detail.L, s.pace ?? paceData(detail.L))}</div>` +
+      `<section class="panel rep-transcript">${transcriptCopyHtml(detail.lines)}</section>`
     );
   const dims = DIMENSIONS.filter(([k]) => typeof s.scores[k] === "number")
     .map(([k, name]) => {
@@ -3713,7 +3971,7 @@ function historyPageHtml(i: number): string {
     })
     .join("");
   return (
-    back +
+    head +
     reportHeroHtml(s, history[i - 1], i + 1, s.pace?.lengthMs ?? s.durationMs) +
     (s.pace ? paceChartHtml(s.pace, PRESETS[s.preset]) : "") +
     reportTilesHtml(s, history[i - 1]) +
@@ -3974,6 +4232,8 @@ window.addEventListener("DOMContentLoaded", () => {
     await (micTesting ? stopMicTest(true) : startMicTest());
     micBtn.disabled = false;
   });
+  $("mic-replay")?.addEventListener("click", playMicClip);
+  $("set-search")?.addEventListener("input", filterSettings);
 
   const pauseSel = $<HTMLSelectElement>("set-pause");
   const savedPause = Number(load(PAUSE_KEY));
@@ -4038,9 +4298,52 @@ window.addEventListener("DOMContentLoaded", () => {
     const btn = document.querySelector<HTMLButtonElement>(`[data-progress="${p.id}"]`);
     if (btn) btn.textContent = p.total ? `${pct}%` : `${Math.round(p.done / 1e6)} MB`;
   });
-  bindToggle("set-ghost", GHOST_KEY, (on) => (ghostOn = on));
+  bindToggle("set-ghost", GHOST_KEY, (on) => {
+    ghostOn = on;
+    $("ghost-btn")?.setAttribute("aria-pressed", String(on));
+    ghostTimes = recording && scriptUsed ? bestAttemptTimes() : null;
+    if (!ghostTimes) moveGhost(-1);
+  });
+  $("ghost-btn")?.addEventListener("click", () => $("set-ghost")?.click());
+  // Live coach in the transcript pane or the ribbon (back in the transcript while the ribbon's hidden).
+  const coachSel = $<HTMLSelectElement>("set-coach");
+  const placeCoach = () => {
+    const inRibbon = coachSel?.value === "ribbon" && !document.body.classList.contains("no-ribbon");
+    document.body.classList.toggle("coach-in-ribbon", inRibbon);
+    const coach = $("live-coach");
+    const home = document.querySelector(inRibbon ? ".scope" : ".tpane");
+    if (coach && home && coach.parentElement !== home) home.append(coach); // last in .tpane: over the script pane
+  };
+  if (coachSel) {
+    coachSel.value = load(COACH_KEY) ?? "transcript";
+    syncSelect(coachSel);
+    coachSel.addEventListener("change", () => {
+      save(COACH_KEY, coachSel.value);
+      placeCoach();
+    });
+  }
+  const setRibbon = (on: boolean) => {
+    document.body.classList.toggle("no-ribbon", !on);
+    placeCoach();
+    const btn = $("ribbon-btn");
+    btn?.setAttribute("aria-label", on ? "Hide ribbon" : "Show ribbon");
+    if (btn) btn.dataset.tip = on ? "Hide the ribbon" : "Show the ribbon";
+    save(RIBBON_KEY, on ? "1" : "0");
+  };
+  setRibbon(load(RIBBON_KEY) !== "0");
+  $("ribbon-btn")?.addEventListener("click", () => setRibbon(document.body.classList.contains("no-ribbon")));
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
   bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);
+
+  renderFlappyBest();
+  $("set-flappy")?.addEventListener("click", openFlappyDialog);
+  $("fd-close")?.addEventListener("click", () => $<HTMLDialogElement>("flappy-dialog")?.close());
+  $("flappy-dialog")?.addEventListener("close", () => playGame?.stop());
+  $("flappy-dialog")?.addEventListener("keydown", (e) => {
+    if (e.code !== "Space" || e.repeat || (e.target as Element).closest("button")) return;
+    e.preventDefault(); // no page scroll
+    playGame?.flap();
+  });
 
   // Two-click confirm: first click arms the button for 3 s.
   const clearBtn = $<HTMLButtonElement>("set-clear");
@@ -4075,28 +4378,42 @@ window.addEventListener("DOMContentLoaded", () => {
     coachIdx = (coachIdx + 1) % Math.max(1, coachTips.length);
     coachSpeak();
   });
-  window.addEventListener("pointermove", coachLookAt);
-  coachEl?.querySelector(".coach-avatar")?.addEventListener("click", coachBoop);
+  window.addEventListener("pointermove", (e) => {
+    reportFollow.lookAt(e);
+    liveFollow.lookAt(e);
+  });
+  coachEl?.querySelector(".coach-avatar")?.addEventListener("click", reportFollow.boop);
+  $("live-coach")?.addEventListener("click", liveFollow.boop);
   $("report-body")?.addEventListener("click", (e) => {
     const star = (e.target as Element).closest<HTMLElement>("[data-star]");
     if (star) return void toggleSaved(Number(star.dataset.star));
     const open = (e.target as Element).closest<HTMLElement>("[data-open]");
-    if (open) {
+    if (open) void openSessionPop(Number(open.dataset.open));
+    const shot = (e.target as Element).closest<HTMLElement>("[data-shot]");
+    if (shot) void shootReport(shot, (e as MouseEvent).shiftKey);
+  });
+  bindReport($("report"), () => reportSnap && { ts: reportSnap.s.ts, pace: reportSnap.s.pace!, L: reportSnap.d.L });
+  const pop = $<HTMLDialogElement>("session-dialog");
+  pop?.addEventListener("click", (e) => {
+    if (e.target === pop) return pop.close(); // backdrop
+    const b = (e.target as Element).closest<HTMLElement>("[data-star], [data-open], [data-drill], [data-pop-history], [data-pop-close]");
+    const d = b?.dataset;
+    if (!d) return;
+    if (d.star) return void toggleSaved(Number(d.star));
+    if (d.open) return void openSessionPop(Number(d.open));
+    pop.close();
+    if (d.drill) startDrill(d.drill);
+    else if (d.popHistory !== undefined) {
       showView("history");
       const h = $("history");
       if (h) h.scrollTop = 0;
-      return void openHistorySession(Number(open.dataset.open));
+      void openHistorySession(popTs);
     }
-    const report = $("report");
-    if (!report) return;
-    const m = (e.target as Element).closest<HTMLElement>(".moment");
-    if (m) jumpInCopy(report, Number(m.dataset.index), Number(m.dataset.ms), live);
-    clickPace(e, report, paceData(), live);
   });
-  $("report-body")?.addEventListener("mousemove", (e) => hoverPace(e, paceData(), live));
-  $("report-transcript")?.addEventListener("click", (e) => {
-    const ts = (e.target as Element).closest<HTMLElement>(".seg-ts");
-    if (ts) void playLine(sessionStartTs, ts, live);
+  pop?.addEventListener("close", () => clipSrc?.stop());
+  bindReport(pop, () => {
+    const hp = sessionPace(popTs, popDetail);
+    return hp && { ts: popTs, ...hp };
   });
 
   // Editing a saved speech updates it in place.
@@ -4129,6 +4446,8 @@ window.addEventListener("DOMContentLoaded", () => {
   if (speechSel) enhanceSelect(speechSel);
   renderSpeechPicker();
   speechSel?.addEventListener("change", () => openSpeech(speechSel.value));
+  showScriptBox(!currentSpeech);
+  $("script-box-btn")?.addEventListener("click", () => showScriptBox($("script-pane")!.classList.contains("box-hidden")));
   speechPage = load(SPEECH_PAGE_KEY) ?? "";
   $("speeches-btn")?.addEventListener("click", () => showView("speeches"));
   $("history-btn")?.addEventListener("click", () => showView("history"));
@@ -4158,20 +4477,9 @@ window.addEventListener("DOMContentLoaded", () => {
     renderHistory();
     if (d.back !== undefined) histEl.scrollTop = 0;
   });
-  // The open session's report: key moments and pace clicks jump within its own
-  // transcript copy (the live one belongs to another session).
-  histEl?.addEventListener("click", (e) => {
-    const hp = histPace();
-    if (!hp?.L) return;
-    const ts = (e.target as Element).closest<HTMLElement>(".rep-transcript .seg-ts");
-    if (ts) return void playLine(histPage, ts, hp.L);
-    const m = (e.target as Element).closest<HTMLElement>(".moment");
-    if (m) jumpInCopy(histEl, Number(m.dataset.index), Number(m.dataset.ms), hp.L);
-    clickPace(e, histEl, hp.pace, hp.L);
-  });
-  histEl?.addEventListener("mousemove", (e) => {
-    const hp = histPace();
-    if (hp) hoverPace(e, hp.pace, hp.L);
+  bindReport(histEl, () => {
+    const hp = sessionPace(histPage, histDetail);
+    return hp && { ts: histPage, ...hp };
   });
   histEl?.addEventListener("change", (e) => {
     const t = e.target as HTMLSelectElement;
@@ -4368,8 +4676,12 @@ window.addEventListener("DOMContentLoaded", () => {
     finishCorrecting(() => {
       if (reportPending) {
         reportPending = false;
+        // The report keeps a copy of the session, then the live view resets.
+        if (totalWords > 0) reportSnap = { s: { ...computeSummary(), pace: paceData() }, d: parseDetail(sessionStartTs, sessionDetail())! };
+        flushSave();
+        clearLive();
         renderReport();
-        if (reportVisible && document.body.dataset.view === "live") showView("report");
+        if (reportSnap && document.body.dataset.view === "live") showView("report");
       }
       flushSave();
       if (!recording) setStatus("Idle");

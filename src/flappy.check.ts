@@ -1,6 +1,6 @@
 // Run: bun src/flappy.check.ts
 import assert from "node:assert";
-import { flap, newState, step } from "./flappy";
+import { flap, gap, newState, step } from "./flappy";
 
 const W = 400, H = 200;
 
@@ -36,5 +36,14 @@ assert.equal(s.mode, "dead");
 step(s, 0.6, W, H);
 flap(s, H);
 assert(s.mode === "play" && s.score === 0 && s.best === 3 && s.pipes.length === 0);
+
+// a new pipe's opening is never close to the last one's, even on a short board
+for (let i = 0; i < 300; i++) {
+  const h = 160, y0 = 40 + Math.random() * 80;
+  s = { ...newState(h), mode: "play", y: h / 2, pipes: [{ x: 100, gapY: y0, scored: false }] };
+  step(s, 0.001, W, h);
+  const span = h - gap(h) - 16;
+  assert(Math.abs(s.pipes[1].gapY - y0) >= span * 0.3 - 1e-6, `pipes vary: ${y0} → ${s.pipes[1].gapY}`);
+}
 
 console.log("flappy ok");

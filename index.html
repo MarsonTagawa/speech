@@ -84,13 +84,16 @@
           <button id="script-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Script read-along" data-tip="Script read-along — paste a script and track your words against it">
             <svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M16 13H8" /><path d="M16 17H8" /><path d="M10 9H8" /></svg>
           </button>
+          <button id="ribbon-btn" class="tool-btn icon" type="button" aria-label="Hide ribbon" data-tip="Hide the ribbon">
+            <svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6" /></svg>
+          </button>
         </div>
 
         <section class="tpane">
           <div class="tfade"></div>
           <div id="correct-bar" class="correct-bar" hidden>
             <div class="correct-coach"><canvas class="coach-halo"></canvas></div>
-            <div id="correct-game" class="correct-game"><canvas aria-label="Flappy game while you wait: space or click to flap"></canvas><div class="flappy-coach"></div></div>
+            <div id="correct-game" class="correct-game" aria-label="Flappy game while you wait: space or click to flap"></div>
             <span id="correct-label">Correcting…</span>
             <div class="correct-track">
               <div class="bar"><i><b></b></i><span class="head"></span></div>
@@ -112,6 +115,8 @@
               <span class="label">Script</span>
               <div class="script-tools">
               <select id="speech-sel" aria-label="Saved speech"></select>
+              <button id="ghost-btn" class="file-btn" type="button" aria-pressed="true" data-tip="Ghost caret — underline where your best attempt at this speech was" hidden>Caret</button>
+              <button id="script-box-btn" class="file-btn" type="button" data-tip="Show or hide the script text box">Hide box</button>
               <button id="speech-save" class="file-btn" type="button">Save</button>
               <label class="file-btn">
                 Load .txt
@@ -134,6 +139,7 @@
             <div id="script-display" class="script-display" hidden></div>
             <div id="script-progress" class="script-progress" hidden></div>
           </div>
+          <div id="live-coach" class="live-coach" data-tip="Coach — reacts to your delivery score as you speak"><canvas class="coach-halo"></canvas></div>
         </section>
 
         <section class="dock">
@@ -191,7 +197,7 @@
         <div id="coach" class="coach">
           <div class="coach-avatar"><canvas class="coach-halo"></canvas></div>
           <div class="coach-say">
-            <button class="coach-bubble" type="button" data-tip="Next tip"></button>
+            <button class="coach-bubble" type="button"></button>
             <div class="coach-drill"></div>
           </div>
         </div>
@@ -212,6 +218,8 @@
       </main>
 
       <main class="view view-settings">
+        <input id="set-search" class="ctl set-search" type="search" spellcheck="false" placeholder="Search settings" aria-label="Search settings" />
+        <div id="set-empty" class="empty" hidden>No settings match.</div>
         <div class="panel">
           <span class="label">Practice</span>
           <div class="set-row">
@@ -278,6 +286,13 @@
               <option value="light">Light</option>
             </select>
           </div>
+          <div class="set-row">
+            <span>Coach position<span class="sub">Where the live coach sits while you speak</span></span>
+            <select id="set-coach">
+              <option value="transcript">Transcript</option>
+              <option value="ribbon">Ribbon</option>
+            </select>
+          </div>
           <label class="set-row">
             <span>Hover effect<span class="sub">Animated glyphs that follow the cursor</span></span>
             <input id="set-hover" type="checkbox" role="switch" />
@@ -294,6 +309,7 @@
             <div class="mic-test">
               <span id="mic-speech" class="mic-speech" data-tip="Lights up when speech is detected — what the transcriber listens for">speech</span>
               <div class="mic-meter" data-tip="Input level at the current sensitivity — aim for the upper half when talking"><div id="mic-live"></div><div id="mic-peak"></div></div>
+              <button id="mic-replay" class="ctl" type="button" hidden>Replay</button>
               <button id="mic-test-btn" class="ctl" type="button">Test</button>
             </div>
           </div>
@@ -303,6 +319,13 @@
           <div class="set-row">
             <span>Start / stop recording<span class="sub">Click, then press a key · Esc cancels</span></span>
             <button id="set-record-key" class="ctl" type="button">Space</button>
+          </div>
+        </div>
+        <div class="panel">
+          <span class="label">Minigame</span>
+          <div class="set-row">
+            <span>Flappy Coach<span id="flappy-best" class="sub">Best 0 · also press Space while it's correcting</span></span>
+            <button id="set-flappy" class="ctl" type="button">Play</button>
           </div>
         </div>
       </main>
@@ -324,6 +347,16 @@
           <button class="ctl" value="save">Save</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="session-dialog" class="modal session-modal" aria-label="Past session">
+      <div id="session-pop" class="session-pop"></div>
+    </dialog>
+    <dialog id="flappy-dialog" class="modal flappy-modal" aria-labelledby="fd-title">
+      <div class="panel">
+        <div class="fd-head"><span id="fd-title" class="label">Flappy Coach</span><span id="fd-best" class="sub"></span></div>
+        <div id="play-game" class="play-game" tabindex="0" aria-label="Flappy game: space or click to flap"></div>
+        <div class="speech-actions"><button id="fd-close" class="ctl" type="button">Close</button></div>
+      </div>
     </dialog>
     <div id="timer-menu" class="dd-list timer-menu" role="menu" aria-label="Timer length" hidden>
       <button type="button" role="menuitem" data-s="0">Off</button>

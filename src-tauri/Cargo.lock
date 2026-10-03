@@ -3744,8 +3744,16 @@ dependencies = [
 name = "speech"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "block2",
  "cpal",
+ "gtk",
  "ndarray 0.15.6",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-web-kit",
  "ort",
  "serde",
  "serde_json",
@@ -3753,7 +3761,10 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "ureq",
+ "webkit2gtk",
+ "webview2-com",
  "whisper-rs",
+ "windows 0.61.3",
 ]
 
 [[package]]
