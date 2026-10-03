@@ -1321,6 +1321,31 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   gap: clamp(4px, 1.6cqh, 10px);
   width: min(760px, 88cqw);
 }
+/* Flappy game to fill the wait (src/flappy.ts): Space swaps it in for the
+   coach (.playing); frozen and dimmed for the celebration. */
+.correct-game {
+  display: none;
+  position: relative;
+  flex: 0 0 auto; /* fixed size, so the decode line below can't squash it */
+  width: min(760px, 88cqw);
+  height: clamp(100px, 40cqh, 320px);
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  transition: opacity 300ms ease;
+}
+.correct-game canvas { display: block; width: 100%; height: 100%; }
+.flappy-coach {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 34px; /* BIRD in flappy.ts */
+  height: 34px;
+  pointer-events: none;
+}
+.done .correct-game { opacity: 0.4; }
+.playing .correct-game { display: block; }
+.playing .correct-coach { display: none; }
 .correct-bar .bar {
   position: relative;
   width: 100%;
@@ -1404,6 +1429,10 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
 }
 .correct-line .seg-text {
   display: flex;
+  /* ponytail: reserves 3 lines so the overlay doesn't jump as the decode line
+     changes length; longer lines still grow it. */
+  min-height: calc(3 * 1.45em);
+  align-content: flex-start;
   flex-wrap: wrap;
   column-gap: 0.6em;
   font-size: clamp(12px, min(4.4cqh, 2.6cqw), 22px);

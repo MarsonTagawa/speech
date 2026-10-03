@@ -9,6 +9,7 @@ import "@fontsource/ibm-plex-mono/700.css";
 import { Ribbon, hexToRgb } from "./ribbon";
 import { Halo } from "./halo";
 import { Shards } from "./shards";
+import { Flappy } from "./flappy";
 import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
@@ -673,6 +674,7 @@ let correctShown = 0; // overall bar fill; only moves forward as the ETA is re-l
 // being re-decoded. Ends with a short celebration (finishCorrecting).
 let loadingCoach: ReturnType<typeof createAvatar> | null = null;
 let correctHalo: Halo | null = null;
+let correctGame: Flappy | null = null;
 const GREEN_RGB = hexToRgb("#30d158");
 const passLines: number[] = []; // draft lines this pass corrects, in order (a pip each)
 let decodeDraft = ""; // the decoding line's draft text, to diff its correction against
@@ -689,6 +691,8 @@ function showCorrectBar(on: boolean) {
     loadingCoach?.play("thinking"); // last pass left him celebrating
   }
   if (on) correctHalo?.setMode("thinking");
+  correctGame?.stop();
+  if (recordBtn) recordBtn.disabled = on; // no new recording until this pass lands
   clearTimeout(celebrateTimer);
   correctShown = 0;
   countdownEnd = 0;
@@ -696,7 +700,7 @@ function showCorrectBar(on: boolean) {
   decodeLanded = 0;
   const bar = $("correct-bar");
   bar?.toggleAttribute("hidden", !on);
-  bar?.classList.remove("done", "leaving");
+  bar?.classList.remove("done", "leaving", "playing");
   bar?.style.setProperty("--p", "0");
   const pips = $("correct-pips");
   if (pips) pips.innerHTML = "";
@@ -770,6 +774,28 @@ function renderDecodeLine(now: number) {
 
 // corrections_done: celebrate on the overlay, then fade it out and run `then`
 // (opens the report). Straight to `then` when the overlay isn't up.
+const FLAPPY_ANIM = { ready: "happy", play: "excited", dead: "scared" } as const;
+
+// Space on the overlay swaps the coach for the flappy game (he's the bird), then flaps.
+function correctingSpace() {
+  const bar = $("correct-bar");
+  if (!bar || bar.classList.contains("done")) return;
+  if (!bar.classList.contains("playing")) {
+    const canvas = document.querySelector<HTMLCanvasElement>("#correct-game canvas");
+    const mount = document.querySelector<HTMLElement>(".flappy-coach");
+    if (!canvas || !mount) return;
+    if (!correctGame) {
+      const coach = createAvatar(mount, { definition: strobi, defaultAnimation: "happy", size: "100%", ariaLabel: "Coach as the flappy bird" });
+      correctGame = new Flappy(canvas, mount, (mode) => coach.play(FLAPPY_ANIM[mode]));
+    }
+    bar.classList.add("playing");
+    correctGame.start();
+  } else correctGame?.flap();
+}
+
+// The "Correcting…" overlay (incl. its celebration) is up: recording is locked.
+const correcting = () => !$("correct-bar")?.hidden;
+
 function finishCorrecting(then: () => void) {
   const bar = $("correct-bar");
   if (!bar || bar.hidden) {
@@ -782,6 +808,7 @@ function finishCorrecting(then: () => void) {
   etaByIndex.clear();
   for (const el of segmentEls.values()) el.classList.remove("counting");
   renderPips(false);
+  correctGame?.stop(); // freeze the board for the celebration
   bar.classList.add("done");
   bar.style.setProperty("--p", "1");
   const n = passLines.length;
@@ -1681,7 +1708,7 @@ async function playLine(ts: number, el: HTMLElement, L: Lines) {
 }
 
 async function toggleRecording() {
-  if (!recordBtn) return;
+  if (!recordBtn || (!recording && correcting())) return;
 
   recordBtn.disabled = true;
   try {
@@ -1738,7 +1765,7 @@ async function toggleRecording() {
     setStatus("Error");
     appendError(String(e));
   } finally {
-    recordBtn.disabled = false;
+    recordBtn.disabled = correcting();
   }
 }
 
@@ -3820,6 +3847,17 @@ window.addEventListener("DOMContentLoaded", () => {
       const next = at < 0 ? (e.shiftKey ? n - 1 : 0) : (at + (e.shiftKey ? -1 : 1) + n) % n;
       $(tabs[next][1])?.click();
       return;
+    }
+    if (
+      e.code === "Space" &&
+      !e.repeat &&
+      document.body.dataset.view === "live" &&
+      correcting() &&
+      !(e.target as Element).closest("input, textarea, select, .dd, .timer-menu, dialog, [contenteditable]")
+    ) {
+      e.preventDefault();
+      (document.activeElement as HTMLElement | null)?.blur(); // so Space doesn't also click a button
+      return correctingSpace();
     }
     if (e.code !== recordKey || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     // Starts only from the live tab; a running recording can be stopped from anywhere.
