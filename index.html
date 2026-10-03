@@ -88,7 +88,7 @@
 
         <section class="tpane">
           <div class="tfade"></div>
-          <div id="correct-bar" class="correct-bar" hidden><span id="correct-label">Correcting…</span><div class="bar"><i></i></div></div>
+          <div id="correct-bar" class="correct-bar" hidden><div class="correct-coach"><canvas class="coach-halo"></canvas></div><span id="correct-label">Correcting…</span><div class="bar"><i></i></div></div>
           <p id="practice-prompt" class="practice-prompt" hidden></p>
           <div id="transcript" class="transcript">
             <p class="placeholder">Your transcript will appear here as you speak.</p>
@@ -176,7 +176,10 @@
         <section id="report-transcript" class="panel rep-transcript"></section>
         <div id="coach" class="coach">
           <div class="coach-avatar"><canvas class="coach-halo"></canvas></div>
-          <button class="coach-bubble" type="button" data-tip="Next tip"></button>
+          <div class="coach-say">
+            <button class="coach-bubble" type="button" data-tip="Next tip"></button>
+            <div class="coach-drill"></div>
+          </div>
         </div>
       </main>
 

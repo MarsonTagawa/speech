@@ -8,6 +8,8 @@ export interface DrillStats {
   fillersPerMin: number;
   pausesPerMin: number;
   trailingOff: number;
+  pitchRange: number; // mean within-sentence inflection, semitones
+  uptalk: number; // sentences ending on a rising pitch
   script: { accuracy: number } | null;
 }
 
@@ -88,6 +90,21 @@ export const DRILLS: Drill[] = [
       pass: spokeEnough(s, 45) && s.trailingOff >= 0.9,
       value: `${Math.round(s.trailingOff * 100)}% end volume`,
     }),
+  },
+  {
+    id: "vary-pitch",
+    name: "Vary your pitch",
+    goal: "Talk for 45 s with at least 4 semitones of inflection per sentence — stress the key word",
+    secs: 45,
+    judge: (s) => ({ pass: spokeEnough(s, 45) && s.pitchRange >= 4, value: `${s.pitchRange.toFixed(1)} semitones` }),
+  },
+  {
+    id: "land-it",
+    name: "Land your statements",
+    goal: "Talk for 45 s ending every sentence on a falling tone — at most 1 rising end",
+    secs: 45,
+    // ponytail: allows one rise to absorb a misread pitch contour; tighten if detection proves clean.
+    judge: (s) => ({ pass: spokeEnough(s, 45) && s.uptalk <= 1, value: `${s.uptalk} rising end${s.uptalk === 1 ? "" : "s"}` }),
   },
 ];
 

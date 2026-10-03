@@ -1240,6 +1240,15 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   cursor: pointer;
 }
 .coach-bubble:empty { display: none; }
+.coach-say {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.coach-drill:empty { display: none; }
+.overview .ctl { margin-left: 4px; }
 .coach-bubble small { display: block; margin-top: 4px; opacity: 0.5; }
 
 /* Word spoken at the jumped-to time; held, then faded (the mark is removed on animationend). */
@@ -1253,31 +1262,32 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   100% { background: transparent; }
 }
 
-/* Whole-session correction progress, over the transcript after Stop. */
+/* Whole-session correction progress: covers the transcript after Stop, coach thinking. */
 .correct-bar {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  inset: 0;
   z-index: 4;
   display: flex;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 12px;
-  padding: 10px 34px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--ink-2);
   background: var(--pane);
-  border-bottom: 0.5px solid var(--edge);
 }
 .correct-bar[hidden] {
   display: none;
 }
-.correct-bar:not([hidden]) ~ .transcript {
-  top: 36px;
+.correct-coach {
+  position: relative;
+  width: 96px;
+  height: 96px;
 }
+.correct-coach .bs-avatar { position: relative; } /* above the halo canvas */
 .correct-bar .bar {
-  flex: 1;
+  width: min(220px, 60%);
   height: 3px;
   border-radius: 2px;
   background: color-mix(in srgb, var(--fg) 12%, transparent);
@@ -1430,6 +1440,12 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   width: 100%;
   border-radius: 3px 3px 1px 1px;
   background: color-mix(in srgb, var(--fg) 16%, transparent);
+}
+.hist-col[data-open] {
+  cursor: pointer;
+}
+.hist-col[data-open]:hover .bar {
+  background: var(--blue-2);
 }
 .hist-col.now {
   color: color-mix(in srgb, var(--ink) 95%, transparent);

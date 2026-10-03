@@ -134,7 +134,7 @@ let lastScriptResult:
   | null = null;
 // Whether the read-along pane was open for this session. A script stays loaded
 // after the pane is closed, so the pane — not the loaded text — decides whether
-// the report scores against it. Frozen at Stop (jumpToLine closes the pane).
+// the report scores against it. Frozen at Stop.
 let scriptUsed = false;
 
 // Set at Stop; the report opens once the correction pass finishes (corrections_done).
@@ -657,8 +657,15 @@ const etaByIndex = new Map<number, number>(); // projected correction time (perf
 let countdownEnd = 0; // projected end of the whole pass, for the overall bar
 let correctShown = 0; // overall bar fill; only moves forward as the ETA is re-learned
 
-// Overall "Correcting…" bar over the transcript, from Stop until corrections_done.
+// Overall "Correcting…" overlay covering the transcript, from Stop until corrections_done.
+let loadingCoach: ReturnType<typeof createAvatar> | null = null;
 function showCorrectBar(on: boolean) {
+  const mount = document.querySelector<HTMLElement>(".correct-coach");
+  if (on && mount && !loadingCoach) {
+    // The halo skips drawing while the overlay is hidden, so it lives for the session.
+    new Halo(mount.querySelector("canvas")!).setMode("thinking");
+    loadingCoach = createAvatar(mount, { definition: strobi, defaultAnimation: "thinking", size: "100%", ariaLabel: "Coach thinking" });
+  }
   correctShown = 0;
   countdownEnd = 0;
   $("correct-bar")?.toggleAttribute("hidden", !on);
@@ -1754,29 +1761,35 @@ function computeSummary(): SessionSummary {
 
 // Impact-ranked, specific-number tips. Each candidate's impact = its dimension
 // weight × how far below 100 it scored, so the biggest weighted weakness leads.
-function generateTips(s: SessionSummary): string[] {
+// `drill` is the drill (drills.ts) that practises that skill, if one does.
+interface Tip {
+  text: string;
+  drill?: string;
+}
+
+function generateTips(s: SessionSummary): Tip[] {
   const preset = PRESETS[s.preset];
-  const tips: Array<{ impact: number; text: string }> = [];
-  const push = (score: number, weight: number, text: string) =>
-    tips.push({ impact: weight * (100 - score), text });
+  const tips: Array<Tip & { impact: number }> = [];
+  const push = (score: number, weight: number, text: string, drill?: string) =>
+    tips.push({ impact: weight * (100 - score), text, drill });
 
   if (s.wpm > preset.wpmHigh)
-    push(s.scores.pace, SCORE_WEIGHTS.pace, `You averaged ${s.wpm} WPM — ${s.wpm - preset.wpmHigh} above the ${preset.name.toLowerCase()} range (${preset.wpmLow}–${preset.wpmHigh}). Slow down, especially through longer sentences.`);
+    push(s.scores.pace, SCORE_WEIGHTS.pace, `You averaged ${s.wpm} WPM — ${s.wpm - preset.wpmHigh} above the ${preset.name.toLowerCase()} range (${preset.wpmLow}–${preset.wpmHigh}). Slow down, especially through longer sentences.`, "pace-lock");
   else if (s.wpm > 0 && s.wpm < preset.wpmLow)
-    push(s.scores.pace, SCORE_WEIGHTS.pace, `You averaged ${s.wpm} WPM — ${preset.wpmLow - s.wpm} below the ${preset.name.toLowerCase()} range (${preset.wpmLow}–${preset.wpmHigh}). Pick up the pace to keep energy up.`);
+    push(s.scores.pace, SCORE_WEIGHTS.pace, `You averaged ${s.wpm} WPM — ${preset.wpmLow - s.wpm} below the ${preset.name.toLowerCase()} range (${preset.wpmLow}–${preset.wpmHigh}). Pick up the pace to keep energy up.`, "pace-lock");
   if (s.peakMinuteWpm > preset.wpmHigh + 10)
-    push(55, 0.5, `Your fastest stretch hit ${s.peakMinuteWpm} WPM around minute ${s.peakMinute + 1} — watch for rushing there.`);
+    push(55, 0.5, `Your fastest stretch hit ${s.peakMinuteWpm} WPM around minute ${s.peakMinute + 1} — watch for rushing there.`, "pace-lock");
 
   if (s.fillersPerMin >= 3)
-    push(s.scores.fillers, SCORE_WEIGHTS.fillers, `You used ${s.fillers} filler words (${s.fillersPerMin.toFixed(1)}/min). Aim under 3/min — swap "um"/"like" for a brief silent pause.`);
+    push(s.scores.fillers, SCORE_WEIGHTS.fillers, `You used ${s.fillers} filler words (${s.fillersPerMin.toFixed(1)}/min). Aim under 3/min — swap "um"/"like" for a brief silent pause.`, "pause-not-um");
 
   if (s.pitchRange < 3 && s.pitchRange > 0)
-    push(s.scores.pitch, SCORE_WEIGHTS.pitch, `Your pitch varied only ${s.pitchRange.toFixed(1)} semitones — that reads as monotone. Stretch your intonation to hold attention.`);
+    push(s.scores.pitch, SCORE_WEIGHTS.pitch, `Your pitch varied only ${s.pitchRange.toFixed(1)} semitones — that reads as monotone. Stretch your intonation to hold attention.`, "vary-pitch");
   if (s.uptalk >= 3)
-    push(50, 0.75, `${s.uptalk} statements rose in pitch at the end (uptalk), which can sound uncertain. Land statements on a falling tone.`);
+    push(50, 0.75, `${s.uptalk} statements rose in pitch at the end (uptalk), which can sound uncertain. Land statements on a falling tone.`, "land-it");
 
   if (s.trailingOff < 0.7)
-    push(s.scores.volume, SCORE_WEIGHTS.volume, `You trailed off at sentence ends (volume fell to ${Math.round(s.trailingOff * 100)}% of your average). Carry energy through the last word.`);
+    push(s.scores.volume, SCORE_WEIGHTS.volume, `You trailed off at sentence ends (volume fell to ${Math.round(s.trailingOff * 100)}% of your average). Carry energy through the last word.`, "finish-strong");
   else if (s.loudnessCV > 0.6)
     push(s.scores.volume, SCORE_WEIGHTS.volume, `Your volume was uneven across sentences (±${Math.round(s.loudnessCV * 100)}%). Keep a steadier level.`);
 
@@ -1784,11 +1797,11 @@ function generateTips(s: SessionSummary): string[] {
     push(s.scores.pauses, SCORE_WEIGHTS.pauses, `You paused often (${s.pausesPerMin.toFixed(1)}/min). Some pausing lands well, but frequent hesitation gaps break flow.`);
 
   if (s.script)
-    push(s.script.accuracy, SCORE_WEIGHTS.articulation, `You matched ${s.script.accuracy}% of the script${s.script.misses ? ` — ${s.script.misses} skipped` : ""}${s.script.subs ? `, ${s.script.subs} misread` : ""}.`);
+    push(s.script.accuracy, SCORE_WEIGHTS.articulation, `You matched ${s.script.accuracy}% of the script${s.script.misses ? ` — ${s.script.misses} skipped` : ""}${s.script.subs ? `, ${s.script.subs} misread` : ""}.`, "twisters");
 
   tips.sort((a, b) => b.impact - a.impact);
-  const top = tips.filter((t) => t.impact > 0).slice(0, 4).map((t) => t.text);
-  if (top.length === 0) top.push("Strong session — no standout weaknesses. Keep it up.");
+  const top: Tip[] = tips.filter((t) => t.impact > 0).slice(0, 4);
+  if (top.length === 0) top.push({ text: "Strong session — no standout weaknesses. Keep it up." });
   return top;
 }
 
@@ -2018,7 +2031,7 @@ function reportHeroHtml(s: SessionSummary, prev: SessionSummary | undefined, num
       ? ""
       : `<div class="rep-delta" data-tip="Score change since session ${num - 1}"><div class="num ${tone(d)}">${signed(d)}</div><div class="sub">vs session ${num - 1}</div></div>`) +
     `<div class="rep-vr"></div>` +
-    `<div class="rep-tip" data-tip="The single change that would lift the score most">${escapeHtml(generateTips(s)[0])}</div>` +
+    `<div class="rep-tip" data-tip="The single change that would lift the score most">${escapeHtml(generateTips(s)[0].text)}</div>` +
     `</div>`
   );
 }
@@ -2135,12 +2148,20 @@ function paceChartHtml(p: PaceData, preset: Preset): string {
 const coachEl = document.getElementById("coach"); // held: report re-renders detach it
 let coach: ReturnType<typeof createAvatar> | null = null;
 let halo: Halo | null = null;
-let coachTips: string[] = [];
+let coachTips: Tip[] = [];
 let coachIdx = 0;
 let coachTimer = 0;
 
-function coachSay(tips: string[]) {
-  if (tips.join("\n") === coachTips.join("\n")) return;
+const tipsKey = (tips: Tip[]) => tips.map((t) => t.text).join("\n");
+
+// A tip's "practise this" button, opening its drill on the Live tab.
+function drillBtnHtml(t: Tip): string {
+  const d = drillById(t.drill);
+  return d ? ` <button type="button" class="ctl" data-drill="${d.id}" data-tip="${escapeHtml(d.goal)}">Drill: ${escapeHtml(d.name)}</button>` : "";
+}
+
+function coachSay(tips: Tip[]) {
+  if (tipsKey(tips) === tipsKey(coachTips)) return;
   coachTips = tips;
   coachIdx = 0;
   const mount = coachEl?.querySelector<HTMLElement>(".coach-avatar");
@@ -2153,8 +2174,10 @@ function coachSay(tips: string[]) {
 
 function coachSpeak() {
   const el = coachEl?.querySelector<HTMLElement>(".coach-bubble");
-  const text = coachTips[coachIdx];
+  const text = coachTips[coachIdx]?.text;
   if (!el || !coach || !text) return;
+  const drill = coachEl?.querySelector<HTMLElement>(".coach-drill");
+  if (drill) drill.innerHTML = drillBtnHtml(coachTips[coachIdx]);
   const count = coachTips.length > 1 ? `<small>${coachIdx + 1}/${coachTips.length} · click for next</small>` : "";
   el.setAttribute("aria-label", text);
   clearInterval(coachTimer);
@@ -2284,13 +2307,13 @@ function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
   const pool = title ? prior.filter((h) => h.speech === s.speech) : prior;
   const shownPrior = pool.slice(-9);
   const bars = [
-    ...shownPrior.map((h, i) => ({ n: pool.length - shownPrior.length + i + 1, score: h.scores.overall, now: false })),
-    { n: pool.length + 1, score: c.overall, now: true },
+    ...shownPrior.map((h, i) => ({ n: pool.length - shownPrior.length + i + 1, score: h.scores.overall, now: false, ts: h.ts })),
+    { n: pool.length + 1, score: c.overall, now: true, ts: 0 },
   ];
   const what = title ? "Attempt" : "Session";
   const trend = bars.length > 1 ? `<span class="${tone(c.overall - bars[0].score)}">${signed(c.overall - bars[0].score)} since ${bars[0].n}</span>` : "";
   const hist = bars
-    .map((b) => `<div class="hist-col${b.now ? " now" : ""}" data-tip="${what} ${b.n} — score ${b.score}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
+    .map((b) => `<div class="hist-col${b.now ? " now" : ""}"${b.now ? "" : ` data-open="${b.ts}"`} data-tip="${what} ${b.n} — score ${b.score}${b.now ? "" : " · open in History"}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
     .join("");
 
   const moments = keyMoments(preset, L);
@@ -2778,7 +2801,7 @@ function speechOverview(tries: SessionSummary[], sp: Speech, skips: SkipCounts):
     out.push(trend);
   }
 
-  out.push(`<b>Last attempt</b> — ${escapeHtml(generateTips(latest)[0])}`);
+  out.push(`<b>Last attempt</b> — ${escapeHtml(generateTips(latest)[0].text)}`);
   return out;
 }
 
@@ -3406,19 +3429,12 @@ function historyPageHtml(i: number): string {
     reportTilesHtml(s, history[i - 1]) +
     `<div class="panel"><span class="label">Score breakdown</span><div class="fw-list dims">${dims}</div></div>` +
     `<div class="panel"><span class="label">What to work on</span><ul class="overview">` +
-    generateTips(s).map((t) => `<li>${escapeHtml(t)}</li>`).join("") +
+    generateTips(s).map((t) => `<li>${escapeHtml(t.text)}${drillBtnHtml(t)}</li>`).join("") +
     `</ul></div>`
   );
 }
 
 // Report → transcript: switch back to the live view and flash the line.
-function jumpToLine(index: number, ms: number) {
-  showView("live");
-  toggleScript(false);
-  const el = segmentEls.get(index);
-  if (el) flashLine(el, index, ms);
-}
-
 // --- Practice ----------------------------------------------------------------
 
 const PROMPTS = [
@@ -3749,6 +3765,10 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  coachEl?.querySelector(".coach-drill")?.addEventListener("click", (e) => {
+    const id = (e.target as Element).closest<HTMLElement>("[data-drill]")?.dataset.drill;
+    if (id) startDrill(id);
+  });
   coachEl?.querySelector(".coach-bubble")?.addEventListener("click", () => {
     coachIdx = (coachIdx + 1) % Math.max(1, coachTips.length);
     coachSpeak();
@@ -3758,10 +3778,18 @@ window.addEventListener("DOMContentLoaded", () => {
   $("report-body")?.addEventListener("click", (e) => {
     const star = (e.target as Element).closest<HTMLElement>("[data-star]");
     if (star) return void toggleSaved(Number(star.dataset.star));
-    const m = (e.target as Element).closest<HTMLElement>(".moment");
-    if (m) jumpToLine(Number(m.dataset.index), Number(m.dataset.ms));
+    const open = (e.target as Element).closest<HTMLElement>("[data-open]");
+    if (open) {
+      showView("history");
+      const h = $("history");
+      if (h) h.scrollTop = 0;
+      return void openHistorySession(Number(open.dataset.open));
+    }
     const report = $("report");
-    if (report) clickPace(e, report, paceData(), live);
+    if (!report) return;
+    const m = (e.target as Element).closest<HTMLElement>(".moment");
+    if (m) jumpInCopy(report, Number(m.dataset.index), Number(m.dataset.ms), live);
+    clickPace(e, report, paceData(), live);
   });
   $("report-body")?.addEventListener("mousemove", (e) => hoverPace(e, paceData(), live));
 
@@ -3805,9 +3833,10 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   const histEl = $("history");
   histEl?.addEventListener("click", (e) => {
-    const b = (e.target as Element).closest<HTMLElement>("[data-star], [data-goto], [data-open], [data-back], [data-hsaved], [data-range]");
+    const b = (e.target as Element).closest<HTMLElement>("[data-star], [data-goto], [data-open], [data-back], [data-hsaved], [data-range], [data-drill]");
     const d = b?.dataset;
     if (!b || !d) return;
+    if (d.drill) return startDrill(d.drill);
     if (d.star) return void toggleSaved(Number(d.star));
     if (d.goto) {
       speechPage = d.goto;

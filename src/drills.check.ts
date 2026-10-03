@@ -2,7 +2,7 @@
 import assert from "node:assert";
 import { drillById, type DrillStats } from "./drills";
 
-const base: DrillStats = { durationMs: 40_000, wpm: 140, fillers: 0, fillersPerMin: 0, pausesPerMin: 5, trailingOff: 0.95, script: null };
+const base: DrillStats = { durationMs: 40_000, wpm: 140, fillers: 0, fillersPerMin: 0, pausesPerMin: 5, trailingOff: 0.95, pitchRange: 4.5, uptalk: 0, script: null };
 const band: [number, number] = [120, 160];
 const pass = (id: string, s: Partial<DrillStats>) => drillById(id)!.judge({ ...base, ...s }, band).pass;
 
@@ -19,4 +19,8 @@ assert(!pass("twisters", { script: null }));
 assert(!pass("finish-strong", { trailingOff: 0.7 }));
 assert(pass("memorise", { script: { accuracy: 90 }, durationMs: 3_000 }));
 assert(!pass("memorise", { script: { accuracy: 80 } }));
+assert(pass("vary-pitch", {}));
+assert(!pass("vary-pitch", { pitchRange: 2.5 }));
+assert(pass("land-it", { uptalk: 1 }));
+assert(!pass("land-it", { uptalk: 2 }));
 console.log("drills ok");
