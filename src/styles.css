@@ -853,6 +853,10 @@ body.timer-countdown.has-timer .countdown {
   border-radius: 3px;
   padding: 0 2px;
 }
+/* Ghost caret: where the best attempt was at this moment. */
+.script-ghost {
+  box-shadow: inset 0 -2px var(--blue);
+}
 
 /* Memorise drill: the script box would give later chunks away, so it hides.
    While recording, words not yet said are masked; they reveal as you say them. */
@@ -1231,6 +1235,7 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   pointer-events: none;
 }
 .coach-avatar .bs-avatar { position: relative; }
+.bs-avatar svg { overflow: visible; } /* Kirby's arms reach past the fixed -150..150 viewBox */
 .coach-bubble {
   position: relative; /* above the halo's overhang */
   min-width: 0;
@@ -2218,4 +2223,24 @@ body.no-hover-fx #shards {
   .dock .big {
     font-size: 22px;
   }
+}
+
+.crutch-label {
+  margin-top: 12px;
+}
+/* Report transcripts: a line's timestamp plays it back. */
+.rep-transcript .seg-ts {
+  cursor: pointer;
+}
+.rep-transcript .seg-ts::before {
+  content: "▶ ";
+  opacity: 0.5;
+}
+.rep-transcript .seg-ts:hover,
+.rep-transcript .seg-ts.playing {
+  color: var(--ink);
+}
+.rep-transcript .seg-ts.playing::before {
+  content: "■ ";
+  opacity: 1;
 }

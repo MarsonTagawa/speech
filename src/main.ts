@@ -11,6 +11,7 @@ import { Halo } from "./halo";
 import { Shards } from "./shards";
 import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
+import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
 import { createAvatar } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
@@ -130,8 +131,15 @@ let sessionId = 0;
 // Last script-alignment result (null until a script is used), so the end-of-
 // session report can score articulation. Updated every re-align in renderScriptMatch.
 let lastScriptResult:
-  | { total: number; hits: number; misses: number; subs: number; accuracy: number; missed: number[] }
+  | { total: number; hits: number; misses: number; subs: number; accuracy: number; missed: number[]; times: number[] }
   | null = null;
+// Ghost caret: `reachedMs[i]` is when (ms into the recording, to 100 ms) the
+// read-along cursor first moved past script word i this session. The best saved
+// attempt's copy (`ghostTimes`) replays as a second marker while you read.
+let reachedMs: number[] = [];
+let ghostTimes: number[] | null = null;
+let ghostIdx = -1;
+let ghostOn = true;
 // Whether the read-along pane was open for this session. A script stays loaded
 // after the pane is closed, so the pane — not the loaded text — decides whether
 // the report scores against it. Frozen at Stop.
@@ -1164,10 +1172,15 @@ function renderScriptMatch() {
       state = "script-pending";
     }
     if (state !== scriptSpanState[i]) {
-      scriptSpans[i].className = `script-tok ${state}`;
+      scriptSpans[i].className = `script-tok ${state}${i === ghostIdx ? " script-ghost" : ""}`;
       scriptSpanState[i] = state;
     }
     if (state === "script-current") currentSpan = scriptSpans[i];
+  }
+
+  if (recording && recordStartedAt) {
+    const at = Math.round((performance.now() - recordStartedAt) / 100) * 100;
+    while (reachedMs.length < cursor) reachedMs.push(at);
   }
 
   const pct = Math.round((hits / scriptTokens.length) * 100);
@@ -1183,6 +1196,7 @@ function renderScriptMatch() {
     subs,
     accuracy: pct,
     missed,
+    times: [...reachedMs],
   };
 
   // Keep the current word in view within the panel.
@@ -1485,9 +1499,22 @@ function setRecordingUi(on: boolean) {
 let clockTimer = 0;
 let recordStartedAt = 0;
 let drillEndsAt = 0;
+let prepEndsAt = 0; // a drill's thinking time; recording starts when it runs out
 
 function tickClock() {
   const now = performance.now();
+  moveGhost(recording && ghostTimes ? now - recordStartedAt : -1);
+  if (prepEndsAt && !recording) {
+    const prepLeft = prepEndsAt - now;
+    if (prepLeft <= 0) {
+      void toggleRecording(); // clears prepEndsAt
+      return;
+    }
+    const label = `Think ${formatTimestamp(Math.ceil(prepLeft / 1000) * 1000)}`;
+    setText("drill-label", label);
+    setText("countdown", label);
+    return;
+  }
   setText("clock", formatTimestamp(recordStartedAt ? now - recordStartedAt : 0));
   const left = drillEndsAt - now;
   if (drillEndsAt && left <= 0 && recording) {
@@ -1501,6 +1528,31 @@ function tickClock() {
   setText("countdown", label);
   document.body.classList.toggle("has-timer", drillMs > 0);
   $("drill-btn")?.classList.toggle("drilling", running);
+}
+
+// The best-scoring saved attempt at this exact script (same speech, same
+// length, so a memorise step only races itself), if it kept word timings.
+function bestAttemptTimes(): number[] | null {
+  if (!ghostOn || !currentSpeech) return null;
+  let best: SessionSummary | undefined;
+  for (const h of history)
+    if (h.speech === currentSpeech && h.script?.total === scriptTokens.length && h.script.times?.length &&
+        (!best || h.scores.overall > best.scores.overall)) best = h;
+  return best?.script?.times ?? null;
+}
+
+// Marks the word the ghost attempt was on `elapsed` ms in; -1 clears it.
+function moveGhost(elapsed: number) {
+  let i = -1;
+  if (ghostTimes && elapsed >= 0) {
+    i = ghostTimes.findIndex((t) => t > elapsed);
+    if (i === -1) i = ghostTimes.length; // ghost finished its last timed word
+    if (i >= scriptSpans.length) i = -1;
+  }
+  if (i === ghostIdx) return;
+  scriptSpans[ghostIdx]?.classList.remove("script-ghost");
+  scriptSpans[i]?.classList.add("script-ghost");
+  ghostIdx = i;
 }
 
 function startClock() {
@@ -1570,15 +1622,42 @@ async function stopMicTest(playBack: boolean) {
     setText("mic-status", MIC_HINT);
     return;
   }
+  setText("mic-status", `Playing back ${(samples.length / 16000).toFixed(1)} s…`);
+  playSamples(samples, () => setText("mic-status", MIC_HINT));
+}
+
+// Plays 16 kHz mono samples, cutting off whatever clip was already playing
+// (its onEnd still runs).
+let clipSrc: AudioBufferSourceNode | null = null;
+function playSamples(samples: Float32Array, onEnd: () => void) {
+  clipSrc?.stop();
   micAudio ??= new AudioContext();
   const clip = micAudio.createBuffer(1, samples.length, 16000);
   clip.copyToChannel(samples, 0);
   const src = micAudio.createBufferSource();
   src.buffer = clip;
   src.connect(micAudio.destination);
-  src.onended = () => setText("mic-status", MIC_HINT);
-  setText("mic-status", `Playing back ${(samples.length / 16000).toFixed(1)} s…`);
+  src.onended = () => {
+    if (clipSrc === src) clipSrc = null;
+    onEnd();
+  };
+  clipSrc = src;
   src.start();
+}
+
+// A report transcript's timestamp plays that line from the session's saved
+// audio (history.rs session_clip); clicking it again while playing stops it.
+async function playLine(ts: number, el: HTMLElement, L: Lines) {
+  if (el.classList.contains("playing")) return void clipSrc?.stop();
+  const t = L.timing.get(Number(el.closest<HTMLElement>("[data-index]")?.dataset.index));
+  if (!t) return;
+  try {
+    const buf = await invoke<ArrayBuffer>("session_clip", { ts, startMs: Math.round(t.start), endMs: Math.round(t.end) });
+    el.classList.add("playing");
+    playSamples(new Float32Array(buf), () => el.classList.remove("playing"));
+  } catch (e) {
+    el.dataset.tip = String(e);
+  }
 }
 
 async function toggleRecording() {
@@ -1587,6 +1666,7 @@ async function toggleRecording() {
   recordBtn.disabled = true;
   try {
     if (!recording) {
+      prepEndsAt = 0; // starting early skips the rest of a drill's prep
       flushSave();
       resetCountdown();
       // The backend restarts utterance indices each session; drop stale
@@ -1596,6 +1676,7 @@ async function toggleRecording() {
       finalized.clear();
       refinedIndices.clear();
       tokensByIndex.clear();
+      reachedMs = [];
       renderScriptMatch(); // reset read-along highlights to the start
       resetStats();
       reportVisible = false;
@@ -1606,9 +1687,10 @@ async function toggleRecording() {
       const statsBtn = $<HTMLButtonElement>("stats-btn");
       if (statsBtn) statsBtn.disabled = true;
       await stopMicTest(false);
-      await invoke("start_recording", { correct: accurateCorrection, correctionModel });
-      recording = true;
+      ghostTimes = scriptUsed ? bestAttemptTimes() : null;
       sessionStartTs = Date.now();
+      await invoke("start_recording", { correct: accurateCorrection, correctionModel, ts: sessionStartTs });
+      recording = true;
       currentSaved = false;
       renderSessionLabel();
       startClock();
@@ -1652,6 +1734,7 @@ function resetSession() {
   finalized.clear();
   refinedIndices.clear();
   tokensByIndex.clear();
+  reachedMs = [];
   renderScriptMatch();
   resetStats();
   sessionDrill = "";
@@ -1744,13 +1827,15 @@ interface SessionSummary {
   peakMinuteWpm: number;
   peakMinute: number;
   // `missed`: script token indices skipped (absent on sessions saved before it was tracked).
-  script: { total: number; hits: number; misses: number; subs: number; accuracy: number; missed?: number[] } | null;
+  // `times`: the ghost caret's word timings (see reachedMs; absent on older sessions).
+  script: { total: number; hits: number; misses: number; subs: number; accuracy: number; missed?: number[]; times?: number[] } | null;
   preset: string;
   speech?: string; // saved speech id, when read against one
   drill?: string; // drill id, when run from the Drills tab
   memory?: string; // read-along mask ("letters" | "hidden"), when one was on
   saved?: boolean; // starred in Stats/History
   pace?: PaceData; // absent on sessions saved before it was kept
+  crutch?: Crutch; // word habits; absent on sessions saved before it was tracked
   scores: Scores;
 }
 
@@ -1877,6 +1962,7 @@ function computeSummary(): SessionSummary {
     drill: sessionDrill || undefined,
     memory: script && sessionMemory ? sessionMemory : undefined,
     saved: currentSaved || undefined,
+    crutch: crutch(spokenWords()),
     scores,
   };
 }
@@ -1917,6 +2003,10 @@ function generateTips(s: SessionSummary): Tip[] {
 
   if (s.pausesPerMin > 10)
     push(s.scores.pauses, SCORE_WEIGHTS.pauses, `You paused often (${s.pausesPerMin.toFixed(1)}/min). Some pausing lands well, but frequent hesitation gaps break flow.`);
+
+  const hedgesPerMin = s.crutch && s.durationMs > 0 ? hedgeCount(s.crutch) / (s.durationMs / 60000) : 0;
+  if (hedgesPerMin >= 3 && s.crutch)
+    push(60, 0.5, `You hedged ${hedgeCount(s.crutch)} times — mostly “${s.crutch.hedges[0][0]}”. Say it plainly; hedges make solid points sound unsure.`);
 
   if (s.script)
     push(s.script.accuracy, SCORE_WEIGHTS.articulation, `You matched ${s.script.accuracy}% of the script${s.script.misses ? ` — ${s.script.misses} skipped` : ""}${s.script.subs ? `, ${s.script.subs} misread` : ""}.`, "twisters");
@@ -2423,6 +2513,7 @@ function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
         .map(([w, n]) => `<div class="fw-row" data-tip="“${escapeHtml(w)}” — ${n} of ${s.fillers} fillers this session"><span>${escapeHtml(w)}</span><div class="fw-bar"><div style="width:${(n / topN) * 100}%"></div></div><span class="n">${n}</span></div>`)
         .join("")
     : `<div class="empty">No fillers — clean session.</div>`;
+  const habits = s.crutch ? crutchHtml(s.crutch) : "";
 
   // Score trend: up to nine saved sessions plus this one — or, when reading a
   // saved speech, its last nine attempts.
@@ -2450,11 +2541,22 @@ function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
     chart +
     tiles +
     `<div class="rep-bottom">` +
-    `<div class="panel"><span class="label">Fillers · ${s.fillers}</span><div class="fw-list">${fillerRows}</div></div>` +
+    `<div class="panel"><span class="label">Fillers · ${s.fillers}</span><div class="fw-list">${fillerRows}</div>${habits}</div>` +
     `<div class="panel"><div class="panel-head"><span class="label">${title ? `${escapeHtml(title)} · ${bars.length} attempt${bars.length === 1 ? "" : "s"}` : `Score · last ${bars.length}`}</span>${trend}</div><div class="hist">${hist}</div></div>` +
     `<div class="panel"><span class="label">Key moments</span><div class="moments">${momentsHtml}</div></div>` +
     `</div>`
   );
+}
+
+// Word habits under the filler breakdown; nothing when the session had none.
+function crutchHtml(c: Crutch): string {
+  const list = (xs: [string, number][]) => xs.map(([w, n]) => `“${escapeHtml(w)}” ×${n}`).join(", ");
+  const parts = [
+    c.hedges.length ? `Hedges: ${list(c.hedges.slice(0, 3))}` : "",
+    c.overused.length ? `Leaned on: ${list(c.overused)}` : "",
+    c.repeats ? `Repeated words: ${c.repeats}` : "",
+  ].filter(Boolean);
+  return parts.length ? `<span class="label crutch-label">Word habits</span>${parts.map((p) => `<div class="sub">${p}</div>`).join("")}` : "";
 }
 
 // The utterance (transcript line) at session time `ms`: the one spanning it,
@@ -2645,12 +2747,22 @@ function startDrill(id: string) {
   applyMemory();
   showPrompt(reads ? undefined : randomPrompt());
   showView("live");
+  if (d.prep) {
+    prepEndsAt = performance.now() + d.prep * 1000;
+    clearInterval(clockTimer);
+    clockTimer = window.setInterval(tickClock, 250);
+    tickClock();
+  }
 }
 
 function endDrill() {
   if (!activeDrill) return;
   const wasMemorise = activeDrill === MEMORISE;
   activeDrill = "";
+  if (prepEndsAt) {
+    prepEndsAt = 0;
+    clearInterval(clockTimer);
+  }
   drillMs = (Number(load(DRILL_KEY)) || 0) * 1000;
   tickClock();
   $("practice-prompt")?.setAttribute("hidden", "");
@@ -3147,6 +3259,7 @@ const GAIN_KEY = "speech.levelGain";
 const PAUSE_KEY = "speech.pauseMs";
 const HOVER_KEY = "speech.hoverFx";
 const COUNTDOWN_KEY = "speech.timerCountdown";
+const GHOST_KEY = "speech.ghost";
 const CORRECT_KEY = "speech.accurateCorrection";
 let accurateCorrection = true;
 
@@ -3859,6 +3972,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const btn = document.querySelector<HTMLButtonElement>(`[data-progress="${p.id}"]`);
     if (btn) btn.textContent = p.total ? `${pct}%` : `${Math.round(p.done / 1e6)} MB`;
   });
+  bindToggle("set-ghost", GHOST_KEY, (on) => (ghostOn = on));
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
   bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);
 
@@ -3914,6 +4028,10 @@ window.addEventListener("DOMContentLoaded", () => {
     clickPace(e, report, paceData(), live);
   });
   $("report-body")?.addEventListener("mousemove", (e) => hoverPace(e, paceData(), live));
+  $("report-transcript")?.addEventListener("click", (e) => {
+    const ts = (e.target as Element).closest<HTMLElement>(".seg-ts");
+    if (ts) void playLine(sessionStartTs, ts, live);
+  });
 
   // Editing a saved speech updates it in place.
   scriptInput?.addEventListener("input", () => {
@@ -3979,6 +4097,8 @@ window.addEventListener("DOMContentLoaded", () => {
   histEl?.addEventListener("click", (e) => {
     const hp = histPace();
     if (!hp?.L) return;
+    const ts = (e.target as Element).closest<HTMLElement>(".rep-transcript .seg-ts");
+    if (ts) return void playLine(histPage, ts, hp.L);
     const m = (e.target as Element).closest<HTMLElement>(".moment");
     if (m) jumpInCopy(histEl, Number(m.dataset.index), Number(m.dataset.ms), hp.L);
     clickPace(e, histEl, hp.pace, hp.L);

@@ -144,8 +144,10 @@ pub struct RecordingState(pub Mutex<Option<RecordingHandle>>);
 
 /// `correct: false` skips the accurate-model pass; the fast drafts stand as final.
 /// `correction_model` is the model id (see `models`) the pass decodes with.
+/// `ts` is the session's id (its start time); the session's audio is kept as
+/// `sessions/<ts>.pcm` for line playback (see `history::session_clip`).
 #[tauri::command]
-pub fn start_recording(app: AppHandle, correct: bool, correction_model: String) -> Result<(), String> {
+pub fn start_recording(app: AppHandle, correct: bool, correction_model: String, ts: i64) -> Result<(), String> {
     let recording_state = app.state::<RecordingState>();
     let mut guard = recording_state.0.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
@@ -186,9 +188,13 @@ pub fn start_recording(app: AppHandle, correct: bool, correction_model: String) 
         vad.reset();
     }
 
+    let pcm_path = crate::history::detail_dir(&app).map(|d| d.join(format!("{ts}.pcm")));
     let app_handle = app.clone();
     let processing_thread = std::thread::spawn(move || {
-        run_processing_loop(app_handle, audio_rx, sample_rate, correction_tx)
+        let pcm = run_processing_loop(app_handle, audio_rx, sample_rate, correction_tx);
+        if let Err(e) = pcm_path.and_then(|p| std::fs::write(p, pcm).map_err(|e| e.to_string())) {
+            eprintln!("session audio: {e}");
+        }
     });
 
     *guard = Some(RecordingHandle {
@@ -523,12 +529,18 @@ fn analyze_utterance(index: u64, audio: &[f32], probs: &[f32]) -> UtteranceAnaly
     }
 }
 
+/// Returns the whole session's audio as 16 kHz mono i16 LE, on the same clock as
+/// the segments' `start_ms`/`end_ms`, so a line's slice is just its ms × 16.
+///
+/// ponytail: uncompressed, ~2 MB per minute on disk (kept for the same sessions as
+/// detail files); encode to opus if that ever bites.
 fn run_processing_loop(
     app: AppHandle,
     audio_rx: Receiver<Vec<f32>>,
     native_sample_rate: u32,
     correction_tx: Sender<CorrectionJob>,
-) {
+) -> Vec<u8> {
+    let mut pcm: Vec<u8> = Vec::new();
     let mut resampler = Resampler::new(native_sample_rate, TARGET_SAMPLE_RATE);
     let mut dc_blocker = DcBlocker::new();
     let mut pending: Vec<f32> = Vec::new();
@@ -567,6 +579,7 @@ fn run_processing_loop(
 
         while pending.len() >= FRAME_SAMPLES {
             let frame: Vec<f32> = pending.drain(0..FRAME_SAMPLES).collect();
+            pcm.extend(frame.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()));
 
             let energy: f32 = frame.iter().map(|s| s * s).sum();
             level_peak = level_peak.max((energy / frame.len() as f32).sqrt());
@@ -720,6 +733,7 @@ fn run_processing_loop(
     }
     // Dropping `correction_tx` here closes the worker's channel, which starts the
     // correction pass.
+    pcm
 }
 
 /// Background correction worker. Once capture stops, serially re-decodes each

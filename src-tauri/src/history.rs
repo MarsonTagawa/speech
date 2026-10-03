@@ -4,7 +4,8 @@
 //! by design — nothing leaves the machine.
 //!
 //! Each session also gets a detail file (`sessions/<ts>.json`: per-line timing,
-//! analysis and transcript markup) so History can redraw its full report. Those
+//! analysis and transcript markup) so History can redraw its full report, and its
+//! audio (`sessions/<ts>.pcm`, written by audio.rs) for line playback. Those
 //! are kept only for the newest `KEEP_RECENT` sessions and starred ones; older
 //! sessions fall back to what their summary holds (incl. a per-second pace series).
 //!
@@ -28,7 +29,7 @@ fn sessions_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// Sessions whose detail file survives pruning, besides starred ones.
 const KEEP_RECENT: usize = 5;
 
-fn detail_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn detail_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("sessions");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
@@ -48,13 +49,16 @@ fn detail_keep(sessions: &[Value]) -> HashSet<i64> {
     keep
 }
 
-/// Deletes detail files for sessions outside `detail_keep`.
+/// Deletes detail and audio files for sessions outside `detail_keep`. Files newer
+/// than every saved session belong to one whose save is still pending (it waits
+/// for the correction pass), so they're left alone.
 fn prune_details(app: &AppHandle, sessions: &[Value]) -> Result<(), String> {
     let keep = detail_keep(sessions);
+    let newest = sessions.iter().filter_map(|s| s["ts"].as_i64()).max().unwrap_or(i64::MIN);
     for entry in fs::read_dir(detail_dir(app)?).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
         let id = path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<i64>().ok());
-        if id.is_some_and(|id| !keep.contains(&id)) {
+        if id.is_some_and(|id| id <= newest && !keep.contains(&id)) {
             fs::remove_file(&path).map_err(|e| e.to_string())?;
         }
     }
@@ -141,6 +145,28 @@ pub fn list_sessions(app: AppHandle) -> Result<String, String> {
     serde_json::to_string(&sessions).map_err(|e| e.to_string())
 }
 
+/// The audio of `start_ms..end_ms` in the session started at `ts`, as f32 LE
+/// samples at 16 kHz (the shape `audio::stop_mic_test` returns).
+///
+/// ponytail: reads the whole file per clip (~2 MB/min); seek to the slice if
+/// long sessions make clicks feel slow.
+#[tauri::command]
+pub fn session_clip(app: AppHandle, ts: i64, start_ms: u64, end_ms: u64) -> Result<tauri::ipc::Response, String> {
+    let pcm = fs::read(detail_dir(&app)?.join(format!("{ts}.pcm")))
+        .map_err(|_| "Audio isn't kept for this session".to_string())?;
+    Ok(tauri::ipc::Response::new(pcm_slice_f32(&pcm, start_ms, end_ms)))
+}
+
+/// Slices 16 kHz i16 LE audio by ms and converts it to f32 LE bytes.
+fn pcm_slice_f32(pcm: &[u8], start_ms: u64, end_ms: u64) -> Vec<u8> {
+    let at = |ms: u64| (ms as usize * 16 * 2).min(pcm.len()); // 16 samples/ms, 2 bytes each
+    let (from, to) = (at(start_ms), at(end_ms));
+    pcm[from..to.max(from)]
+        .chunks_exact(2)
+        .flat_map(|b| (i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).to_le_bytes())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +180,17 @@ mod tests {
         let mut keep: Vec<i64> = detail_keep(&sessions).into_iter().collect();
         keep.sort_unstable();
         assert_eq!(keep, vec![2, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn slices_pcm_by_ms() {
+        // 3 ms of audio: 16 samples/ms, sample value = its ms × 0.25.
+        let pcm: Vec<u8> = (0..48).flat_map(|i| ((i / 16) as i16 * 8192).to_le_bytes()).collect();
+        let f = |b: Vec<u8>| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect() };
+        let mid = f(pcm_slice_f32(&pcm, 1, 2));
+        assert_eq!(mid.len(), 16);
+        assert!(mid.iter().all(|&s| s == 0.25));
+        assert_eq!(f(pcm_slice_f32(&pcm, 2, 99)).len(), 16); // clamped to the end
+        assert!(pcm_slice_f32(&pcm, 5, 9).is_empty()); // past the end
     }
 }

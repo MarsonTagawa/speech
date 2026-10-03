@@ -23,4 +23,8 @@ assert(pass("vary-pitch", {}));
 assert(!pass("vary-pitch", { pitchRange: 2.5 }));
 assert(pass("land-it", { uptalk: 1 }));
 assert(!pass("land-it", { uptalk: 2 }));
+assert(pass("impromptu", { durationMs: 60_000 }));
+assert(!pass("impromptu", { durationMs: 60_000, fillersPerMin: 2.5 }));
+assert(!pass("impromptu", { durationMs: 60_000, wpm: 100 }));
+assert(!pass("impromptu", {})); // 40 s voiced is under half of 90
 console.log("drills ok");

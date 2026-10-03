@@ -19,6 +19,7 @@ export interface Drill {
   goal: string;
   secs: number;
   script?: string; // read-along text; otherwise a random topic is shown
+  prep?: number; // secs of silent thinking time before recording starts on its own
   // `band` is the session's target pace range.
   judge(s: DrillStats, band: [number, number]): { pass: boolean; value: string };
 }
@@ -105,6 +106,17 @@ export const DRILLS: Drill[] = [
     secs: 45,
     // ponytail: allows one rise to absorb a misread pitch contour; tighten if detection proves clean.
     judge: (s) => ({ pass: spokeEnough(s, 45) && s.uptalk <= 1, value: `${s.uptalk} rising end${s.uptalk === 1 ? "" : "s"}` }),
+  },
+  {
+    id: "impromptu",
+    name: "Impromptu",
+    goal: "30 s to think, then 90 s on the topic — on pace, under 2 fillers/min",
+    secs: 90,
+    prep: 30,
+    judge: (s, [lo, hi]) => ({
+      pass: spokeEnough(s, 90) && s.fillersPerMin < 2 && s.wpm >= lo && s.wpm <= hi,
+      value: `${s.wpm} wpm · ${s.fillersPerMin.toFixed(1)} fillers/min`,
+    }),
   },
 ];
 

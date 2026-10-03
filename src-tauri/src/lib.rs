@@ -94,6 +94,7 @@ pub fn run() {
             history::save_session,
             history::set_session_saved,
             history::load_session_detail,
+            history::session_clip,
             history::list_sessions,
             history::clear_sessions
         ])
