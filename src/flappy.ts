@@ -206,7 +206,6 @@ export class Flappy {
     this.halo = new Halo(haloCv, false);
     this.halo.gain = 1.3;
     this.halo.maxDpr = 1;
-    this.halo.cacheEvery = 3;
     this.halo.paused = true;
     this.canvas.addEventListener("pointerdown", (e) => {
       e.preventDefault(); // keep focus where it was

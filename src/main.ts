@@ -541,7 +541,6 @@ function setLiveCoach(g: string) {
     liveHalo = new Halo(mount.querySelector("canvas")!);
     liveHalo.gain = 1.3;
     liveHalo.maxDpr = 1;
-    liveHalo.cacheEvery = 3;
     liveCoach = createAvatar(mount, { definition: strobi, defaultAnimation: "listening", size: "100%", ariaLabel: "Coach" });
   }
   liveHalo?.setMode(g ? "listening" : "idle");

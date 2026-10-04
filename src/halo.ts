@@ -100,19 +100,20 @@ export class Halo {
   private shape = new Float32Array(S).fill(1); // round until the avatar svg appears
   private shapeKey = "";
   private watch: MutationObserver;
-  // Knobs for small halos (the flappy coach): extra glow, a lower resolution
-  // cap, and the costly bloom + aberration re-rendered only every Nth frame
-  // (blitted from a cache between).
+  // Knobs for small halos (the flappy coach): extra glow and a lower resolution cap.
   gain = 1;
   maxDpr = 2;
-  cacheEvery = 1;
   paused = false;
-  private cache: HTMLCanvasElement | null = null;
-  private frameN = 0;
+  // The bloom and aberration are the same blurred outline every frame; only
+  // their alpha and (aberration) offset move. Shadow blurs are the costly part,
+  // so they're baked at alpha 1 once per outline/size and blitted: bloom ×2,
+  // the aberration's white mask, then the mask tinted per SPECTRUM colour.
+  private layers = Array.from({ length: SPECTRUM.length + 3 }, () => document.createElement("canvas"));
+  private bakedKey = "";
 
   // follow = false: keep the round body outline instead of tracking the
   // avatar svg beside the canvas (fast-flapping arms trailed as ghost arms).
-  constructor(private canvas: HTMLCanvasElement, private follow = true) {
+  constructor(private canvas: HTMLCanvasElement, follow = true) {
     this.ctx = canvas.getContext("2d");
     const loop = (now: number) => {
       const dt = Math.min(0.05, (now - this.last) / 1000);
@@ -125,7 +126,10 @@ export class Halo {
     // frame; redraw (without advancing time) the moment its paths change, so
     // the outline never trails his arms by a frame.
     this.watch = new MutationObserver(() => this.readShape() && this.step(0));
-    if (follow && canvas.parentElement) this.watch.observe(canvas.parentElement, { subtree: true, childList: true, attributeFilter: ["d"] });
+    if (follow && canvas.parentElement) {
+      this.watch.observe(canvas.parentElement, { subtree: true, childList: true, attributeFilter: ["d"] });
+      this.readShape(); // the observer catches every later change
+    }
   }
 
   // Re-reads the outline from the avatar's svg (beside the canvas); true if it changed.
@@ -135,6 +139,7 @@ export class Halo {
     if (key === this.shapeKey) return false;
     this.shapeKey = key;
     this.shape = silhouette(ds);
+    this.bakedKey = "";
     return true;
   }
 
@@ -159,6 +164,35 @@ export class Halo {
     this.watch.disconnect();
   }
 
+  private bake(w: number, h: number, dpr: number, R: number) {
+    const cx = w / 2, cy = h / 2;
+    const [b1, b2, mask, ...tints] = this.layers.map((c) => {
+      if (c.width !== this.canvas.width || c.height !== this.canvas.height) (c.width = this.canvas.width), (c.height = this.canvas.height);
+      const ctx = c.getContext("2d")!;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineJoin = "round";
+      return ctx;
+    });
+    // bloom hugging the outline: wide blurred strokes along the silhouette
+    b1.lineWidth = R * 0.5;
+    blurOutline(b1, this.shape, dpr, rgba(core, 1), R * 0.3, cx, cy, R, 0.05);
+    b2.lineWidth = R * 0.9;
+    blurOutline(b2, this.shape, dpr, rgba(cool, 1), R * 0.3, cx, cy, R, 0.3);
+    mask.lineWidth = R * 0.09;
+    blurOutline(mask, this.shape, dpr, "#fff", R * 0.035, cx, cy, R);
+    mask.fill(); // a ring nudged outward would lift off his edge; fill the gap (the rest hides behind him)
+    tints.forEach((t, i) => {
+      t.setTransform(1, 0, 0, 1, 0, 0);
+      t.drawImage(mask.canvas, 0, 0);
+      t.globalCompositeOperation = "source-in";
+      t.fillStyle = rgba(SPECTRUM[i].c, 1);
+      t.fillRect(0, 0, t.canvas.width, t.canvas.height);
+    });
+  }
+
   private step(dt: number) {
     const cv = this.canvas, ctx = this.ctx;
     const w = cv.clientWidth, h = cv.clientHeight;
@@ -168,7 +202,6 @@ export class Halo {
       cv.width = Math.round(w * dpr);
       cv.height = Math.round(h * dpr);
     }
-    const reshaped = this.follow && this.readShape();
     const target = MODES[this.mode];
     const k = 1 - Math.pow(0.001, dt);
     for (const key of ["amp", "speed", "ab", "glow"] as const) this.p[key] = lerp(this.p[key], target[key], k);
@@ -182,69 +215,47 @@ export class Halo {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const heavy = (ctx: CanvasRenderingContext2D) => {
-      ctx.globalCompositeOperation = "lighter";
-      // bloom hugging the outline: wide blurred strokes along the silhouette
-      ctx.lineJoin = "round";
-      ctx.strokeStyle = "#000"; // only the shadow shows; its alpha comes from shadowColor
-      ctx.lineWidth = R * 0.5;
-      blurOutline(ctx, this.shape, dpr, rgba(core, 0.3 * P.glow + 0.08), R * 0.3, cx, cy, R, 0.05);
-      ctx.lineWidth = R * 0.9;
-      blurOutline(ctx, this.shape, dpr, rgba(cool, 0.04 * P.glow), R * 0.3, cx, cy, R, 0.3);
-
-      // aberration: the prism as outlines, each nudged along a direction that
-      // orbits the body, so the colour split travels round him
-      const th = this.phase * TAU * 0.8;
-      const ab = P.ab * PROPS.aberration * R * 0.03;
-      ctx.lineWidth = R * 0.09;
-      for (const f of SPECTRUM) {
-        blurOutline(ctx, this.shape, dpr, rgba(f.c, f.a), R * 0.035, cx + Math.cos(th) * f.o * ab, cy + Math.sin(th) * f.o * ab, R);
-        ctx.fill(); // a ring nudged outward would lift off his edge; fill the gap (the rest hides behind him)
-      }
-      ctx.shadowColor = "transparent";
-      ctx.shadowOffsetX = 0;
-      ctx.globalCompositeOperation = "source-over";
-    };
-    if (this.cacheEvery > 1) {
-      const cc = (this.cache ??= document.createElement("canvas"));
-      const fresh = cc.width !== cv.width || cc.height !== cv.height;
-      if (fresh) (cc.width = cv.width), (cc.height = cv.height);
-      if (fresh || reshaped || this.frameN++ % this.cacheEvery === 0) {
-        const cctx = cc.getContext("2d")!;
-        cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        cctx.clearRect(0, 0, w, h);
-        heavy(cctx);
-      }
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(cc, 0, 0);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    } else heavy(ctx);
+    const key = cv.width + "," + cv.height + "," + R;
+    if (this.bakedKey !== key) {
+      this.bake(w, h, dpr, R);
+      this.bakedKey = key;
+    }
     ctx.globalCompositeOperation = "lighter";
+    const blit = (i: number, alpha: number, dx = 0, dy = 0) => {
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(this.layers[i], dx, dy, w, h);
+    };
+    blit(0, 0.3 * P.glow + 0.08);
+    blit(1, 0.04 * P.glow);
+    // aberration: the prism as outlines, each nudged along a direction that
+    // orbits the body, so the colour split travels round him
+    const th = this.phase * TAU * 0.8;
+    const ab = P.ab * PROPS.aberration * R * 0.03;
+    SPECTRUM.forEach((f, i) => blit(i + 3, f.a, Math.cos(th) * f.o * ab, Math.sin(th) * f.o * ab));
+    ctx.globalAlpha = 1;
 
     // wisps: the ribbon's filaments bent into arcs, alternate ones counter-
     // rotating, radius wobbling with the mode's amplitude, faded at both ends
-    const N = 48;
+    // (a conic gradient round the centre, so each is one stroke)
+    const N = 48, G = 8;
     for (let j = 0; j < PROPS.strands; j++) {
       const dir = j % 2 ? -1 : 1;
       const a0 = dir * this.phase * TAU * (0.55 + j * 0.12) + j * 1.9;
       const len = Math.PI * (0.55 + 0.25 * Math.sin(this.phase * 3 + j));
       const c = TINTS[j % TINTS.length];
+      const fade = ctx.createConicGradient(a0, cx, cy);
+      for (let g = 0; g <= G; g++) fade.addColorStop(((g / G) * len) / TAU, rgba(c, (0.75 + 0.25 * b) * Math.sin((Math.PI * g) / G)));
+      ctx.strokeStyle = fade;
       ctx.lineWidth = Math.max(0.7, R * 0.035 * (0.6 + 0.4 * ((j + 1) % 2)) * (1 + 1.5 * b));
-      let px = 0, py = 0;
+      ctx.beginPath();
       for (let s = 0; s <= N; s++) {
-        const u = s / N, a = a0 + u * len;
+        const a = a0 + (s / N) * len;
         const r = R * (1.12 + j * 0.05 + (0.1 + P.amp * 0.6) * Math.sin(a * 3 + this.phase * TAU * 1.3 + j * 0.7));
         const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-        if (s) {
-          ctx.strokeStyle = rgba(c, (0.75 + 0.25 * b) * Math.sin(Math.PI * u));
-          ctx.beginPath();
-          ctx.moveTo(px, py);
-          ctx.lineTo(x, y);
-          ctx.stroke();
-        }
-        px = x;
-        py = y;
+        if (s) ctx.lineTo(x, y);
+        else ctx.moveTo(x, y);
       }
+      ctx.stroke();
     }
     // sparks: fly out from the outline, slowing and shrinking as they fade
     for (const sp of this.sparks) {
