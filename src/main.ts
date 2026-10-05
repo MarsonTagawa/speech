@@ -524,31 +524,8 @@ function setLiveRing(score: number | null) {
   ring.style.setProperty("--c", g ? GRADE_COLOR[g] : "#30d158");
   setText("live-score", score === null ? "–" : String(score));
   setText("live-grade", g);
-  setLiveCoach(g);
   ring.dataset.tip = score === null ? "Delivery score — appears once you start speaking" : `Delivery score — ${score} of 100 so far, grade ${g}`;
 }
-
-// Live coach: an avatar in the transcript corner whose loop follows the live grade.
-const MOOD: Record<string, AnimationKey> = { "": "listening", A: "excited", B: "happy", C: "listening", D: "confused", E: "sad" };
-let liveCoach: ReturnType<typeof createAvatar> | null = null;
-let liveHalo: Halo | null = null;
-let liveMood: AnimationKey = "listening";
-function setLiveCoach(g: string) {
-  const mount = $("live-coach");
-  if (!mount) return;
-  if (!liveCoach) {
-    // Always on screen while live: the flappy halo's cheaper settings.
-    liveHalo = new Halo(mount.querySelector("canvas")!);
-    liveHalo.gain = 1.3;
-    liveHalo.maxDpr = 1;
-    liveCoach = createAvatar(mount, { definition: strobi, defaultAnimation: "listening", size: "100%", ariaLabel: "Coach" });
-  }
-  liveHalo?.setMode(g ? "listening" : "idle");
-  if (MOOD[g] === liveMood) return;
-  liveMood = MOOD[g];
-  if (!liveFollow.near) liveCoach.play(liveMood); // else he plays it once the cursor leaves
-}
-const liveFollow = coachFollower(() => $("live-coach"), () => liveCoach, () => liveHalo, () => liveMood, 1.5);
 
 // --- Per-utterance waveform --------------------------------------------------
 // A small amplitude sparkline drawn under each committed line, with the VAD-
@@ -2568,7 +2545,7 @@ function coachSpeak() {
 // round with him. When it leaves, he turns straight to his animation's opening
 // face and the animation picks up from there. Clicking him (boop): he swells
 // up, the halo's ribbons flare and spark, and his eyes go joyful for a moment
-// while he keeps looking at the cursor. One follower per coach (report, live).
+// while he keeps looking at the cursor.
 const strobiDef = strobi as unknown as AvatarDefinition;
 const NEUTRAL = expressionFromDefinition("neutral", strobiDef.expressions.neutral);
 const JOYFUL = expressionFromDefinition("joyful-wide", strobiDef.expressions["joyful-wide"]);
@@ -3512,7 +3489,6 @@ const GAIN_KEY = "speech.levelGain";
 const PAUSE_KEY = "speech.pauseMs";
 const HOVER_KEY = "speech.hoverFx";
 const COUNTDOWN_KEY = "speech.timerCountdown";
-const COACH_KEY = "speech.coachPosition";
 const GHOST_KEY = "speech.ghost";
 const RIBBON_KEY = "speech.ribbon";
 const CORRECT_KEY = "speech.accurateCorrection";
@@ -4304,26 +4280,8 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!ghostTimes) moveGhost(-1);
   });
   $("ghost-btn")?.addEventListener("click", () => $("set-ghost")?.click());
-  // Live coach in the transcript pane or the ribbon (back in the transcript while the ribbon's hidden).
-  const coachSel = $<HTMLSelectElement>("set-coach");
-  const placeCoach = () => {
-    const inRibbon = coachSel?.value === "ribbon" && !document.body.classList.contains("no-ribbon");
-    document.body.classList.toggle("coach-in-ribbon", inRibbon);
-    const coach = $("live-coach");
-    const home = document.querySelector(inRibbon ? ".scope" : ".tpane");
-    if (coach && home && coach.parentElement !== home) home.append(coach); // last in .tpane: over the script pane
-  };
-  if (coachSel) {
-    coachSel.value = load(COACH_KEY) ?? "transcript";
-    syncSelect(coachSel);
-    coachSel.addEventListener("change", () => {
-      save(COACH_KEY, coachSel.value);
-      placeCoach();
-    });
-  }
   const setRibbon = (on: boolean) => {
     document.body.classList.toggle("no-ribbon", !on);
-    placeCoach();
     const btn = $("ribbon-btn");
     btn?.setAttribute("aria-label", on ? "Hide ribbon" : "Show ribbon");
     if (btn) btn.dataset.tip = on ? "Hide the ribbon" : "Show the ribbon";
@@ -4379,10 +4337,8 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   window.addEventListener("pointermove", (e) => {
     reportFollow.lookAt(e);
-    liveFollow.lookAt(e);
   });
   coachEl?.querySelector(".coach-avatar")?.addEventListener("click", reportFollow.boop);
-  $("live-coach")?.addEventListener("click", liveFollow.boop);
   $("report-body")?.addEventListener("click", (e) => {
     const star = (e.target as Element).closest<HTMLElement>("[data-star]");
     if (star) return void toggleSaved(Number(star.dataset.star));

@@ -624,47 +624,8 @@ body.timer-countdown.has-timer .countdown {
   position: absolute;
   inset: 0;
   overflow-y: auto;
-  padding: 22px 96px 26px 34px;
+  padding: 22px 34px 26px;
   scrollbar-width: none;
-}
-/* Live coach: top-right of the transcript pane, over the script pane (after
-   it in the DOM) but under the correcting overlay. The transcript, prompt and
-   script head pad their right side to keep clear of him. */
-.live-coach {
-  position: absolute;
-  top: 12px;
-  right: 20px;
-  z-index: 4;
-  width: 64px;
-  height: 64px;
-  cursor: pointer; /* click for a boop */
-}
-.live-coach .bs-avatar { position: relative; } /* above the halo canvas */
-/* In the ribbon (Settings): right edge of the scope, between the clock and
-   the context picker, shrinking with a short scope. Nothing to keep clear of
-   in the transcript then. */
-body.coach-in-ribbon .live-coach {
-  top: 0;
-  bottom: 0;
-  margin: auto 0; /* centred without transform: the follower's lean owns it */
-  right: 18px;
-  width: auto;
-  height: min(64px, 40%);
-  aspect-ratio: 1;
-}
-/* Out of the way while the correcting overlay (with its own coach) is up.
-   Hidden, his halo's canvas has no size, so Halo.step skips the frame: the
-   halo is paused too. */
-body:has(#correct-bar:not([hidden])) .live-coach {
-  display: none;
-}
-body.coach-in-ribbon .transcript,
-body.coach-in-ribbon .practice-prompt {
-  padding-right: 34px;
-}
-body.coach-in-ribbon .script-head {
-  min-height: 0;
-  padding-right: 0;
 }
 .transcript::-webkit-scrollbar {
   width: 0;
@@ -681,7 +642,7 @@ body.coach-in-ribbon .script-head {
   right: 0;
   z-index: 3;
   margin: 0;
-  padding: 12px 96px 12px 34px;
+  padding: 12px 34px;
   font-size: 13px;
   color: var(--ink);
   background: var(--pane);
@@ -847,8 +808,6 @@ body.coach-in-ribbon .script-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 58px; /* level with the live coach's bottom edge */
-  padding-right: 82px; /* tools sit left of him, clear of his halo */
 }
 
 .script-tools {
