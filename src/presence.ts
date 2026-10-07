@@ -21,6 +21,7 @@ export const PRESENCE_TUNING = {
   motion: [0.15, 0.6], // shoulder widths travelled per second
   gestureStep: 0.04, // wrist travel per frame (shoulder widths) that counts as gesturing
   gestureBand: [0.2, 0.6], // gesturing fraction that scores 100
+  minShoulder: 0.05, // shoulder width below this fraction of the frame (side-on) is too unreliable to scale by
   maxGapMs: 500, // frames further apart than this aren't compared
   minMs: 3000, // shorter sessions aren't scored
   awayCueMs: 2000, // live "look at the camera" cue after this long looking away
@@ -38,8 +39,9 @@ export interface Frame {
   looking: boolean; // face toward the camera and eyes centred
   smile: number;
   brows: number;
-  body: XY[] | null; // [shoulder midpoint, nose], in shoulder widths
-  wrists: XY[]; // in shoulder widths; empty without a body to scale by
+  body: XY[] | null; // [shoulder midpoint, nose], in pixels
+  wrists: XY[]; // in pixels; empty without a body to scale by
+  sw: number; // shoulder width in pixels; 0 without a body
 }
 
 // One frame of MediaPipe output, already unpacked by camera.ts.
@@ -72,22 +74,24 @@ export function toFrame(r: RawResults, w: number, h: number, t: number): Frame {
   const smile = b ? ((b.mouthSmileLeft ?? 0) + (b.mouthSmileRight ?? 0)) / 2 : 0;
   const brows = b ? Math.max(b.browInnerUp ?? 0, b.browOuterUpLeft ?? 0, b.browOuterUpRight ?? 0) : 0;
 
-  // Pixels so x and y share a unit, then shoulder widths so distance from the
-  // camera doesn't change the numbers.
+  // Pixels so x and y share a unit. summarize scales movement by the session's
+  // median shoulder width, not each frame's: per-frame widths wobble, and
+  // dividing absolute positions by them turns that wobble into fake motion.
   let body: XY[] | null = null;
   let wrists: XY[] = [];
+  let sw = 0;
   const p = r.pose;
   if (p && p.length > 12) {
     const px = (q: Pt): XY => [q.x * w, q.y * h];
     const [l, rs, nose] = [px(p[11]), px(p[12]), px(p[0])];
-    const sw = Math.hypot(l[0] - rs[0], l[1] - rs[1]);
-    if (sw >= 1) {
-      const n = (q: XY): XY => [q[0] / sw, q[1] / sw];
-      body = [n([(l[0] + rs[0]) / 2, (l[1] + rs[1]) / 2]), n(nose)];
-      wrists = r.wrists.map((q) => n(px(q)));
+    const width = Math.hypot(l[0] - rs[0], l[1] - rs[1]);
+    if (width >= T.minShoulder * w) {
+      sw = width;
+      body = [[(l[0] + rs[0]) / 2, (l[1] + rs[1]) / 2], nose];
+      wrists = r.wrists.map(px);
     }
   }
-  return { t, face: !!b, looking, smile, brows, body, wrists };
+  return { t, face: !!b, looking, smile, brows, body, wrists, sw };
 }
 
 export interface PresenceScores {
@@ -140,6 +144,10 @@ export function summarize(frames: Frame[], opts: { scriptOpen: boolean }): Prese
   const spreads = [...windows.values()].filter((w) => w.length >= 3).map(sd);
   const exprRange = mean(spreads);
 
+  // Movement in shoulder widths, using the session's median width so distance
+  // from the camera doesn't matter but frame-to-frame width noise does not count.
+  const widths = frames.filter((f) => f.body).map((f) => f.sw).sort((x, y) => x - y);
+  const scale = widths.length ? widths[widths.length >> 1] : 1;
   let travelled = 0;
   let secs = 0;
   let pairs = 0;
@@ -150,8 +158,8 @@ export function summarize(frames: Frame[], opts: { scriptOpen: boolean }): Prese
     if (!a.body || !b.body || b.t - a.t > T.maxGapMs) continue;
     pairs++;
     secs += (b.t - a.t) / 1000;
-    travelled += mean(b.body.map((q, j) => dist(q, a.body![j])));
-    if (a.wrists.length && b.wrists.some((w) => Math.min(...a.wrists.map((v) => dist(w, v))) > T.gestureStep)) gesturing++;
+    travelled += mean(b.body.map((q, j) => dist(q, a.body![j]))) / scale;
+    if (a.wrists.length && b.wrists.some((w) => Math.min(...a.wrists.map((v) => dist(w, v))) / scale > T.gestureStep)) gesturing++;
   }
   const motion = secs > 0 ? travelled / secs : 0;
   const gestureFrac = pairs ? gesturing / pairs : 0;
@@ -186,4 +194,13 @@ export function weakestCue(p: Presence): string {
   ];
   const worst = cues.filter((c): c is [number, string] => c[0] !== null).sort((a, b) => a[0] - b[0])[0];
   return worst && worst[0] < 70 ? worst[1] : "looking good";
+}
+
+// The live card's sub-line. No "look at the camera" while a script is open:
+// reading looks down, and eye contact isn't scored then anyway.
+export function liveCue(frames: Frame[], opts: { recording: boolean; scriptOpen: boolean }): string {
+  if (!opts.recording) return "camera on";
+  if (!opts.scriptOpen && awayMs(frames) > PRESENCE_TUNING.awayCueMs) return "look at the camera";
+  const p = summarize(frames, { scriptOpen: opts.scriptOpen });
+  return p ? weakestCue(p) : "warming up…";
 }

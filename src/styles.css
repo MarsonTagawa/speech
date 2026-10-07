@@ -2338,8 +2338,11 @@ body.snapping .shot-btn { visibility: hidden; }
    recorded with it), adding one column to the dock/tiles grids. */
 .self-view {
   display: block;
-  width: 160px;
-  height: 90px;
+  /* Whatever the scope (same formula as .scope's height) leaves below the
+     clock + rms (12 + 44 + 8 px) and above the preset control (~40 px). */
+  height: clamp(0px, calc(clamp(96px, min(34vh, 26vw), 252px) - 104px), 90px);
+  width: auto;
+  aspect-ratio: 16 / 9;
   margin: 8px 0 0 auto;
   object-fit: cover;
   border-radius: 8px;
@@ -2387,13 +2390,19 @@ body.snapping .shot-btn { visibility: hidden; }
   .tiles.cam {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  /* words + presence pair up; pace keeps its full row */
-  .camera-on .dock > .card:nth-child(n + 6):not(.card-pace),
-  .tiles.cam > .tile:last-child {
+  /* plain pairs (undo the 900px spans); pace keeps its full row */
+  .camera-on .dock > .card:nth-child(n),
+  .tiles.cam > .tile:nth-child(n) {
     grid-column: auto;
   }
+  .camera-on .dock > .card.card-pace {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Short windows: the scope is a 60 px strip with the clock centred in it. */
+@media (max-height: 480px) {
   .self-view {
-    width: 112px;
-    height: 63px;
+    display: none;
   }
 }

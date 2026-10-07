@@ -14,7 +14,7 @@ import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
-import { scoreLinear, summarize, awayMs, weakestCue, PRESENCE_TUNING, type Frame, type Presence } from "./presence";
+import { scoreLinear, summarize, liveCue, type Frame, type Presence } from "./presence";
 import { startCamera, stopCamera } from "./camera";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
@@ -1849,8 +1849,7 @@ function renderPresenceCard() {
   const p = summarize(presenceFrames, { scriptOpen: scriptUsed });
   setText("stat-eye", p ? String(Math.round(p.eyeContact * 100)) : "–");
   setWidth("eye-bar", p ? p.eyeContact : 0);
-  const away = recording && awayMs(presenceFrames) > PRESENCE_TUNING.awayCueMs;
-  setText("presence-sub", !recording ? "camera on" : away ? "look at the camera" : p ? weakestCue(p) : "warming up…");
+  setText("presence-sub", liveCue(presenceFrames, { recording, scriptOpen: scriptUsed }));
 }
 
 async function setCamera(on: boolean) {

@@ -1,6 +1,6 @@
 // Run: bun src/presence.check.ts
 import assert from "node:assert";
-import { headAngles, toFrame, scoreLinear, summarize, gestureScore, awayMs, weakestCue, type RawResults, type Frame } from "./presence";
+import { headAngles, toFrame, scoreLinear, summarize, gestureScore, awayMs, weakestCue, liveCue, type RawResults, type Frame } from "./presence";
 
 const near = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 const rad = (d: number) => (d * Math.PI) / 180;
@@ -38,7 +38,7 @@ pose[12] = { x: 0.6, y: 0.5 }; // right shoulder
 const raw = (o: Partial<RawResults> = {}): RawResults => ({ blend: facing, matrix: yawM(5), pose, wrists: [], ...o });
 
 const none = toFrame(raw({ blend: null, matrix: null, pose: null }), 640, 360, 0);
-assert.deepStrictEqual(none, { t: 0, face: false, looking: false, smile: 0, brows: 0, body: null, wrists: [] });
+assert.deepStrictEqual(none, { t: 0, face: false, looking: false, smile: 0, brows: 0, body: null, wrists: [], sw: 0 });
 
 const f = toFrame(raw({ wrists: [{ x: 0.5, y: 0.8 }] }), 640, 360, 42);
 assert.equal(f.t, 42);
@@ -46,11 +46,12 @@ assert.equal(f.face, true);
 assert.equal(f.looking, true); // 5° yaw, eyes 0.2 < 0.5
 near(f.smile, 0.5);
 near(f.brows, 0.3);
-// shoulders 128 px apart; midpoint (320,180) px → (2.5, 1.40625) shoulder widths
-near(f.body![0][0], 2.5);
-near(f.body![0][1], 1.40625);
-near(f.body![1][1], 108 / 128); // nose y = 0.3·360
-near(f.wrists[0][1], 288 / 128); // wrist y = 0.8·360
+// shoulders 128 px apart, midpoint (320,180) px; points stay in pixels
+near(f.sw, 128);
+near(f.body![0][0], 320);
+near(f.body![0][1], 180);
+near(f.body![1][1], 108); // nose y = 0.3·360
+near(f.wrists[0][1], 288); // wrist y = 0.8·360
 
 assert.equal(toFrame(raw({ matrix: yawM(30) }), 640, 360, 0).looking, false); // head turned
 assert.equal(toFrame(raw({ blend: { ...facing, eyeLookOutLeft: 0.7 } }), 640, 360, 0).looking, false); // eyes away
@@ -65,7 +66,7 @@ assert.deepStrictEqual(d.wrists, []);
 
 // --- summarize ------------------------------------------------------------
 const STEP = 100; // 10 fps keeps the expected timings round
-const F = (t: number, o: Partial<Frame> = {}): Frame => ({ t, face: true, looking: true, smile: 0, brows: 0, body: [[2.5, 1.4], [2.5, 0.8]], wrists: [], ...o });
+const F = (t: number, o: Partial<Frame> = {}): Frame => ({ t, face: true, looking: true, smile: 0, brows: 0, body: [[2.5, 1.4], [2.5, 0.8]], wrists: [], sw: 1, ...o });
 const frames = (secs: number, make: (t: number, i: number) => Partial<Frame> = () => ({})): Frame[] =>
   Array.from({ length: (secs * 1000) / STEP + 1 }, (_, i) => F(i * STEP, make(i * STEP, i)));
 const open = { scriptOpen: false };
@@ -139,5 +140,35 @@ assert.equal(awayMs(frames(3, () => ({ looking: false }))), 3000);
 assert.equal(weakestCue(steady), "smile more"); // expr 0 and gesture 0 tie → first listed (expr)
 assert.equal(weakestCue(lively), "use your hands");
 assert.equal(weakestCue(summarize(frames(10, (_, i) => ({ smile: i % 2 ? 0.6 : 0, wrists: [[1 + (i % 4 < 2 ? 0 : 0.1), 2]] })), open)!), "looking good");
+
+// --- review fix: shoulder-width jitter isn't motion -------------------------
+// A perfectly still speaker whose detected shoulder width wobbles ±2% frame to
+// frame (landmark noise / leaning) must not read as movement or gesturing.
+const stillRaw = (i: number): RawResults => {
+  const half = 0.1 * (1 + (i % 2 ? 0.02 : -0.02)); // shoulders ±2% around a fixed midpoint
+  const p = pose.map((q) => ({ ...q }));
+  p[11] = { x: 0.5 - half, y: 0.5 };
+  p[12] = { x: 0.5 + half, y: 0.5 };
+  return { blend: facing, matrix: yawM(0), pose: p, wrists: [{ x: 0.7, y: 0.8 }] };
+};
+const stillFrames = Array.from({ length: 101 }, (_, i) => toFrame(stillRaw(i), 640, 360, i * STEP));
+const stillP = summarize(stillFrames, open)!;
+assert.ok(stillP.motion < 0.01, `still speaker motion ${stillP.motion}`);
+assert.equal(stillP.gestureFrac, 0);
+
+// Near side-on: shoulders 10 px apart (< 5% of the frame width) → too unreliable to scale by.
+const sideOn = pose.map((q) => ({ ...q }));
+sideOn[11] = { x: 0.5, y: 0.5 };
+sideOn[12] = { x: 0.5 + 10 / 640, y: 0.5 };
+assert.equal(toFrame(raw({ pose: sideOn }), 640, 360, 0).body, null);
+
+// --- review fix: live cue -------------------------------------------------
+// Looking away for 3 s: nag only when eye contact is actually scored.
+const lookedAway = frames(10, (t) => ({ looking: t < 7000 }));
+assert.equal(liveCue(lookedAway, { recording: true, scriptOpen: false }), "look at the camera");
+assert.notEqual(liveCue(lookedAway, { recording: true, scriptOpen: true }), "look at the camera"); // reading a script looks down
+assert.equal(liveCue(lookedAway, { recording: false, scriptOpen: false }), "camera on");
+assert.equal(liveCue(frames(2), { recording: true, scriptOpen: false }), "warming up…");
+assert.equal(liveCue(frames(10), { recording: true, scriptOpen: false }), "smile more");
 
 console.log("presence ok");
