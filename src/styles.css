@@ -2332,3 +2332,68 @@ body.no-hover-fx #shards {
 .shot-btn.done { color: var(--green); }
 body.snapping #tip,
 body.snapping .shot-btn { visibility: hidden; }
+
+/* --- Camera / presence ------------------------------------------------------
+   The Presence card and tile only exist with the camera on (or on sessions
+   recorded with it), adding one column to the dock/tiles grids. */
+.self-view {
+  display: block;
+  width: 160px;
+  height: 90px;
+  margin: 8px 0 0 auto;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 0.5px solid var(--edge);
+  background: #000;
+  transform: scaleX(-1); /* mirror, like every video-call self view */
+}
+.self-view[hidden],
+.dock > .card[hidden] {
+  display: none;
+}
+.camera-on .dock {
+  grid-template-columns: 44px repeat(6, minmax(0, 1fr)) minmax(0, 1.5fr);
+}
+.tiles.cam {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.tile-rows {
+  margin-top: 6px;
+  display: grid;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+@media (max-width: 900px) {
+  .camera-on .dock {
+    grid-template-columns: 44px repeat(6, minmax(0, 1fr));
+  }
+  .tiles.cam {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  /* six cards → two rows of three */
+  .camera-on .dock > :nth-child(n + 5),
+  .tiles.cam > .tile:nth-child(n + 4) {
+    grid-column: span 2;
+  }
+  .camera-on .dock > .card-pace {
+    grid-column: 2 / -1;
+  }
+}
+
+@media (max-width: 600px) {
+  .camera-on .dock,
+  .tiles.cam {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* words + presence pair up; pace keeps its full row */
+  .camera-on .dock > .card:nth-child(n + 6):not(.card-pace),
+  .tiles.cam > .tile:last-child {
+    grid-column: auto;
+  }
+  .self-view {
+    width: 112px;
+    height: 63px;
+  }
+}

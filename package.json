@@ -13,6 +13,7 @@
     "@bible-strong/avatar-core": "^0.1.0",
     "@bible-strong/avatar-web": "^0.1.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@mediapipe/tasks-vision": "1.1.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "compromise": "^14.16.0"

@@ -46,6 +46,22 @@ data dir (`<app data>/models/`). All whisper models run on the GPU (Vulkan); the
 live model is warmed up at launch, the correction model is loaded per pass and
 freed when it's done.
 
+The camera's presence grading (optional) needs MediaPipe's wasm and three
+models (~43 MB) in `public/mediapipe/`:
+
+```sh
+mkdir -p public/mediapipe
+W=node_modules/@mediapipe/tasks-vision/wasm
+cp $W/vision_wasm_internal.* $W/vision_wasm_nosimd_internal.* public/mediapipe/
+M=https://storage.googleapis.com/mediapipe-models
+curl -L -o public/mediapipe/face_landmarker.task $M/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+curl -L -o public/mediapipe/pose_landmarker_lite.task $M/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+curl -L -o public/mediapipe/hand_landmarker.task $M/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+```
+
+Without them the camera toggle reports "Camera models missing" and the app
+works audio-only.
+
 ## Develop
 
 ```sh

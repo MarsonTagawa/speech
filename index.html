@@ -57,6 +57,7 @@
           <div class="scope-tr">
             <div id="clock" class="clock" data-tip="Elapsed session time">0:00</div>
             <div id="rms-label" class="sub" data-tip="Current mic signal level (RMS) and model sample rate">rms 0.00 · 16 kHz</div>
+            <video id="self-view" class="self-view" autoplay playsinline muted hidden></video>
           </div>
           <div class="scope-bl sub">
             <span id="model-chain" data-tip="Model chain — the live model streams text instantly, the correction model re-decodes it for accuracy (change in Settings)">tiny.en → medium.en</span>
@@ -83,6 +84,9 @@
           </button>
           <button id="script-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Script read-along" data-tip="Script read-along — paste a script and track your words against it">
             <svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M16 13H8" /><path d="M16 17H8" /><path d="M10 9H8" /></svg>
+          </button>
+          <button id="camera-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Camera" data-tip="Camera — grade eye contact, expression, stillness and gestures">
+            <svg viewBox="0 0 24 24"><path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11" /><rect x="2" y="6" width="14" height="12" rx="2" /></svg>
           </button>
           <button id="ribbon-btn" class="tool-btn icon" type="button" aria-label="Hide ribbon" data-tip="Hide the ribbon">
             <svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6" /></svg>
@@ -176,6 +180,11 @@
             <div class="card-top"><span id="stat-words" class="big">0</span><span class="unit" data-tip="Total words spoken">words</span></div>
             <div class="track"><div id="words-bar" class="fill ink-bg"></div></div>
             <div id="words-sub" class="card-sub">0:00 speaking</div>
+          </div>
+          <div id="presence-card" class="card" hidden>
+            <div class="card-top"><span id="stat-eye" class="big">–</span><span class="unit" data-tip="Eye contact — share of this session spent looking at the camera">% eye contact</span></div>
+            <div class="track"><div id="eye-bar" class="fill ink-bg"></div></div>
+            <div id="presence-sub" class="card-sub">camera on</div>
           </div>
           <div class="card card-pace">
             <div class="pace-col">

@@ -14,7 +14,8 @@ import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
-import { scoreLinear } from "./presence";
+import { scoreLinear, summarize, awayMs, weakestCue, PRESENCE_TUNING, type Frame } from "./presence";
+import { startCamera, stopCamera } from "./camera";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
@@ -67,6 +68,10 @@ interface UtteranceAnalysis {
 let INTER_PAUSE_MS = 600;
 
 let recording = false;
+// Camera presence (camera.ts / presence.ts): this session's frames, kept only
+// while recording; summarized into the score by computeSummary.
+let presenceFrames: Frame[] = [];
+let presenceDrawnAt = 0;
 let recordBtn: HTMLButtonElement | null;
 let statusEl: HTMLElement | null;
 let transcriptEl: HTMLElement | null;
@@ -1829,7 +1834,48 @@ function resetSession() {
 // Empties the live view — transcript, metrics, clock, read-along highlights.
 // The backend restarts utterance indices each session, so stale line
 // references are dropped too and a new session's index 1 starts a fresh line.
+const CAMERA_KEY = "speech.camera";
+
+function onPresenceFrame(f: Frame) {
+  if (recording) presenceFrames.push(f);
+  if (f.t - presenceDrawnAt >= 500) {
+    presenceDrawnAt = f.t;
+    renderPresenceCard();
+  }
+}
+
+// Live Presence card: eye contact so far, plus one nudge.
+function renderPresenceCard() {
+  const p = summarize(presenceFrames, { scriptOpen: scriptUsed });
+  setText("stat-eye", p ? String(Math.round(p.eyeContact * 100)) : "–");
+  setWidth("eye-bar", p ? p.eyeContact : 0);
+  const away = recording && awayMs(presenceFrames) > PRESENCE_TUNING.awayCueMs;
+  setText("presence-sub", !recording ? "camera on" : away ? "look at the camera" : p ? weakestCue(p) : "warming up…");
+}
+
+async function setCamera(on: boolean) {
+  const video = $<HTMLVideoElement>("self-view");
+  $("camera-btn")?.setAttribute("aria-pressed", String(on));
+  document.body.classList.toggle("camera-on", on);
+  $("presence-card")?.toggleAttribute("hidden", !on);
+  video?.toggleAttribute("hidden", !on);
+  save(CAMERA_KEY, on ? "1" : "0");
+  if (!on || !video) {
+    stopCamera();
+    return;
+  }
+  try {
+    await startCamera(video, onPresenceFrame, () => setCamera(false));
+    renderPresenceCard();
+  } catch (e) {
+    await setCamera(false);
+    appendError(`Camera unavailable — ${e instanceof Error ? e.message : e}`);
+    if (!recording) setStatus("Error"); // don't clobber "Recording"
+  }
+}
+
 function clearLive() {
+  presenceFrames = [];
   segmentEls.clear();
   previewChunks.clear();
   finalized.clear();
@@ -1843,6 +1889,7 @@ function clearLive() {
   if (transcriptEl)
     transcriptEl.innerHTML =
       '<p class="placeholder">Your transcript will appear here as you speak.</p>';
+  if (document.body.classList.contains("camera-on")) renderPresenceCard();
 }
 
 function toggleScript(open?: boolean) {
@@ -4284,6 +4331,8 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   setRibbon(load(RIBBON_KEY) !== "0");
   $("ribbon-btn")?.addEventListener("click", () => setRibbon(document.body.classList.contains("no-ribbon")));
+  $("camera-btn")?.addEventListener("click", () => setCamera(!document.body.classList.contains("camera-on")));
+  if (load(CAMERA_KEY) === "1") void setCamera(true);
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
   bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);
 
