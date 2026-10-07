@@ -14,7 +14,7 @@ import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
-import { scoreLinear, summarize, awayMs, weakestCue, PRESENCE_TUNING, type Frame } from "./presence";
+import { scoreLinear, summarize, awayMs, weakestCue, PRESENCE_TUNING, type Frame, type Presence } from "./presence";
 import { startCamera, stopCamera } from "./camera";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
@@ -1951,6 +1951,7 @@ interface Scores {
   pitch: number;
   volume: number;
   articulation: number | null; // null when no script was used
+  presence?: number | null; // null/absent when the camera was off
   overall: number;
 }
 
@@ -1979,6 +1980,7 @@ interface SessionSummary {
   saved?: boolean; // starred in Stats/History
   pace?: PaceData; // absent on sessions saved before it was kept
   crutch?: Crutch; // word habits; absent on sessions saved before it was tracked
+  presence?: Presence; // camera metrics; absent when the camera was off
   scores: Scores;
 }
 
@@ -2027,7 +2029,7 @@ function scorePace(wpm: number, low: number, high: number): number {
 
 // Relative weights of each dimension in the composite. Fillers and articulation
 // (a graded read-along) weigh most; pauses/volume are secondary.
-const SCORE_WEIGHTS = { pace: 1, fillers: 1.5, pauses: 0.75, pitch: 1, volume: 0.75, articulation: 1.5 };
+const SCORE_WEIGHTS = { pace: 1, fillers: 1.5, pauses: 0.75, pitch: 1, volume: 0.75, articulation: 1.5, presence: 1.5 };
 
 function computeSummary(): SessionSummary {
   const minutes = speakingMs / 60000;
@@ -2065,6 +2067,7 @@ function computeSummary(): SessionSummary {
   const finish = scoreLinear(trailingOff, 0.9, 0.4);
   const volume = Math.round((consistency + finish) / 2);
   const articulation = script ? script.accuracy : null;
+  const presence = summarize(presenceFrames, { scriptOpen: scriptUsed });
 
   const parts: Array<{ s: number; w: number }> = [
     { s: pace, w: SCORE_WEIGHTS.pace },
@@ -2074,10 +2077,11 @@ function computeSummary(): SessionSummary {
     { s: volume, w: SCORE_WEIGHTS.volume },
   ];
   if (articulation !== null) parts.push({ s: articulation, w: SCORE_WEIGHTS.articulation });
+  if (presence) parts.push({ s: presence.score, w: SCORE_WEIGHTS.presence });
   const wsum = parts.reduce((a, p) => a + p.w, 0);
   const overall = Math.round(parts.reduce((a, p) => a + p.s * p.w, 0) / wsum);
 
-  const scores: Scores = { pace, fillers, pauses: pausesScore, pitch, volume, articulation, overall };
+  const scores: Scores = { pace, fillers, pauses: pausesScore, pitch, volume, articulation, presence: presence?.score ?? null, overall };
   return {
     ts: sessionStartTs,
     durationMs: speakingMs,
@@ -2100,6 +2104,7 @@ function computeSummary(): SessionSummary {
     memory: script && sessionMemory ? sessionMemory : undefined,
     saved: currentSaved || undefined,
     crutch: crutch(spokenWords()),
+    presence: presence ?? undefined,
     scores,
   };
 }
