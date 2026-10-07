@@ -2153,6 +2153,22 @@ function generateTips(s: SessionSummary): Tip[] {
   if (s.script)
     push(s.script.accuracy, SCORE_WEIGHTS.articulation, `You matched ${s.script.accuracy}% of the script${s.script.misses ? ` — ${s.script.misses} skipped` : ""}${s.script.subs ? `, ${s.script.subs} misread` : ""}.`, "twisters");
 
+  const p = s.presence;
+  if (p) {
+    const w = SCORE_WEIGHTS.presence;
+    const pct = (f: number) => `${Math.round(f * 100)}%`;
+    if (p.eyeScored && p.eyeContact < 0.6)
+      push(p.scores.eye, w, `You looked at the camera ${pct(p.eyeContact)} of the time — aim for 70%+. Glance at your notes, then come back to the lens.`);
+    if (p.scores.expr !== null && p.scores.expr < 60)
+      push(p.scores.expr, w, `Your face stayed mostly neutral (smiling ${pct(p.smileFrac)} of the time). Smile on your opening and closing lines.`);
+    if (p.scores.still !== null && p.motion > 0.4)
+      push(p.scores.still, w, `You moved around a lot (${p.motion.toFixed(2)} shoulder-widths a second). Plant your feet and keep your head steady.`);
+    if (p.scores.gesture !== null && p.gestureFrac < 0.1)
+      push(p.scores.gesture, w, `Your hands were still or out of frame ${pct(1 - p.gestureFrac)} of the time. Use them to mark your key points.`);
+    else if (p.scores.gesture !== null && p.gestureFrac > 0.8)
+      push(p.scores.gesture, w, `You gestured almost constantly (${pct(p.gestureFrac)} of the time). Save gestures for the points that matter.`);
+  }
+
   tips.sort((a, b) => b.impact - a.impact);
   const top: Tip[] = tips.filter((t) => t.impact > 0).slice(0, 4);
   if (top.length === 0) top.push({ text: "Strong session — no standout weaknesses. Keep it up." });
@@ -2403,13 +2419,35 @@ function reportTilesHtml(s: SessionSummary, prev: SessionSummary | undefined): s
   const tile = (value: string, unit: string, [delta, cls]: [string, string], tip: string) =>
     `<div class="tile" data-tip="${escapeHtml(tip)}"><div class="card-top"><span class="big">${value}</span><span class="unit">${unit}</span></div><span class="delta ${cls}">${delta}</span></div>`;
   return (
-    `<div class="tiles">` +
+    `<div class="tiles${s.presence ? " cam" : ""}">` +
     tile(String(s.wpm), "wpm", vs(s.wpm, prev?.wpm, 0, "pace"), `Average pace — target ${preset.wpmLow}–${preset.wpmHigh}`) +
     tile(s.fillersPerMin.toFixed(1), "fillers/min", vs(s.fillersPerMin, prev?.fillersPerMin, 1, "fillers"), "Fillers per minute — aim under 3") +
     tile(s.pausesPerMin.toFixed(1), "pauses/min", vs(s.pausesPerMin, prev?.pausesPerMin, 1, "pauses"), "Hesitation pauses per minute") +
     tile(s.pitchRange.toFixed(1), "semitones", vs(s.pitchRange, prev?.pitchRange, 1, "pitch"), "Pitch range per sentence — under 3 reads as flat") +
     tile(String(s.words), "words", [`${formatTimestamp(s.durationMs)} speaking`, "flat"], `Words spoken across ${formatTimestamp(s.durationMs)} of speech`) +
+    presenceTileHtml(s, prev) +
     `</div>`
+  );
+}
+
+// Camera sessions only: presence score + the four signals behind it.
+function presenceTileHtml(s: SessionSummary, prev: SessionSummary | undefined): string {
+  const p = s.presence;
+  if (!p) return "";
+  const pct = (f: number) => `${Math.round(f * 100)}%`;
+  const old = prev?.presence?.score;
+  const [delta, cls] = typeof old === "number" ? [`${signed(p.score - old)} vs last`, tone(p.score - old)] : ["first with camera", "flat"];
+  const moves = p.motion < 0.15 ? "steady" : p.motion < 0.4 ? "ok" : "restless";
+  return (
+    `<div class="tile" data-tip="Presence — eye contact, expression, stillness and gestures from the camera">` +
+    `<div class="card-top"><span class="big">${p.score}</span><span class="unit">presence</span></div>` +
+    `<span class="delta ${cls}">${delta}</span>` +
+    `<div class="tile-rows">` +
+    `<span>eye contact ${pct(p.eyeContact)}${p.eyeScored ? "" : " (not scored: script)"}</span>` +
+    `<span>smiling ${pct(p.smileFrac)}</span>` +
+    `<span>movement ${moves}</span>` +
+    `<span>gesturing ${pct(p.gestureFrac)}</span>` +
+    `</div></div>`
   );
 }
 
@@ -3221,6 +3259,7 @@ const DIMENSIONS: Array<[keyof Scores, string]> = [
   ["pitch", "Vocal variety"],
   ["volume", "Volume"],
   ["articulation", "Script accuracy"],
+  ["presence", "Presence"],
 ];
 
 // How often each word of the speech's current text was skipped. Only
@@ -3277,6 +3316,8 @@ function speechOverview(tries: SessionSummary[], sp: Speech, skips: SkipCounts):
       const misses = Math.round(avg((h) => h.script?.misses));
       return `you match ${Math.round(avg((h) => h.script?.accuracy))}% of the script on average${misses ? `, skipping about ${misses} word${misses === 1 ? "" : "s"} a run` : ""}. Slow down on the passages you lose.`;
     },
+    presence: () =>
+      `${Math.round(avg((h) => h.presence?.eyeContact) * 100)}% eye contact on average. Look at the lens on your key lines and let your hands carry the emphasis.`,
   };
 
   const out: string[] = [];
