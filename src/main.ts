@@ -2367,6 +2367,7 @@ function reportTilesHtml(s: SessionSummary, prev: SessionSummary | undefined): s
 }
 
 function renderReport() {
+  $("report")?.classList.remove("enter"); // plain re-renders (star) must not replay it
   const body = $("report-body");
   const statsBtn = $<HTMLButtonElement>("stats-btn");
   if (!body) return;
@@ -2385,6 +2386,21 @@ function renderReport() {
   coachSay(generateTips(s));
   const rt = $("report-transcript");
   if (rt) rt.innerHTML = transcriptCopyHtml(d.lines);
+}
+
+// Report entrance (styles.css .enter): on Stop and on every Stats click.
+function playReportEntrance() {
+  const el = $("report");
+  if (!el || !reportSnap || reducedMotion()) return;
+  renderReport(); // fresh nodes restart the animations and count-ups
+  el.classList.add("enter");
+  countUp(el, [[".rep-hero .ring-num", 150, 950], [".rep-delta .num", 400, 600], [".tile .big", 750, 700]]);
+  // The coach starts typing once the hero has landed.
+  clearInterval(coachTimer);
+  const bubble = coachEl?.querySelector(".coach-bubble");
+  if (bubble) bubble.innerHTML = "";
+  coachIdx = 0;
+  coachTimer = window.setTimeout(coachSpeak, 750);
 }
 
 // Report screenshot (screenshot.rs): the visible report, copied to the
@@ -2459,8 +2475,10 @@ function paceChartHtml(p: PaceData, preset: Preset): string {
   const y = (v: number) => H - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * H;
   const pts = p.wpm.map((v, sec) => `${((sec / totalSec) * W).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   const pct = (sec: number) => `${Math.min(100, (sec / totalSec) * 100).toFixed(1)}%`;
-  const dots = p.fillerSecs.map((sec) => `<div class="dot" style="left:${pct(sec)}"></div>`).join("");
-  const ticks = p.pauseMs.map((ms) => `<div class="tick" style="left:${pct(ms / 1000)}"></div>`).join("");
+  // --x: position as 0–1, so History's open animation pops each mark as the line wipes past it.
+  const at = (sec: number) => `left:${pct(sec)};--x:${Math.min(1, sec / totalSec).toFixed(3)}`;
+  const dots = p.fillerSecs.map((sec) => `<div class="dot" style="${at(sec)}"></div>`).join("");
+  const ticks = p.pauseMs.map((ms) => `<div class="tick" style="${at(ms / 1000)}"></div>`).join("");
   const yLabels = [0, 1, 2, 3].map((k) => `<span>${Math.round(hi - ((hi - lo) * k) / 3)}</span>`).join("");
   const xLabels = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${formatTimestamp(f * p.lengthMs)}</span>`).join("");
   return (
@@ -2706,13 +2724,13 @@ function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
   const what = title ? "Attempt" : "Session";
   const trend = bars.length > 1 ? `<span class="${tone(c.overall - bars[0].score)}">${signed(c.overall - bars[0].score)} since ${bars[0].n}</span>` : "";
   const hist = bars
-    .map((b) => `<div class="hist-col${b.now ? " now" : ""}"${b.now ? "" : ` data-open="${b.ts}"`} data-tip="${what} ${b.n} — score ${b.score}${b.now ? "" : " · click to open"}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
+    .map((b, i) => `<div class="hist-col${b.now ? " now" : ""}" style="--i:${i}"${b.now ? "" : ` data-open="${b.ts}"`} data-tip=""${what} ${b.n} — score ${b.score}${b.now ? "" : " · click to open"}"><span>${b.score}</span><div class="bar" style="height:${Math.min(96, Math.max(2, (b.score - 40) * 1.6))}%"></div><span>${b.n}</span></div>`)
     .join("");
 
   const moments = keyMoments(preset, L);
   const momentsHtml = moments.length
     ? moments
-      .map((m) => `<button type="button" class="moment" data-index="${m.index}" data-ms="${m.ms}" data-tip="Jump to ${formatTimestamp(m.ms)} in the transcript"><span class="t">${formatTimestamp(m.ms)}</span><span class="bar" style="background:${m.color}"></span><span><b>${escapeHtml(m.title)}</b><span class="note">${escapeHtml(m.note)}</span></span></button>`)
+      .map((m, i) => `<button type="button" class="moment" style="--i:${i}" data-index="${m.index}" data-ms="${m.ms}" data-tip="Jump to ${formatTimestamp(m.ms)} in the transcript"><span class="t">${formatTimestamp(m.ms)}</span><span class="bar" style="background:${m.color}"></span><span><b>${escapeHtml(m.title)}</b><span class="note">${escapeHtml(m.note)}</span></span></button>`)
       .join("")
     : `<div class="empty">Speak a little longer for highlights.</div>`;
 
@@ -2925,6 +2943,7 @@ function showView(view: "live" | "report" | "profile" | "speeches" | "drills" | 
   document.body.dataset.view = view;
   if (view !== "settings") void stopMicTest(false);
   if (view === "profile") renderProfile();
+  if (view === "report") playReportEntrance();
   if (view === "speeches") renderSpeeches();
   if (view === "history") renderHistory();
   if (view === "drills") renderDrills();
@@ -3062,13 +3081,17 @@ const SPEECH_PAGE_KEY = "speech.speechPage";
 let speechMetric = "score";
 const SPEECH_METRICS = ["score", "accuracy", "wpm", "fillers"];
 
-function renderSpeeches() {
+// `anim`: play the open/back choreography (styles.css .enter), as renderHistory.
+function renderSpeeches(anim = false) {
   const el = $("speeches");
   if (!el) return;
   const sp = speeches.find((x) => x.id === speechPage);
   if (!sp) speechPage = ""; // deleted since
   save(SPEECH_PAGE_KEY, speechPage);
   el.innerHTML = sp ? speechPageHtml(sp) : speechListHtml();
+  el.classList.remove("leave");
+  el.classList.toggle("enter", anim);
+  if (anim && sp) countUp(el, [[".tile .big", 240, 650]]);
   const sort = $<HTMLSelectElement>("speech-sort");
   if (sort) enhanceSelect(sort);
 }
@@ -3137,7 +3160,7 @@ function speechRowsHtml(): string {
   };
   rows.sort(orders[speechSort] ?? orders.recent);
   const body = rows
-    .map(({ sp, scores, best }) => {
+    .map(({ sp, scores, best }, n) => {
       const color = speechColor(sp);
       const last = scores[scores.length - 1];
       const x = (i: number) => (scores.length > 1 ? (i / (scores.length - 1)) * 80 : 80);
@@ -3151,7 +3174,7 @@ function speechRowsHtml(): string {
         ? `${last} ${grade(last)}${scores.length > 1 ? ` <span class="sub">${signed(last - scores[0])}</span>` : ""}`
         : "—";
       return (
-        `<tr data-open="${sp.id}" data-tip="Open ${escapeHtml(sp.title)}"><td><span class="speech-dot" style="--c:${color}"></span>${escapeHtml(sp.title)}</td>` +
+        `<tr data-open="${sp.id}" data-tip="Open ${escapeHtml(sp.title)}" style="--i:${n}"><td><span class="speech-dot" style="--c:${color}"></span>${escapeHtml(sp.title)}</td>` +
         `<td>${scores.length}</td><td>${scores.length ? `${best} ${grade(best)}` : "—"}</td>` +
         `<td>${lastCell}</td><td>${spark}</td><td><div class="speech-actions">` +
         `<button type="button" class="ctl" data-practice="${sp.id}" data-tip="Load it into the read-along on the Live tab">Practice</button></div></td></tr>`
@@ -3322,7 +3345,7 @@ function speechPageHtml(sp: Speech): string {
   const rows = tries
     .map(
       (h, i) =>
-        `<tr><td>${i + 1}</td><td>${fmtDate(h.ts)}</td><td>${formatTimestamp(h.durationMs)}</td><td>${Math.round(h.wpm)}</td>` +
+        `<tr style="--i:${n - 1 - i}"><td>${i + 1}</td><td>${fmtDate(h.ts)}</td><td>${formatTimestamp(h.durationMs)}</td><td>${Math.round(h.wpm)}</td>` +
         `<td>${h.fillersPerMin.toFixed(1)}</td><td>${h.script ? `${h.script.accuracy}%${h.memory ? ` · ${MEMORY_LABELS[h.memory] ?? h.memory}` : ""}${partLabel(h.script.total)}` : "—"}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
     )
     .reverse()
@@ -3675,7 +3698,7 @@ function plotHtml(pts: SessionSummary[], m: (typeof METRICS)[string], t0: number
   const dots = pts
     .map(
       (h) =>
-        `<div class="pt" style="left:${x(h.ts).toFixed(2)}%;top:${y(m.get(h)).toFixed(2)}%" data-tip="${fmtDate(h.ts)} · ${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))} — ${m.fmt(m.get(h))}"></div>`,
+        `<div class="pt" style="left:${x(h.ts).toFixed(2)}%;top:${y(m.get(h)).toFixed(2)}%;--x:${(x(h.ts) / 100).toFixed(3)}" data-tip="${fmtDate(h.ts)} · ${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))} — ${m.fmt(m.get(h))}"></div>`,
     )
     .join("");
   const yLabels = [hi, hi / 2, 0].map((v) => `<span>${m.fmt(v)}</span>`).join("");
@@ -3803,14 +3826,46 @@ let histSpeech = ""; // "" = all, "free" = no script, else a speech id
 let histRange = "All";
 let histDetail: Detail | null = null; // the open session's per-line data, if still kept
 
-async function openHistorySession(ts: number) {
+// `row`: the clicked list row, which highlights while the list fades out.
+async function openHistorySession(ts: number, row?: HTMLElement) {
   histPage = ts;
+  let leave: Promise<unknown> | undefined;
+  if (row && !reducedMotion()) {
+    row.classList.add("hit");
+    $("history")?.classList.add("leave");
+    leave = new Promise((r) => setTimeout(r, 360));
+  }
   if (histDetail?.ts !== ts) {
     histDetail = null;
     const d = await loadDetail(ts);
     if (histPage === ts) histDetail = d;
   }
-  if (histPage === ts) renderHistory();
+  await leave;
+  if (histPage === ts) renderHistory(true);
+}
+
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Count each element's number up from 0 (ease-out cubic), keeping its sign,
+// unit and decimals, as [selector, delay ms, duration ms] triples.
+function countUp(root: HTMLElement, items: Array<[string, number, number]>) {
+  if (reducedMotion()) return;
+  for (const [sel, delay, dur] of items)
+    root.querySelectorAll<HTMLElement>(sel).forEach((el, i) => {
+      const text = el.textContent ?? "";
+      const m = /\d+(\.\d+)?/.exec(text);
+      if (!m) return;
+      const target = Number(m[0]);
+      const digits = m[1] ? m[1].length - 1 : 0;
+      const t0 = performance.now() + delay + i * 60;
+      const step = (now: number) => {
+        if (!el.isConnected) return;
+        const p = Math.max(0, Math.min(1, (now - t0) / dur));
+        el.textContent = text.slice(0, m.index) + (target * (1 - (1 - p) ** 3)).toFixed(digits) + text.slice(m.index + m[0].length);
+        if (p < 1) requestAnimationFrame(step);
+      };
+      step(performance.now());
+    });
 }
 
 // A saved session's per-line data, if history.rs still keeps it.
@@ -3858,12 +3913,17 @@ function renderSessionPop() {
   el.innerHTML = sessionPageHtml(i, popDetail, head);
 }
 
-function renderHistory() {
+// `anim`: play the open/back choreography (styles.css .enter); plain
+// re-renders (star, filters) must not replay it.
+function renderHistory(anim = false) {
   const el = $("history");
   if (!el) return;
   const i = history.findIndex((h) => h.ts === histPage);
   if (i < 0) histPage = 0; // cleared since
   el.innerHTML = i < 0 ? historyListHtml() : historyPageHtml(i);
+  el.classList.remove("leave");
+  el.classList.toggle("enter", anim);
+  if (anim && i >= 0) countUp(el, [[".rep-hero .ring-num", 200, 850], [".rep-delta .num", 420, 600], [".tile .big", 640, 650], [".fw-list.dims .n", 900, 700]]);
   for (const id of ["hist-preset", "hist-speech"]) {
     const sel = $<HTMLSelectElement>(id);
     if (sel) enhanceSelect(sel);
@@ -3907,8 +3967,8 @@ function historyListHtml(): string {
     `</div>`;
   const body = rows
     .map(
-      (h) =>
-        `<tr data-open="${h.ts}" data-tip="Open this session's stats"><td>${starHtml(h.ts)}</td>` +
+      (h, n) =>
+        `<tr data-open="${h.ts}" data-tip="Open this session's stats" style="--i:${n}"><td>${starHtml(h.ts)}</td>` +
         `<td>${new Date(h.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</td>` +
         `<td>${practisedCell(h)}</td><td>${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))}</td><td>${formatTimestamp(h.durationMs)}</td>` +
         `<td>${Math.round(h.wpm)}</td><td>${h.fillersPerMin.toFixed(1)}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
@@ -4423,13 +4483,14 @@ window.addEventListener("DOMContentLoaded", () => {
       return showView("speeches");
     }
     if (d.open) {
-      histEl.scrollTop = 0;
-      return void openHistorySession(Number(d.open));
+      if (histEl.classList.contains("leave")) return; // already leaving
+      const row = b.tagName === "TR" ? b : undefined; // not the report's score-trend bars
+      return void openHistorySession(Number(d.open), row).then(() => (histEl.scrollTop = 0));
     }
     if (d.back !== undefined) histPage = 0;
     else if (d.hsaved) histSaved = d.hsaved === "1";
     else if (d.range) histRange = d.range;
-    renderHistory();
+    renderHistory(d.back !== undefined);
     if (d.back !== undefined) histEl.scrollTop = 0;
   });
   bindReport(histEl, () => {
@@ -4460,11 +4521,22 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!confirmClick(b)) return;
       deleteSpeech(d.delete);
       speechPage = "";
-    } else if (d.open) speechPage = d.open;
-    else if (d.back !== undefined) speechPage = "";
+    } else if (d.open) {
+      if (speechesEl.classList.contains("leave")) return; // already leaving
+      speechPage = d.open;
+      if (!reducedMotion()) {
+        // The clicked row highlights while the list slides away.
+        b.classList.add("hit");
+        speechesEl.classList.add("leave");
+        return void setTimeout(() => {
+          renderSpeeches(true);
+          speechesEl.scrollTop = 0;
+        }, 340);
+      }
+    } else if (d.back !== undefined) speechPage = "";
     else if (d.smetric) speechMetric = d.smetric;
     else if (d.cfilter !== undefined) speechFilter = d.cfilter;
-    renderSpeeches();
+    renderSpeeches(!!d.open || d.back !== undefined);
     if (d.open || d.back !== undefined) speechesEl.scrollTop = 0;
   });
   speechesEl?.addEventListener("change", (e) => {

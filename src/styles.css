@@ -1039,7 +1039,7 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   overflow: visible;
 }
 
-/* Score ring: conic fill to --p percent in the grade color --c. */
+/* Score ring: conic fill to --p percent in the grade color --c (--rp: 0–1 fill-in, see histRing). */
 .ring {
   --p: 0;
   --c: var(--green);
@@ -1048,7 +1048,7 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   height: 58px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: conic-gradient(var(--c) 0 calc(var(--p) * 1%), color-mix(in srgb, var(--fg) 8%, transparent) 0 100%);
+  background: conic-gradient(var(--c) 0 calc(var(--p) * var(--rp) * 1%), color-mix(in srgb, var(--fg) 8%, transparent) 0 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2332,3 +2332,109 @@ body.no-hover-fx #shards {
 .shot-btn.done { color: var(--green); }
 body.snapping #tip,
 body.snapping .shot-btn { visibility: hidden; }
+
+/* Entrance choreography: the Stats report (playReportEntrance), History and
+   Speeches open/back (renderHistory/renderSpeeches(true) add .enter; a row click
+   adds .leave + .hit before the page renders). Fill mode is `backwards` so
+   finished animations hand control back (e.g. .dot.hot's scale).
+   Every animation runs --t 0→1 and the effect groups below map it onto
+   opacity/translate/scale. Animating opacity or transform directly gets each
+   element its own GPU layer, which WebKitGTK on Wayland flashes blank;
+   a custom property runs on the main thread and paints in place. */
+@property --rp { syntax: "<number>"; inherits: false; initial-value: 1; }
+@property --t { syntax: "<number>"; inherits: false; initial-value: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .leave > .panel { --t: 0; opacity: var(--t); scale: calc(0.985 + 0.015 * var(--t)); transition: --t 340ms cubic-bezier(.4, 0, .2, 1); }
+  .leave tr[data-open]:not(.hit) { --t: 0.25; opacity: var(--t); transition: --t 300ms ease; }
+
+  /* Effect groups (see above). */
+  :is(.enter .rep-title, .enter .rep-tip, .enter .tiles ~ .panel, .enter .rep-transcript, .enter .hist-col > span:first-child,
+    #speeches.enter .prof-head > .sub) { opacity: var(--t); }
+  :is(.enter tr[data-open], #report.enter .rep-hero, .enter .rep-delta, .enter .pace-panel, .enter .tile, .enter .rep-bottom > .panel,
+    #speeches.enter > .prof-head, #speeches.enter > .panel:nth-child(4), #speeches.enter > .panel:nth-child(5) tr) { opacity: var(--t); translate: 0 calc((1 - var(--t)) * var(--y)); }
+  :is(#history.enter > .panel:first-child:has([data-back]), .enter .overview li, .enter .moment, #speeches.enter .speech-name) { opacity: var(--t); translate: calc((1 - var(--t)) * var(--x)) 0; }
+  #history.enter .rep-hero { opacity: var(--t); scale: calc(0.97 + 0.03 * var(--t)); }
+  :is(.enter .rep-hero .ring-grade, .enter .pace-plot .dot, .enter .coach-avatar, #speeches.enter .speech-dot, #speeches.enter .pt) { scale: var(--t); }
+  :is(.enter .pace-plot .tick, .enter .rep-vr, .enter .hist-col .bar, .enter .moment .bar) { scale: 1 var(--t); }
+  .enter .fw-bar div { scale: var(--t) 1; }
+
+  .leave tr.hit td { background: rgba(10, 132, 255, 0.18); }
+
+  .enter { --e: cubic-bezier(.2, .8, .2, 1); --pop: cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .enter tr[data-open] { animation: histIn 420ms var(--e) backwards; animation-delay: calc(60ms + min(var(--i), 12) * 45ms); --y: 8px; }
+  .enter > .panel:first-child:has([data-back]) { animation: histIn 400ms var(--e) backwards; --x: 10px; }
+  .enter .rep-hero { animation: histIn 550ms var(--e) 60ms backwards; transform-origin: top center; }
+  .enter .rep-hero .ring { animation: histRing 850ms cubic-bezier(.3, .7, .2, 1) 200ms backwards; }
+  .enter .rep-hero .ring-grade { animation: histIn 500ms var(--pop) 1000ms backwards; }
+  .enter .rep-title { animation: histIn 400ms ease 160ms backwards; }
+  .enter .rep-delta { animation: histIn 600ms var(--pop) 380ms backwards; --y: 6px; }
+  .enter .rep-tip { animation: histIn 450ms ease 480ms backwards; }
+  .enter .pace-panel { animation: histIn 600ms var(--e) 260ms backwards; --y: 10px; }
+  .enter .pace-plot svg { animation: histWipe 1100ms cubic-bezier(.45, 0, .25, 1) 450ms backwards; }
+  .enter .pace-plot .dot { animation: histIn 450ms var(--pop) backwards; animation-delay: calc(450ms + var(--x) * 1100ms); }
+  .enter .pace-plot .tick { animation: histIn 300ms var(--e) backwards; animation-delay: calc(450ms + var(--x) * 1100ms); }
+  .enter .tile { animation: histIn 600ms var(--e) backwards; --y: 12px; }
+  .enter .tile:nth-child(1) { animation-delay: 600ms; }
+  .enter .tile:nth-child(2) { animation-delay: 660ms; }
+  .enter .tile:nth-child(3) { animation-delay: 720ms; }
+  .enter .tile:nth-child(4) { animation-delay: 780ms; }
+  .enter .tile:nth-child(5) { animation-delay: 840ms; }
+  .enter .tiles ~ .panel { animation: histIn 400ms ease 820ms backwards; }
+  .enter .tiles ~ .panel + .panel { animation-delay: 1000ms; }
+  .enter .rep-transcript { animation: histIn 500ms ease 1600ms backwards; }
+  .enter .fw-row { --i: 0; }
+  .enter .fw-row:nth-child(2) { --i: 1; }
+  .enter .fw-row:nth-child(3) { --i: 2; }
+  .enter .fw-row:nth-child(4) { --i: 3; }
+  .enter .fw-row:nth-child(5) { --i: 4; }
+  .enter .fw-row:nth-child(n + 6) { --i: 5; }
+  .enter .fw-bar div { animation: histIn 750ms var(--e) backwards; animation-delay: calc(900ms + var(--i) * 70ms); transform-origin: left; }
+  .enter .overview li { animation: histIn 450ms var(--e) backwards; --x: -8px; }
+  .enter .overview li:nth-child(1) { animation-delay: 1060ms; }
+  .enter .overview li:nth-child(2) { animation-delay: 1140ms; }
+  .enter .overview li:nth-child(n + 3) { animation-delay: 1220ms; }
+
+  /* Full report (Stats, and History's detailed sessions). */
+  #report.enter .rep-hero { animation: histIn 600ms var(--e) backwards; --y: -8px; }
+  .enter .rep-vr { animation: histIn 500ms var(--e) 400ms backwards; }
+  .enter .coach-avatar { animation: histIn 650ms var(--pop) 450ms backwards; }
+  .enter .rep-bottom > .panel { animation: histIn 650ms var(--e) 1100ms backwards; --y: 14px; }
+  .enter .rep-bottom > .panel + .panel { animation-delay: 1190ms; }
+  .enter .rep-bottom > .panel + .panel + .panel { animation-delay: 1280ms; }
+  .enter .rep-bottom .fw-bar div { animation-delay: calc(1250ms + var(--i) * 80ms); }
+  .enter .hist-col .bar { animation: histIn 550ms var(--e) backwards; animation-delay: calc(1250ms + var(--i) * 45ms); transform-origin: bottom; }
+  .enter .hist-col.now .bar { animation: histIn 700ms var(--pop) calc(1370ms + var(--i) * 45ms) backwards, histGlow 1000ms ease calc(1370ms + var(--i) * 45ms); }
+  .enter .hist-col > span:first-child { animation: histIn 300ms ease backwards; animation-delay: calc(1450ms + var(--i) * 45ms); }
+  .enter .moment { animation: histIn 500ms var(--e) backwards; animation-delay: calc(1400ms + min(var(--i), 6) * 90ms); --x: -10px; }
+  .enter .moment .bar { animation: histIn 400ms var(--e) backwards; animation-delay: calc(1450ms + min(var(--i), 6) * 90ms); transform-origin: top; }
+
+  /* Speeches: list slides away, the speech page builds top-down. */
+  #speeches.leave > .panel { scale: none; translate: calc((1 - var(--t)) * -12px) 0; transition-duration: 320ms; }
+  #speeches.leave tr[data-open]:not(.hit) { --t: 0; transition-delay: calc(min(var(--i), 12) * 30ms); }
+  #speeches.enter > .prof-head { animation: histIn 450ms var(--e) backwards; --y: -6px; }
+  #speeches.enter .speech-name { animation: histIn 450ms var(--e) 150ms backwards; --x: -8px; }
+  #speeches.enter .speech-name .speech-dot { animation: histIn 500ms var(--pop) 200ms backwards; }
+  #speeches.enter .prof-head > .sub { animation: histIn 350ms ease 260ms backwards; }
+  #speeches.enter .tile:nth-child(1) { animation-delay: 120ms; }
+  #speeches.enter .tile:nth-child(2) { animation-delay: 180ms; }
+  #speeches.enter .tile:nth-child(3) { animation-delay: 240ms; }
+  #speeches.enter .tile:nth-child(4) { animation-delay: 300ms; }
+  #speeches.enter .tile:nth-child(5) { animation-delay: 360ms; }
+  #speeches.enter > .panel:nth-child(3) { animation: histIn 400ms ease 520ms backwards; }
+  #speeches.enter .overview li:nth-child(1) { animation-delay: 560ms; }
+  #speeches.enter .overview li:nth-child(2) { animation-delay: 630ms; }
+  #speeches.enter .overview li:nth-child(3) { animation-delay: 700ms; }
+  #speeches.enter .overview li:nth-child(n + 4) { animation-delay: 770ms; }
+  #speeches.enter > .panel:nth-child(4) { animation: histIn 600ms var(--e) 640ms backwards; --y: 10px; }
+  #speeches.enter .trend-plot svg { animation: histWipe 1000ms cubic-bezier(.45, 0, .25, 1) 760ms backwards; }
+  #speeches.enter .pt { animation: histIn 450ms var(--pop) backwards; animation-delay: calc(760ms + var(--x) * 1000ms); }
+  #speeches.enter > .panel:nth-child(5) { animation: histIn 400ms ease 820ms backwards; }
+  #speeches.enter > .panel:nth-child(5) tr { animation: histIn 400ms var(--e) backwards; animation-delay: calc(860ms + min(var(--i, 0), 12) * 45ms); --y: 6px; }
+  #speeches.enter > .panel:nth-child(6) { animation: histIn 400ms ease 1000ms backwards; }
+  #speeches.enter .skipped { animation: histUnshade 500ms ease 1200ms backwards; }
+}
+@keyframes histIn { from { --t: 0; } }
+@keyframes histRing { from { --rp: 0; } }
+@keyframes histWipe { from { clip-path: inset(-4px 100% -4px 0); } to { clip-path: inset(-4px 0 -4px 0); } }
+@keyframes histGlow { from, 60% { box-shadow: 0 0 12px rgba(48, 209, 88, 0.5); } }
+@keyframes histUnshade { from { background: transparent; } }
