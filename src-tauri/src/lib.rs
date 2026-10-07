@@ -20,6 +20,13 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The webview's camera feed (camera.ts) crashes WebKitWebProcess — SIGSEGV
+    // in GStreamer's GL dma-buf upload (webkitgtk 2.54 / gst 1.28, AMD iGPU) —
+    // unless WebKit's dma-buf video sink is off. Must be set before any webview
+    // exists.
+    #[cfg(target_os = "linux")]
+    std::env::set_var("WEBKIT_GST_DMABUF_SINK_DISABLED", "1");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -74,6 +81,29 @@ pub fn run() {
             )?;
             let vad = SileroVad::new(&vad_model_path.to_string_lossy())?;
             app.manage(VadModel(Mutex::new(vad)));
+
+            // Camera for presence grading (camera.ts). wry leaves WebKitGTK's
+            // permission requests unanswered, so getUserMedia would never
+            // resolve. Grant camera/mic requests only; anything else keeps
+            // WebKit's default (deny).
+            #[cfg(target_os = "linux")]
+            app.get_webview_window("main")
+                .ok_or("no main window")?
+                .with_webview(|wv| {
+                    use gtk::glib::object::Cast;
+                    use webkit2gtk::{PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt};
+                    let view = wv.inner();
+                    if let Some(s) = WebViewExt::settings(&view) {
+                        s.set_enable_media_stream(true);
+                    }
+                    view.connect_permission_request(|_, req| {
+                        if req.downcast_ref::<UserMediaPermissionRequest>().is_none() {
+                            return false;
+                        }
+                        req.allow();
+                        true
+                    });
+                })?;
 
             app.manage(RecordingState::default());
             app.manage(audio::MicTestState::default());
