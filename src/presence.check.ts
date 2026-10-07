@@ -1,6 +1,6 @@
 // Run: bun src/presence.check.ts
 import assert from "node:assert";
-import { headAngles, toFrame, scoreLinear, type RawResults } from "./presence";
+import { headAngles, toFrame, scoreLinear, summarize, gestureScore, awayMs, weakestCue, type RawResults, type Frame } from "./presence";
 
 const near = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 const rad = (d: number) => (d * Math.PI) / 180;
@@ -63,4 +63,81 @@ const d = toFrame(raw({ pose: flat, wrists: [{ x: 0.5, y: 0.8 }] }), 640, 360, 0
 assert.equal(d.body, null);
 assert.deepStrictEqual(d.wrists, []);
 
-console.log("presence part 1 ok");
+// --- summarize ------------------------------------------------------------
+const STEP = 100; // 10 fps keeps the expected timings round
+const F = (t: number, o: Partial<Frame> = {}): Frame => ({ t, face: true, looking: true, smile: 0, brows: 0, body: [[2.5, 1.4], [2.5, 0.8]], wrists: [], ...o });
+const frames = (secs: number, make: (t: number, i: number) => Partial<Frame> = () => ({})): Frame[] =>
+  Array.from({ length: (secs * 1000) / STEP + 1 }, (_, i) => F(i * STEP, make(i * STEP, i)));
+const open = { scriptOpen: false };
+
+// Too short to score.
+assert.equal(summarize(frames(2), open), null);
+assert.equal(summarize([], open), null);
+
+// Steady, always looking, flat face, no hands.
+const steady = summarize(frames(10), open)!;
+assert.equal(steady.eyeContact, 1);
+assert.equal(steady.scores.eye, 100);
+assert.equal(steady.motion, 0);
+assert.equal(steady.scores.still, 100);
+assert.equal(steady.gestureFrac, 0);
+assert.equal(steady.scores.gesture, 0);
+assert.equal(steady.scores.expr, 0); // never smiles, no variation
+assert.equal(steady.eyeScored, true);
+assert.equal(steady.score, Math.round((100 + 0 + 100 + 0) / 4));
+
+// Out of frame the whole session: eye 0, nothing else measurable, no NaN.
+const gone = summarize(frames(10, () => ({ face: false, looking: false, body: null })), open)!;
+assert.equal(gone.eyeContact, 0);
+assert.deepStrictEqual(gone.scores, { eye: 0, expr: null, still: null, gesture: null });
+assert.equal(gone.score, 0);
+for (const v of [gone.smileFrac, gone.exprRange, gone.motion, gone.gestureFrac]) assert.ok(Number.isFinite(v));
+
+// Script open: eye contact reported but not scored.
+const away = frames(10, () => ({ looking: false }));
+const withScript = summarize(away, { scriptOpen: true })!;
+assert.equal(withScript.eyeScored, false);
+assert.equal(withScript.eyeContact, 0);
+assert.equal(withScript.score, Math.round((0 + 100 + 0) / 3)); // expr, still, gesture
+assert.equal(summarize(away, open)!.score, Math.round((0 + 0 + 100 + 0) / 4));
+// Script open and nothing else measurable → no score.
+assert.equal(summarize(frames(10, () => ({ face: false, looking: false, body: null })), { scriptOpen: true }), null);
+
+// Jitter scores worse than steady.
+const jitter = summarize(frames(10, (_, i) => ({ body: [[2.5 + (i % 2) * 0.2, 1.4], [2.5 + (i % 2) * 0.2, 0.8]] })), open)!;
+assert.ok(jitter.motion > 1, `motion ${jitter.motion}`);
+assert.equal(jitter.scores.still, 0);
+
+// A hidden-window gap isn't motion: two still halves 5 s apart, shifted.
+const gap = [...frames(4), ...frames(4).map((f) => ({ ...f, t: f.t + 9000, body: [[4, 1.4], [4, 0.8]] as Frame["body"] }))];
+assert.equal(summarize(gap, open)!.motion, 0);
+
+// Expressive face: smile alternating 0 / 0.6.
+const lively = summarize(frames(10, (_, i) => ({ smile: i % 2 ? 0.6 : 0 })), open)!;
+assert.ok(lively.smileFrac > 0.45 && lively.smileFrac < 0.55);
+assert.equal(lively.scores.expr, 100);
+
+// Hands moving every frame → gesturing ~100% → band ceiling 70.
+const busy = summarize(frames(10, (_, i) => ({ wrists: [[1 + (i % 2) * 0.1, 2]] })), open)!;
+assert.ok(busy.gestureFrac > 0.95);
+assert.equal(busy.scores.gesture, 70);
+// A hand held still isn't gesturing.
+assert.equal(summarize(frames(10, () => ({ wrists: [[1, 2]] })), open)!.gestureFrac, 0);
+
+// --- gestureScore band ----------------------------------------------------
+assert.equal(gestureScore(0), 0);
+assert.equal(gestureScore(0.1), 50);
+assert.equal(gestureScore(0.4), 100);
+assert.equal(gestureScore(0.6), 100);
+assert.equal(gestureScore(1), 70);
+
+// --- live helpers -----------------------------------------------------------
+assert.equal(awayMs([]), 0);
+assert.equal(awayMs(frames(3)), 0);
+assert.equal(awayMs(frames(3, (t) => ({ looking: t < 1000 }))), 3000 - 900); // last look at t=900
+assert.equal(awayMs(frames(3, () => ({ looking: false }))), 3000);
+assert.equal(weakestCue(steady), "smile more"); // expr 0 and gesture 0 tie → first listed (expr)
+assert.equal(weakestCue(lively), "use your hands");
+assert.equal(weakestCue(summarize(frames(10, (_, i) => ({ smile: i % 2 ? 0.6 : 0, wrists: [[1 + (i % 4 < 2 ? 0 : 0.1), 2]] })), open)!), "looking good");
+
+console.log("presence ok");

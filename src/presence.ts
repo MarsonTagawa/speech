@@ -89,3 +89,101 @@ export function toFrame(r: RawResults, w: number, h: number, t: number): Frame {
   }
   return { t, face: !!b, looking, smile, brows, body, wrists };
 }
+
+export interface PresenceScores {
+  eye: number;
+  expr: number | null; // null = no measurable face
+  still: number | null; // null = no measurable body
+  gesture: number | null;
+}
+
+export interface Presence {
+  eyeContact: number; // fraction of frames looking at the camera
+  smileFrac: number; // fraction of face frames smiling
+  exprRange: number; // mean per-second std-dev of smile + brows
+  motion: number; // shoulder widths per second
+  gestureFrac: number; // fraction of body frames with a moving hand
+  scores: PresenceScores;
+  eyeScored: boolean; // false when a script was open (reading looks down)
+  score: number;
+}
+
+const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+const sd = (xs: number[]) => {
+  const m = mean(xs);
+  return Math.sqrt(mean(xs.map((x) => (x - m) ** 2)));
+};
+const dist = (a: XY, b: XY) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+// 100 inside the band; ramps up from 0 below it, eases down to 70 for constant motion.
+export function gestureScore(frac: number): number {
+  const [lo, hi] = PRESENCE_TUNING.gestureBand;
+  if (frac < lo) return Math.round((frac / lo) * 100);
+  if (frac <= hi) return 100;
+  return Math.round(100 - 30 * Math.min(1, (frac - hi) / (1 - hi)));
+}
+
+export function summarize(frames: Frame[], opts: { scriptOpen: boolean }): Presence | null {
+  const T = PRESENCE_TUNING;
+  if (frames.length < 2 || frames[frames.length - 1].t - frames[0].t < T.minMs) return null;
+
+  const eyeContact = frames.filter((f) => f.looking).length / frames.length;
+
+  const faces = frames.filter((f) => f.face);
+  const smileFrac = faces.length ? faces.filter((f) => f.smile > T.smileOn).length / faces.length : 0;
+  const windows = new Map<number, number[]>();
+  for (const f of faces) {
+    const k = Math.floor((f.t - frames[0].t) / 1000);
+    if (!windows.has(k)) windows.set(k, []);
+    windows.get(k)!.push(f.smile + f.brows);
+  }
+  const spreads = [...windows.values()].filter((w) => w.length >= 3).map(sd);
+  const exprRange = mean(spreads);
+
+  let travelled = 0;
+  let secs = 0;
+  let pairs = 0;
+  let gesturing = 0;
+  for (let i = 1; i < frames.length; i++) {
+    const a = frames[i - 1];
+    const b = frames[i];
+    if (!a.body || !b.body || b.t - a.t > T.maxGapMs) continue;
+    pairs++;
+    secs += (b.t - a.t) / 1000;
+    travelled += mean(b.body.map((q, j) => dist(q, a.body![j])));
+    if (a.wrists.length && b.wrists.some((w) => Math.min(...a.wrists.map((v) => dist(w, v))) > T.gestureStep)) gesturing++;
+  }
+  const motion = secs > 0 ? travelled / secs : 0;
+  const gestureFrac = pairs ? gesturing / pairs : 0;
+
+  const scores: PresenceScores = {
+    eye: scoreLinear(eyeContact, ...T.eye),
+    expr: spreads.length ? Math.round((scoreLinear(smileFrac, ...T.smileFrac) + scoreLinear(exprRange, ...T.exprRange)) / 2) : null,
+    still: secs >= 1 ? scoreLinear(motion, ...T.motion) : null,
+    gesture: secs >= 1 ? gestureScore(gestureFrac) : null,
+  };
+  const parts = [opts.scriptOpen ? null : scores.eye, scores.expr, scores.still, scores.gesture].filter(
+    (s): s is number => s !== null,
+  );
+  if (!parts.length) return null;
+  return { eyeContact, smileFrac, exprRange, motion, gestureFrac, scores, eyeScored: !opts.scriptOpen, score: Math.round(mean(parts)) };
+}
+
+// How long the speaker has been looking away, as of the latest frame.
+export function awayMs(frames: Frame[]): number {
+  if (!frames.length) return 0;
+  const last = frames[frames.length - 1].t;
+  for (let i = frames.length - 1; i >= 0; i--) if (frames[i].looking) return last - frames[i].t;
+  return last - frames[0].t;
+}
+
+// The live card's nudge: the weakest non-eye signal under 70, if any.
+export function weakestCue(p: Presence): string {
+  const cues: Array<[number | null, string]> = [
+    [p.scores.expr, "smile more"],
+    [p.scores.still, "stay still"],
+    [p.scores.gesture, "use your hands"],
+  ];
+  const worst = cues.filter((c): c is [number, string] => c[0] !== null).sort((a, b) => a[0] - b[0])[0];
+  return worst && worst[0] < 70 ? worst[1] : "looking good";
+}
