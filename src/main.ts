@@ -14,6 +14,7 @@ import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
+import { scoreLinear } from "./presence";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
@@ -1969,12 +1970,6 @@ function perMinuteWpm(): { minute: number; wpm: number }[] {
 }
 
 // Linear score in [0,100]: `good` value → 100, `bad` value → 0 (either direction).
-function scoreLinear(v: number, good: number, bad: number): number {
-  if (good === bad) return 100;
-  const t = (v - bad) / (good - bad);
-  return Math.round(Math.max(0, Math.min(1, t)) * 100);
-}
-
 // Pace scores 100 inside the target band, falling off outside (0 at ~50 WPM out).
 function scorePace(wpm: number, low: number, high: number): number {
   if (wpm <= 0) return 0;
