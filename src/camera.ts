@@ -3,13 +3,17 @@
 // served from public/mediapipe/ (see README). Nothing here loads until the
 // camera is first switched on.
 import { FaceLandmarker, FilesetResolver, HandLandmarker, PoseLandmarker } from "@mediapipe/tasks-vision";
-import { toFrame, type Frame } from "./presence";
+import { toFrame, type Frame, type Pt } from "./presence";
 
 const BASE = "/mediapipe";
 // Inference size. The camera delivers 1080p whatever we ask; feeding that
 // straight in halves the frame rate (spike, 2026-10-07).
-const W = 640;
-const H = 360;
+export const FRAME_W = 640;
+export const FRAME_H = 360;
+const W = FRAME_W;
+const H = FRAME_H;
+// Finger bones (landmark index pairs) for drawing a hand.
+export const HAND_BONES = HandLandmarker.HAND_CONNECTIONS;
 const STEP_MS = 80; // ~12 fps
 
 interface Models {
@@ -48,7 +52,9 @@ let stream: MediaStream | null = null;
 let raf = 0;
 let gen = 0; // bumps on every start/stop so a slow start can't outlive a stop
 
-export async function startCamera(video: HTMLVideoElement, onFrame: (f: Frame) => void, onEnded: () => void): Promise<void> {
+// onFrame gets the scored Frame plus each detected hand's 21 normalised
+// landmarks (for the live highlight only; never stored).
+export async function startCamera(video: HTMLVideoElement, onFrame: (f: Frame, hands: Pt[][]) => void, onEnded: () => void): Promise<void> {
   stopCamera();
   const my = ++gen;
   const m = await loadModels();
@@ -96,6 +102,7 @@ export async function startCamera(video: HTMLVideoElement, onFrame: (f: Frame) =
         H,
         now,
       ),
+      h.landmarks,
     );
   };
   raf = requestAnimationFrame(tick);

@@ -196,6 +196,27 @@ export function weakestCue(p: Presence): string {
   return worst && worst[0] < 70 ? worst[1] : "looking good";
 }
 
+// Which of the current hands moved since the previous frame, by the gesture
+// score's own rule (wrist travel > gestureStep shoulder widths), so what the
+// live highlight shows is what gets counted. Hands are 21 normalised landmarks
+// (0 = wrist); each is matched to the nearest previous wrist. Without a body
+// to scale by, assume a typical shoulder width of 20% of the frame.
+export function movingHands(prev: Pt[][], cur: Pt[][], w: number, h: number, sw: number): boolean[] {
+  const step = PRESENCE_TUNING.gestureStep * (sw || 0.2 * w);
+  const px = (q: Pt): XY => [q.x * w, q.y * h];
+  const before = prev.map((l) => px(l[0]));
+  return cur.map((l) => before.length > 0 && Math.min(...before.map((b) => dist(px(l[0]), b))) > step);
+}
+
+// Normalised camera coords → pixels in a box showing the video with
+// `object-fit: cover` (scaled to fill, centred, overflow cropped).
+export function coverMap(srcW: number, srcH: number, boxW: number, boxH: number): (p: Pt) => XY {
+  const k = Math.max(boxW / srcW, boxH / srcH);
+  const dx = (boxW - srcW * k) / 2;
+  const dy = (boxH - srcH * k) / 2;
+  return (p) => [p.x * srcW * k + dx, p.y * srcH * k + dy];
+}
+
 // The live card's sub-line. No "look at the camera" while a script is open:
 // reading looks down, and eye contact isn't scored then anyway.
 export function liveCue(frames: Frame[], opts: { recording: boolean; scriptOpen: boolean }): string {

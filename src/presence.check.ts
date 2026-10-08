@@ -1,6 +1,6 @@
 // Run: bun src/presence.check.ts
 import assert from "node:assert";
-import { headAngles, toFrame, scoreLinear, summarize, gestureScore, awayMs, weakestCue, liveCue, type RawResults, type Frame } from "./presence";
+import { headAngles, toFrame, scoreLinear, summarize, gestureScore, awayMs, weakestCue, liveCue, movingHands, coverMap, type RawResults, type Frame } from "./presence";
 
 const near = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 const rad = (d: number) => (d * Math.PI) / 180;
@@ -170,5 +170,29 @@ assert.notEqual(liveCue(lookedAway, { recording: true, scriptOpen: true }), "loo
 assert.equal(liveCue(lookedAway, { recording: false, scriptOpen: false }), "camera on");
 assert.equal(liveCue(frames(2), { recording: true, scriptOpen: false }), "warming up…");
 assert.equal(liveCue(frames(10), { recording: true, scriptOpen: false }), "smile more");
+
+// --- hand highlight ---------------------------------------------------------
+// A hand counts as moving when its wrist travels more than gestureStep shoulder
+// widths since the previous frame — the same rule the gesture score uses.
+const hand = (x: number, y: number) => Array.from({ length: 21 }, () => ({ x, y }));
+// 640×360 frame, shoulders 128 px → gestureStep 0.04 = 5.12 px
+assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 10 / 640, 0.5)], 640, 360, 128), [true]); // 10 px
+assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 3 / 640, 0.5)], 640, 360, 128), [false]); // 3 px: jitter
+assert.deepStrictEqual(movingHands([], [hand(0.5, 0.5)], 640, 360, 128), [false]); // just appeared: no motion yet
+// two hands, matched to the nearest previous wrist; only the right one moved
+assert.deepStrictEqual(movingHands([hand(0.2, 0.5), hand(0.8, 0.5)], [hand(0.2, 0.5), hand(0.8, 0.6)], 640, 360, 128), [false, true]);
+// no body to scale by → assume a typical shoulder width (20% of the frame): 10 px still counts
+assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 10 / 640, 0.5)], 640, 360, 0), [true]);
+
+// coverMap: normalised camera coords → pixels in an object-fit: cover box.
+const exact = coverMap(1920, 1080, 160, 90); // same aspect: no crop
+assert.deepStrictEqual(exact({ x: 0.5, y: 0.5 }), [80, 45]);
+assert.deepStrictEqual(exact({ x: 1, y: 1 }), [160, 90]);
+const wide = coverMap(1920, 1080, 300, 100); // wider box: crops top and bottom
+assert.deepStrictEqual(wide({ x: 0.5, y: 0.5 }), [150, 50]);
+near(wide({ x: 0, y: 0 })[1], -34.375);
+const tall = coverMap(1920, 1080, 100, 100); // square box: crops the sides
+near(tall({ x: 0, y: 0.5 })[0], -38.888);
+near(tall({ x: 0.5, y: 0 })[1], 0);
 
 console.log("presence ok");

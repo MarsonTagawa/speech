@@ -14,8 +14,8 @@ import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
-import { scoreLinear, summarize, liveCue, type Frame, type Presence } from "./presence";
-import { startCamera, stopCamera } from "./camera";
+import { scoreLinear, summarize, liveCue, movingHands, coverMap, type Frame, type Presence, type Pt } from "./presence";
+import { startCamera, stopCamera, FRAME_W, FRAME_H, HAND_BONES } from "./camera";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
@@ -1831,13 +1831,12 @@ function resetSession() {
   setStatus("Idle");
 }
 
-// Empties the live view — transcript, metrics, clock, read-along highlights.
-// The backend restarts utterance indices each session, so stale line
-// references are dropped too and a new session's index 1 starts a fresh line.
 const CAMERA_KEY = "speech.camera";
+const CAM_SCOPE_KEY = "speech.cameraScope";
 
-function onPresenceFrame(f: Frame) {
+function onPresenceFrame(f: Frame, hands: Pt[][]) {
   if (recording) presenceFrames.push(f);
+  drawHands(f, hands);
   if (f.t - presenceDrawnAt >= 500) {
     presenceDrawnAt = f.t;
     renderPresenceCard();
@@ -1852,15 +1851,69 @@ function renderPresenceCard() {
   setText("presence-sub", liveCue(presenceFrames, { recording, scriptOpen: scriptUsed }));
 }
 
+// Hand highlight: a hand that just moved (by the gesture score's own rule)
+// glows on the camera view and fades out, so a run of movement leaves a
+// short trail. Drawn once per inference frame (~12 fps).
+const HIGHLIGHT_MS = 300;
+let prevHands: Pt[][] = [];
+let litHands: Array<{ at: number; hand: Pt[] }> = [];
+
+function drawHands(f: Frame, hands: Pt[][]) {
+  const moving = movingHands(prevHands, hands, FRAME_W, FRAME_H, f.sw);
+  prevHands = hands;
+  hands.forEach((hand, i) => moving[i] && litHands.push({ at: f.t, hand }));
+  litHands = litHands.filter((l) => f.t - l.at < HIGHLIGHT_MS);
+
+  const cv = $<HTMLCanvasElement>("hand-overlay");
+  const video = $<HTMLVideoElement>("self-view");
+  const cx = cv?.getContext("2d");
+  if (!cv || !video || !cx) return;
+  const [bw, bh] = [cv.clientWidth, cv.clientHeight];
+  const dpr = devicePixelRatio || 1;
+  if (cv.width !== Math.round(bw * dpr) || cv.height !== Math.round(bh * dpr)) {
+    cv.width = Math.round(bw * dpr);
+    cv.height = Math.round(bh * dpr);
+  }
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx.clearRect(0, 0, bw, bh);
+  if (!litHands.length) return;
+
+  // Landmarks are relative to the whole camera frame; before its size is known, assume 16:9.
+  const map = video.videoWidth ? coverMap(video.videoWidth, video.videoHeight, bw, bh) : coverMap(FRAME_W, FRAME_H, bw, bh);
+  const u = Math.max(1, bw / 220); // line scale: thin in the small view, bolder full-scope
+  cx.strokeStyle = cx.fillStyle = cx.shadowColor = "#30d158";
+  cx.shadowBlur = 6 * u;
+  cx.lineWidth = u;
+  cx.lineCap = "round";
+  for (const { at, hand } of litHands) {
+    cx.globalAlpha = 1 - (f.t - at) / HIGHLIGHT_MS;
+    const pts = hand.map(map);
+    cx.beginPath();
+    for (const { start, end } of HAND_BONES) {
+      cx.moveTo(...pts[start]);
+      cx.lineTo(...pts[end]);
+    }
+    cx.stroke();
+    for (const [x, y] of pts) {
+      cx.beginPath();
+      cx.arc(x, y, 1.3 * u, 0, Math.PI * 2);
+      cx.fill();
+    }
+  }
+  cx.globalAlpha = 1;
+}
+
 async function setCamera(on: boolean) {
   const video = $<HTMLVideoElement>("self-view");
-  $("camera-btn")?.setAttribute("aria-pressed", String(on));
+  for (const id of ["video-btn", "camera-btn"]) $(id)?.setAttribute("aria-pressed", String(on));
   document.body.classList.toggle("camera-on", on);
   $("presence-card")?.toggleAttribute("hidden", !on);
-  video?.toggleAttribute("hidden", !on);
+  $("cam-view")?.toggleAttribute("hidden", !on);
   save(CAMERA_KEY, on ? "1" : "0");
   if (!on || !video) {
     stopCamera();
+    prevHands = [];
+    litHands = [];
     return;
   }
   try {
@@ -1873,6 +1926,9 @@ async function setCamera(on: boolean) {
   }
 }
 
+// Empties the live view — transcript, metrics, clock, read-along highlights.
+// The backend restarts utterance indices each session, so stale line
+// references are dropped too and a new session's index 1 starts a fresh line.
 function clearLive() {
   presenceFrames = [];
   segmentEls.clear();
@@ -4436,10 +4492,11 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   setRibbon(load(RIBBON_KEY) !== "0");
   $("ribbon-btn")?.addEventListener("click", () => setRibbon(document.body.classList.contains("no-ribbon")));
-  $("camera-btn")?.addEventListener("click", () => setCamera(!document.body.classList.contains("camera-on")));
+  for (const id of ["video-btn", "camera-btn"]) $(id)?.addEventListener("click", () => setCamera(!document.body.classList.contains("camera-on")));
   if (load(CAMERA_KEY) === "1") void setCamera(true);
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
   bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);
+  bindToggle("set-cam-scope", CAM_SCOPE_KEY, (on) => document.body.classList.toggle("cam-scope", on), false);
 
   renderFlappyBest();
   $("set-flappy")?.addEventListener("click", openFlappyDialog);
@@ -4709,10 +4766,8 @@ window.addEventListener("DOMContentLoaded", () => {
   } catch {
     // storage unavailable; default preset stands
   }
-  const presetButtons = [...document.querySelectorAll<HTMLButtonElement>("#preset-seg button")];
   const presetSel = $<HTMLSelectElement>("set-preset");
   const syncPreset = () => {
-    presetButtons.forEach((b) => b.setAttribute("aria-checked", String(b.dataset.preset === currentPreset)));
     if (presetSel) {
       presetSel.value = currentPreset;
       syncSelect(presetSel);
@@ -4725,7 +4780,6 @@ window.addEventListener("DOMContentLoaded", () => {
     syncPreset();
     renderStats();
   };
-  presetButtons.forEach((b) => b.addEventListener("click", () => setPreset(b.dataset.preset)));
   presetSel?.addEventListener("change", () => setPreset(presetSel.value));
   syncPreset();
   renderStats();

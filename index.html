@@ -42,6 +42,10 @@
         <section class="scope">
           <canvas id="shards" class="ribbon" aria-hidden="true"></canvas>
           <canvas id="ribbon" class="ribbon" aria-hidden="true"></canvas>
+          <div id="cam-view" class="cam-view" hidden>
+            <video id="self-view" autoplay playsinline muted></video>
+            <canvas id="hand-overlay" aria-hidden="true"></canvas>
+          </div>
           <div id="countdown" class="countdown" data-tip="Time left on the timer"></div>
           <div class="scope-grid"></div>
           <div class="scope-tl">
@@ -57,16 +61,15 @@
           <div class="scope-tr">
             <div id="clock" class="clock" data-tip="Elapsed session time">0:00</div>
             <div id="rms-label" class="sub" data-tip="Current mic signal level (RMS) and model sample rate">rms 0.00 · 16 kHz</div>
-            <video id="self-view" class="self-view" autoplay playsinline muted hidden></video>
           </div>
           <div class="scope-bl sub">
             <span id="model-chain" data-tip="Model chain — the live model streams text instantly, the correction model re-decodes it for accuracy (change in Settings)">tiny.en → medium.en</span>
             <span class="gpu" data-tip="Running on the local GPU — audio never leaves this machine"><i></i>GPU · on-device</span>
           </div>
-          <div id="preset-seg" class="seg scope-br" role="radiogroup" aria-label="Speaking context">
-            <button type="button" role="radio" data-preset="conversation" data-tip="Conversation — scores for a relaxed 120–160 wpm range">Conversation</button>
-            <button type="button" role="radio" data-preset="presentation" data-tip="Presentation — slower 100–140 wpm target">Presentation</button>
-            <button type="button" role="radio" data-preset="interview" data-tip="Interview — 120–155 wpm target">Interview</button>
+          <div class="seg scope-br">
+            <button id="video-btn" type="button" aria-pressed="false" data-tip="Video — grade eye contact, expression, stillness and gestures">
+              <svg viewBox="0 0 24 24"><path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11" /><rect x="2" y="6" width="14" height="12" rx="2" /></svg>Video
+            </button>
           </div>
         </section>
 
@@ -250,6 +253,10 @@
           <label class="set-row">
             <span>Timer countdown<span class="sub">While a timer is set, show a big countdown in place of the ribbon</span></span>
             <input id="set-countdown" type="checkbox" role="switch" />
+          </label>
+          <label class="set-row">
+            <span>Camera in scope<span class="sub">While the camera is on, show it in place of the ribbon</span></span>
+            <input id="set-cam-scope" type="checkbox" role="switch" />
           </label>
           <label class="set-row">
             <span>Ghost caret<span class="sub">When reading a saved speech, underline where your best attempt was at this moment</span></span>
