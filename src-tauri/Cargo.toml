@@ -25,6 +25,10 @@ opt-level = 3
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+# Golden tests decode MediaPipe's test images (src/vision/*_golden tests).
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
