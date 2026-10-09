@@ -28,7 +28,7 @@ pub fn run(latest: Arc<Latest>, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>, o
             c
         }
         Err(e) => {
-            let _ = opened.send(Err(format!("Camera unavailable — {e}")));
+            let _ = opened.send(Err(e.to_string())); // the UI adds "Camera unavailable — "
             return;
         }
     };

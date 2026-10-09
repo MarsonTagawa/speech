@@ -126,20 +126,28 @@ impl VisionState {
     /// Signals both threads and waits for them; the camera is released when
     /// the capture thread returns.
     pub fn stop(&self) {
-        if let Some(r) = self.0.lock().unwrap().take() {
-            r.stop.store(true, Relaxed);
-            for t in r.threads {
-                let _ = t.join();
-            }
+        stop_running(&mut self.0.lock().unwrap());
+    }
+}
+
+fn stop_running(slot: &mut Option<Running>) {
+    if let Some(r) = slot.take() {
+        r.stop.store(true, Relaxed);
+        for t in r.threads {
+            let _ = t.join();
         }
     }
 }
 
 // async: model loading and opening the camera take a few hundred ms and must
-// not block the main thread (sync Tauri commands run on it).
+// not block the main thread (sync Tauri commands run on it). The state lock is
+// held for the whole start (there are no awaits), so overlapping start/stop
+// calls — a quick off→on click — run one after another instead of two starts
+// both opening the camera (EBUSY) and one session leaking.
 #[tauri::command]
 pub async fn start_vision(app: AppHandle, state: State<'_, VisionState>, results: Channel<VisionMsg>, preview: Channel<InvokeResponseBody>) -> Result<(), String> {
-    state.stop();
+    let mut slot = state.0.lock().unwrap();
+    stop_running(&mut slot);
     let dir = app.path().resolve("resources/vision", tauri::path::BaseDirectory::Resource).map_err(|e| e.to_string())?;
     let pipes = Pipelines::load(&dir)?;
     let latest = Arc::new(Latest::default());
@@ -157,7 +165,7 @@ pub async fn start_vision(app: AppHandle, state: State<'_, VisionState>, results
         let stop = stop.clone();
         thread::spawn(move || infer(pipes, latest, stop, ended, results, preview))
     };
-    *state.0.lock().unwrap() = Some(Running { stop, threads: vec![cap, inf] });
+    *slot = Some(Running { stop, threads: vec![cap, inf] });
     Ok(())
 }
 
