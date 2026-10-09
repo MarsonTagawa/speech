@@ -4,6 +4,7 @@
 pub mod geometry;
 pub mod face;
 pub mod pose;
+pub mod hands;
 mod model;
 #[cfg(test)]
 mod golden_util;
