@@ -39,6 +39,8 @@ ort = "=2.0.0-rc.13" # ONNX Runtime bindings for Rust
 cpal = "0.15"       # cross-platform audio capture
 ndarray = "0.15"
 serde_json = "1.0.151"
+nokhwa = { version = "0.10", features = ["input-native"] } # camera (v4l2 on Linux)
+jpeg-encoder = "0.7" # camera preview frames for the webview
 # Model downloads; same TLS setup ort-sys already builds it with.
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
 
