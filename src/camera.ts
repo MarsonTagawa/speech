@@ -1,116 +1,52 @@
-// Webcam capture + MediaPipe inference for presence grading. Pure scoring is in
-// presence.ts; this file only turns camera frames into Frames. Assets are
-// served from public/mediapipe/ (see README). Nothing here loads until the
-// camera is first switched on.
-import { FaceLandmarker, FilesetResolver, HandLandmarker, PoseLandmarker } from "@mediapipe/tasks-vision";
+// Camera presence: the camera and all vision inference run in Rust
+// (src-tauri/src/vision) so the UI thread stays free — doing it here blocked
+// animations for ~55 ms a tick. This file turns Rust's messages into Frames
+// and paints its JPEG preview.
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { toFrame, type Frame, type Pt } from "./presence";
 
-const BASE = "/mediapipe";
-// Inference size. The camera delivers 1080p whatever we ask; feeding that
-// straight in halves the frame rate (spike, 2026-10-07).
 export const FRAME_W = 640;
 export const FRAME_H = 360;
-const W = FRAME_W;
-const H = FRAME_H;
-// Finger bones (landmark index pairs) for drawing a hand.
-export const HAND_BONES = HandLandmarker.HAND_CONNECTIONS;
-const STEP_MS = 80; // ~12 fps
+// MediaPipe's 21-landmark hand skeleton (HandLandmarker.HAND_CONNECTIONS).
+export const HAND_BONES = [
+  [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11],
+  [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [0, 17], [17, 18], [18, 19], [19, 20],
+].map(([start, end]) => ({ start, end }));
 
-interface Models {
-  face: FaceLandmarker;
-  pose: PoseLandmarker;
-  hand: HandLandmarker;
+interface VisionFrame {
+  t: number;
+  blend: Record<string, number> | null;
+  head: { yaw: number; pitch: number } | null;
+  pose: Pt[] | null;
+  hands: Pt[][];
 }
+type VisionMsg = VisionFrame | { ended: true };
 
-async function create(delegate: "GPU" | "CPU"): Promise<Models> {
-  const files = await FilesetResolver.forVisionTasks(BASE);
-  const base = (file: string) => ({ baseOptions: { modelAssetPath: `${BASE}/${file}`, delegate }, runningMode: "VIDEO" as const });
-  // Sequential: the spike created them one after another; untested in parallel.
-  const face = await FaceLandmarker.createFromOptions(files, {
-    ...base("face_landmarker.task"),
-    outputFaceBlendshapes: true,
-    outputFacialTransformationMatrixes: true,
-  });
-  const pose = await PoseLandmarker.createFromOptions(files, base("pose_landmarker_lite.task"));
-  const hand = await HandLandmarker.createFromOptions(files, { ...base("hand_landmarker.task"), numHands: 2 });
-  return { face, pose, hand };
-}
+let gen = 0; // bumps on every start/stop so a stale session's messages are ignored
 
-// Loaded once per app run; GPU first, CPU (~10 fps) if WebGL init fails.
-let models: Promise<Models> | null = null;
-function loadModels(): Promise<Models> {
-  models ??= create("GPU")
-    .catch(() => create("CPU"))
-    .catch((e) => {
-      models = null; // let a later toggle retry
-      throw new Error(`Camera models missing — see README (${e})`);
-    });
-  return models;
-}
-
-let stream: MediaStream | null = null;
-let raf = 0;
-let gen = 0; // bumps on every start/stop so a slow start can't outlive a stop
-
-// onFrame gets the scored Frame plus each detected hand's 21 normalised
-// landmarks (for the live highlight only; never stored).
-export async function startCamera(video: HTMLVideoElement, onFrame: (f: Frame, hands: Pt[][]) => void, onEnded: () => void): Promise<void> {
-  stopCamera();
+// onFrame gets the scored Frame plus each hand's 21 normalised landmarks (for
+// the live highlight only; never stored).
+export async function startCamera(view: HTMLCanvasElement, onFrame: (f: Frame, hands: Pt[][]) => void, onEnded: () => void): Promise<void> {
   const my = ++gen;
-  const m = await loadModels();
-  const s = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: W }, height: { ideal: H }, frameRate: { ideal: 30 } },
-  });
-  if (my !== gen) {
-    s.getTracks().forEach((t) => t.stop());
-    return;
-  }
-  stream = s;
-  s.getVideoTracks()[0]?.addEventListener("ended", () => {
-    if (my === gen) {
-      stopCamera();
-      onEnded();
-    }
-  });
-  video.srcObject = s;
-  await video.play();
-
-  const cv = document.createElement("canvas");
-  cv.width = W;
-  cv.height = H;
-  const cx = cv.getContext("2d")!;
-  let last = 0;
-  const tick = (now: number) => {
+  const results = new Channel<VisionMsg>();
+  results.onmessage = (m) => {
     if (my !== gen) return;
-    raf = requestAnimationFrame(tick);
-    if (now - last < STEP_MS || video.readyState < 2) return;
-    last = now;
-    cx.drawImage(video, 0, 0, W, H);
-    const f = m.face.detectForVideo(cv, now);
-    const p = m.pose.detectForVideo(cv, now);
-    const h = m.hand.detectForVideo(cv, now);
-    const shapes = f.faceBlendshapes[0]?.categories;
-    onFrame(
-      toFrame(
-        {
-          blend: shapes ? Object.fromEntries(shapes.map((c) => [c.categoryName, c.score])) : null,
-          matrix: f.facialTransformationMatrixes[0]?.data ?? null,
-          pose: p.landmarks[0] ?? null,
-          wrists: h.landmarks.map((l) => l[0]),
-        },
-        W,
-        H,
-        now,
-      ),
-      h.landmarks,
-    );
+    if ("ended" in m) return onEnded();
+    onFrame(toFrame({ blend: m.blend, head: m.head, pose: m.pose, wrists: m.hands.map((h) => h[0]) }, FRAME_W, FRAME_H, m.t), m.hands);
   };
-  raf = requestAnimationFrame(tick);
+  const preview = new Channel<ArrayBuffer>();
+  const cx = view.getContext("2d")!;
+  preview.onmessage = async (buf) => {
+    if (my !== gen) return;
+    const bmp = await createImageBitmap(new Blob([buf], { type: "image/jpeg" })); // decoded off the main thread
+    if (view.width !== bmp.width || view.height !== bmp.height) [view.width, view.height] = [bmp.width, bmp.height];
+    cx.drawImage(bmp, 0, 0);
+    bmp.close();
+  };
+  await invoke("start_vision", { results, preview });
 }
 
 export function stopCamera() {
   gen++;
-  cancelAnimationFrame(raf);
-  stream?.getTracks().forEach((t) => t.stop());
-  stream = null;
+  void invoke("stop_vision");
 }

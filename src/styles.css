@@ -2459,7 +2459,6 @@ body.snapping .shot-btn { visibility: hidden; }
   background: #000;
   transform: scaleX(-1);
 }
-.cam-view video,
 .cam-view canvas {
   position: absolute;
   inset: 0;
@@ -2467,7 +2466,7 @@ body.snapping .shot-btn { visibility: hidden; }
   height: 100%;
   display: block;
 }
-.cam-view video {
+#self-view {
   object-fit: cover;
 }
 body.cam-scope .cam-view {
@@ -2477,7 +2476,7 @@ body.cam-scope .cam-view {
   border: 0;
   border-radius: 0;
 }
-body.cam-scope .cam-view video {
+body.cam-scope #self-view {
   opacity: 0.7; /* keeps the clock and status readable over the picture */
 }
 body.cam-scope.camera-on #ribbon,

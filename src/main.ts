@@ -1865,9 +1865,8 @@ function drawHands(f: Frame, hands: Pt[][]) {
   litHands = litHands.filter((l) => f.t - l.at < HIGHLIGHT_MS);
 
   const cv = $<HTMLCanvasElement>("hand-overlay");
-  const video = $<HTMLVideoElement>("self-view");
   const cx = cv?.getContext("2d");
-  if (!cv || !video || !cx) return;
+  if (!cv || !cx) return;
   const [bw, bh] = [cv.clientWidth, cv.clientHeight];
   const dpr = devicePixelRatio || 1;
   if (cv.width !== Math.round(bw * dpr) || cv.height !== Math.round(bh * dpr)) {
@@ -1878,8 +1877,8 @@ function drawHands(f: Frame, hands: Pt[][]) {
   cx.clearRect(0, 0, bw, bh);
   if (!litHands.length) return;
 
-  // Landmarks are relative to the whole camera frame; before its size is known, assume 16:9.
-  const map = video.videoWidth ? coverMap(video.videoWidth, video.videoHeight, bw, bh) : coverMap(FRAME_W, FRAME_H, bw, bh);
+  // Landmarks are normalised to the 640×360 camera frame the preview shows.
+  const map = coverMap(FRAME_W, FRAME_H, bw, bh);
   const u = Math.max(1, bw / 220); // line scale: thin in the small view, bolder full-scope
   cx.strokeStyle = cx.fillStyle = cx.shadowColor = "#30d158";
   cx.shadowBlur = 6 * u;
@@ -1904,7 +1903,7 @@ function drawHands(f: Frame, hands: Pt[][]) {
 }
 
 async function setCamera(on: boolean) {
-  const video = $<HTMLVideoElement>("self-view");
+  const video = $<HTMLCanvasElement>("self-view");
   for (const id of ["video-btn", "camera-btn"]) $(id)?.setAttribute("aria-pressed", String(on));
   document.body.classList.toggle("camera-on", on);
   $("presence-card")?.toggleAttribute("hidden", !on);

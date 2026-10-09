@@ -47,17 +47,9 @@ export interface Frame {
 // One frame of MediaPipe output, already unpacked by camera.ts.
 export interface RawResults {
   blend: Record<string, number> | null; // face blendshapes by name; null = no face
-  matrix: number[] | null; // 4×4 facial transformation, flattened
+  head: { yaw: number; pitch: number } | null; // degrees, from Rust (vision/face.rs)
   pose: Pt[] | null; // 33 normalised pose landmarks
   wrists: Pt[]; // hand landmark 0 per detected hand, normalised
-}
-
-// Head yaw/pitch in degrees from the facial transformation matrix. Works for
-// either flattening order: for a single-axis turn the mirrored off-diagonal
-// entries differ only in sign, and callers only use magnitudes.
-export function headAngles(m: number[]): { yaw: number; pitch: number } {
-  const deg = 180 / Math.PI;
-  return { yaw: Math.asin(Math.max(-1, Math.min(1, m[2]))) * deg, pitch: Math.atan2(m[6], m[10]) * deg };
 }
 
 const EYE_LOOK = ["Up", "Down", "In", "Out"].flatMap((d) => [`eyeLook${d}Left`, `eyeLook${d}Right`]);
@@ -66,8 +58,8 @@ export function toFrame(r: RawResults, w: number, h: number, t: number): Frame {
   const T = PRESENCE_TUNING;
   const b = r.blend;
   let looking = false;
-  if (b && r.matrix) {
-    const { yaw, pitch } = headAngles(r.matrix);
+  if (b && r.head) {
+    const { yaw, pitch } = r.head;
     looking =
       Math.abs(yaw) <= T.maxYaw && Math.abs(pitch) <= T.maxPitch && Math.max(...EYE_LOOK.map((k) => b[k] ?? 0)) < T.maxEyeLook;
   }
