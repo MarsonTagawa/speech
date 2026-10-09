@@ -3,6 +3,7 @@
 //! docs/superpowers/specs/2026-10-08-rust-vision-design.md).
 pub mod geometry;
 pub mod face;
+pub mod pose;
 mod model;
 #[cfg(test)]
 mod golden_util;
