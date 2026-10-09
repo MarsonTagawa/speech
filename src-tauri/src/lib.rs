@@ -4,6 +4,7 @@ mod models;
 mod pitch;
 mod screenshot;
 mod vad;
+mod vision;
 mod whisper;
 
 use audio::RecordingState;
