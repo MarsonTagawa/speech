@@ -50,6 +50,13 @@ The camera's presence grading (optional) runs MediaPipe's face, pose and hand
 models in Rust as ONNX. Convert them once (downloads ~250 MB of TensorFlow into
 `src-tauri/target/vision-convert/` the first time):
 
+```sh
+scripts/convert-vision-models.sh            # models → src-tauri/resources/vision/
+scripts/convert-vision-models.sh --goldens  # + golden test data for `cargo test -- --ignored`
+```
+
+Without them the Video toggle reports "Camera models missing" and the app
+works audio-only.
 
 ## Develop
 
