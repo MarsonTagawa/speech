@@ -92,7 +92,7 @@ State: `ScreenState(Mutex<Option<Capture>>)`, managed by Tauri like `RecordingSt
 
 **Capture thread.** For each frame from the crate, at most every 250 ms (4 Hz):
 1. Downscale to a 64×36 grayscale thumbnail.
-2. Compare it with the last *saved* thumbnail, one 8×8 cell at a time. Save the
+2. Compare it with the last *saved* thumbnail, one 8×6 cell at a time (an 8×6 grid). Save the
    frame if any cell's mean differs by more than `CHANGE_THRESHOLD`
    (start at 6/255; it's a tuning knob).
 3. To save, scale the frame to at most 1280 px wide, JPEG quality 70, and append
@@ -122,7 +122,7 @@ Add an offset if replays look out of sync.
 [kind: u8 (0 = screen, 1 = camera)][ms: u32][len: u32][jpeg: len bytes]
 ```
 
-A trailing partial record (crash mid-write) is ignored on read.
+A zero-length record means "off from here": for screen, the stream ended (its ms is `endsMs`); for camera, the camera turned off (the replay hides the bubble). A trailing partial record (crash mid-write) is ignored on read.
 
 - `session_frame(ts, kind, ms) -> Response`: the JPEG of the last record of
   `kind` with time ≤ `ms`, or an empty body if there's none.
@@ -153,7 +153,7 @@ Update the module doc comment to mention `.frames`.
   - On macOS/Windows it opens a small display menu (`screen_displays`) before
     `screen_prepare`.
   - While it's on, a small red "screen" badge shows next to the timer.
-  - The setting persists in localStorage like other prefs, but the stream
+  - The last chosen display persists in localStorage, but the stream
     doesn't: after a restart the toggle starts off.
 - **Report replay panel.** Shown when `session_has_frames` says screen frames exist.
   - A canvas draws the screen frame letterboxed, with the camera frame as a
