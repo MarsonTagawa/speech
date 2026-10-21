@@ -2567,3 +2567,6 @@ body:not(.no-ribbon) #camera-btn {
 .screen-badge { font-size: 10px; letter-spacing: 0.08em; color: var(--red); margin-left: 8px; }
 #screen-btn[aria-pressed="true"] { color: var(--red); }
 .sd-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+
+/* Screen replay above the report transcript (replay.ts draws it at 1280×720). */
+.rep-video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; margin: 8px 0 12px; }

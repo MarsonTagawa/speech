@@ -14,6 +14,7 @@ import { troubleSpots } from "./passages";
 import { DRILLS, MEMORISE, drillById } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
+import { showReplay, followClip, stopFollow } from "./replay";
 import { scoreLinear, summarize, liveCue, movingHands, coverMap, type Frame, type Presence, type Pt } from "./presence";
 import { startCamera, stopCamera, FRAME_W, FRAME_H, HAND_BONES } from "./camera";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
@@ -1811,7 +1812,12 @@ async function playClip(ts: number, el: HTMLElement, startMs: number, endMs: num
   try {
     const buf = await invoke<ArrayBuffer>("session_clip", { ts, startMs: Math.round(startMs), endMs: Math.round(endMs) });
     el.classList.add("playing");
-    playSamples(new Float32Array(buf), () => el.classList.remove("playing"));
+    let follow = 0;
+    playSamples(new Float32Array(buf), () => {
+      el.classList.remove("playing");
+      stopFollow(follow);
+    });
+    follow = followClip(ts, startMs, micAudio!); // the screen replay follows the audio
   } catch (e) {
     el.dataset.tip = String(e);
   }
@@ -2581,6 +2587,7 @@ function renderReport() {
   coachSay(generateTips(s));
   const rt = $("report-transcript");
   if (rt) rt.innerHTML = transcriptCopyHtml(d.lines);
+  if (rt) replays(rt, d.ts);
 }
 
 // Report entrance (styles.css .enter): on Stop and on every Stats click.
@@ -2639,9 +2646,14 @@ function liveLinesHtml(): Array<[number, string]> {
 function transcriptCopyHtml(lines: Array<[number, string]>): string {
   return (
     `<div class="panel-head"><span class="label">Transcript</span><button type="button" class="ctl replay-btn" data-replay aria-label="Replay session" data-tip="Replay the whole session's audio"></button></div>` +
+    `<canvas class="rep-video" hidden aria-label="Screen replay"></canvas>` +
     lines.map(([, html]) => html).join("")
   );
 }
+
+// Session ts's screen replay, if it was recorded, in the transcripts under `root`.
+const replays = (root: ParentNode, ts: number) =>
+  root.querySelectorAll<HTMLCanvasElement>("canvas.rep-video").forEach((c) => void showReplay(c, ts));
 
 // A session's pace, second by second — all the pace chart draws. Saved with
 // every session, so older sessions (whose per-line data is pruned) keep it.
@@ -4109,6 +4121,7 @@ function renderSessionPop() {
   if (i < 0) return $<HTMLDialogElement>("session-dialog")?.close(); // cleared since
   const head = `<div class="panel"><div class="panel-head"><button type="button" class="ctl" data-pop-history>Open in History</button><button type="button" class="ctl" data-pop-close>Close</button></div></div>`;
   el.innerHTML = sessionPageHtml(i, popDetail, head);
+  replays(el, history[i].ts);
 }
 
 // `anim`: play the open/back choreography (styles.css .enter); plain
@@ -4119,6 +4132,7 @@ function renderHistory(anim = false) {
   const i = history.findIndex((h) => h.ts === histPage);
   if (i < 0) histPage = 0; // cleared since
   el.innerHTML = i < 0 ? historyListHtml() : historyPageHtml(i);
+  if (i >= 0) replays(el, history[i].ts);
   el.classList.remove("leave");
   el.classList.toggle("enter", anim);
   if (anim && i >= 0) countUp(el, [[".rep-hero .ring-num", 200, 850], [".rep-delta .num", 420, 600], [".tile .big", 640, 650], [".fw-list.dims .n", 900, 700]]);
