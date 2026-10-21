@@ -2,6 +2,7 @@ mod audio;
 mod history;
 mod models;
 mod pitch;
+mod screen;
 mod screenshot;
 mod vad;
 mod vision;

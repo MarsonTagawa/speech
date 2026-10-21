@@ -51,20 +51,24 @@ Rejected:
 - **A real video codec (openh264 + MP4).** Only needed for export, which is a
   non-goal. JPEG frames reuse `jpeg-encoder`, which we already depend on.
 
-### Capture crate
+### Capture path
 
-One crate that wraps all three OS capture APIs, so `screen.rs` has no
-per-platform code. The first candidate is **`scap`** (PipeWire portal,
-ScreenCaptureKit, WGC); the fallback is **`xcap`**. The first plan step is a
-spike that proves the chosen crate on this Linux box (Hyprland, portal picker,
-frames arriving at ≥ 4 Hz) and records:
-- the crate's version and Linux build deps for `flake.nix` (libpipewire,
-  clang/bindgen);
-- whether the cursor is embedded in frames;
-- how it lists displays on macOS and Windows.
+Settled by the Task 1 spike (2026-10-21). Neither cross-platform crate works
+on Wayland as published:
+- `scap` 0.0.8 times the portal picker out after 10 s, panics, and leaves a
+  stuck picker that blocks later requests.
+- `xcap` 0.9.8 calls Start before the user's pick registers ("Sources not
+  selected"), and its PipeWire format request didn't match Hyprland's offer.
 
-If neither crate works on Wayland, stop and revisit this spec. Don't hand-roll
-the portal path inside this feature.
+So `screen/stream.rs` has two paths behind one interface:
+- **Linux:** the ScreenCast portal via `ashpd` (it waits for the pick), then
+  the portal's PipeWire stream via `pipewire`. It accepts any 4-byte RGB layout
+  at any size and frame rate. Verified on Hyprland: 1920×1080 frames, and
+  stopping closes the session in ~0.3 s.
+- **macOS/Windows:** `xcap`'s recorder (ScreenCaptureKit / WGC). Unverified here.
+
+Hyprland only sends frames when the screen changes, so a static slide yields
+no new frames, which is exactly what the change-driven recorder wants.
 
 ## Components
 

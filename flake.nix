@@ -47,6 +47,9 @@
             gdk-pixbuf
             librsvg
             dbus
+
+            # Screen replay (screen/stream.rs): PipeWire screencast via xdg-desktop-portal
+            pipewire
           ];
 
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
