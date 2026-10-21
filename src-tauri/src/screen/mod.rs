@@ -15,12 +15,14 @@ use serde::Serialize;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::{ipc::Response, AppHandle, Emitter, Manager};
 
 const SAMPLE: Duration = Duration::from_millis(250);
+/// How often an idle capture checks for stop and a new session.
+const IDLE_POLL: Duration = Duration::from_millis(50);
 const CAMERA_QUEUE: usize = 4;
 const CAMERA_EVERY: u32 = 3; // of the camera's ~30 fps
 
@@ -38,6 +40,14 @@ impl Session {
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// Separate from SESSION so the camera thread never waits on a frame being encoded.
 static CAMERA_TX: Mutex<Option<SyncSender<Option<Vec<u8>>>>> = Mutex::new(None);
+/// SESSION and CAMERA_TX, past any poisoning: the audio and camera threads call
+/// into this module, and a panic elsewhere must not take their recordings down too.
+fn session() -> MutexGuard<'static, Option<Session>> {
+    SESSION.lock().unwrap_or_else(|e| e.into_inner())
+}
+fn camera_tx() -> MutexGuard<'static, Option<SyncSender<Option<Vec<u8>>>>> {
+    CAMERA_TX.lock().unwrap_or_else(|e| e.into_inner())
+}
 /// The replay index of the most recently viewed session.
 static INDEX: Mutex<Option<(i64, Vec<Rec>)>> = Mutex::new(None);
 
@@ -77,11 +87,11 @@ fn start_session(dir: &Path, ts: i64, live: bool) -> Result<bool, String> {
         return Ok(false);
     }
     let rec = Recorder::create(&dir.join(format!("{ts}.frames"))).map_err(|e| e.to_string())?;
-    *SESSION.lock().unwrap() = Some(Session { rec, clock: None });
+    *session() = Some(Session { rec, clock: None });
     let (tx, rx) = mpsc::sync_channel::<Option<Vec<u8>>>(CAMERA_QUEUE);
     thread::spawn(move || {
         for frame in rx {
-            if let Some(s) = SESSION.lock().unwrap().as_mut() {
+            if let Some(s) = session().as_mut() {
                 let ms = s.ms();
                 if let Err(e) = s.rec.camera(ms, frame.as_deref()) {
                     eprintln!("[screen] camera frame: {e}");
@@ -89,21 +99,21 @@ fn start_session(dir: &Path, ts: i64, live: bool) -> Result<bool, String> {
             }
         }
     });
-    *CAMERA_TX.lock().unwrap() = Some(tx);
+    *camera_tx() = Some(tx);
     Ok(true)
 }
 
 /// The session's first audio chunk arrived: ms 0 of its `.pcm`. Idempotent.
 pub fn mark_clock() {
-    if let Some(s) = SESSION.lock().unwrap().as_mut() {
+    if let Some(s) = session().as_mut() {
         s.clock.get_or_insert_with(Instant::now);
     }
 }
 
 /// Session stops (audio::stop_recording).
 pub fn end() {
-    CAMERA_TX.lock().unwrap().take(); // the writer thread drains and exits
-    if let Some(s) = SESSION.lock().unwrap().take() {
+    camera_tx().take(); // the writer thread drains and exits
+    if let Some(s) = session().take() {
         if let Err(e) = s.rec.finish() {
             eprintln!("[screen] finishing the video: {e}");
         }
@@ -115,20 +125,20 @@ pub fn camera_frame(n: u32, rgb: &[u8]) {
     if !n.is_multiple_of(CAMERA_EVERY) {
         return;
     }
-    if let Some(tx) = CAMERA_TX.lock().unwrap().as_ref() {
+    if let Some(tx) = camera_tx().as_ref() {
         let _ = tx.try_send(Some(rgb.to_vec())); // full → drop the frame
     }
 }
 
 /// The camera turned off (vision::stop_running): the replay hides the bubble from here.
 pub fn camera_off() {
-    if let Some(tx) = CAMERA_TX.lock().unwrap().as_ref() {
+    if let Some(tx) = camera_tx().as_ref() {
         let _ = tx.send(None); // must not be dropped like a frame
     }
 }
 
 fn screen_sample(w: usize, h: usize, rgb: &[u8]) {
-    let mut g = SESSION.lock().unwrap();
+    let mut g = session();
     if let Some(s) = g.as_mut() {
         let ms = s.ms();
         if let Err(e) = s.rec.screen(ms, w, h, rgb) {
@@ -139,27 +149,46 @@ fn screen_sample(w: usize, h: usize, rgb: &[u8]) {
 }
 
 fn stream_ended() {
-    if let Some(s) = SESSION.lock().unwrap().as_mut() {
+    if let Some(s) = session().as_mut() {
         let ms = s.ms();
         let _ = s.rec.screen_ended(ms);
     }
 }
 
-fn run(app: AppHandle, stream: stream::Stream, stop: Arc<AtomicBool>) {
-    let mut last: Option<Instant> = None;
+/// Whether the session has no screen frame yet (it gets the held one at once).
+fn session_wants_first() -> bool {
+    session().as_ref().is_some_and(|s| !s.rec.has_screen())
+}
+
+/// Feeds sessions from `next` until `stop` (None) or the stream ends (its
+/// reason). Every SAMPLE it records the newest frame received since the last
+/// sample, holding frames that arrive in between rather than dropping them:
+/// the compositor may not send another once the screen settles.
+fn feed(next: impl Fn(Duration) -> Result<Option<stream::Frame>, String>, stop: &AtomicBool) -> Option<String> {
+    let mut held: Option<stream::Frame> = None;
+    let mut fresh = false; // `held` not yet sampled
+    let mut last = Instant::now() - SAMPLE;
     while !stop.load(Relaxed) {
-        match stream.next(Duration::from_millis(500)) {
-            Ok(Some(f)) if last.is_none_or(|t| t.elapsed() >= SAMPLE) => {
-                last = Some(Instant::now());
+        let wait = if fresh { SAMPLE.saturating_sub(last.elapsed()) } else { IDLE_POLL };
+        match next(wait) {
+            Ok(Some(f)) => (held, fresh) = (Some(f), true),
+            Ok(None) => {}
+            Err(e) => return Some(e),
+        }
+        if let Some(f) = &held {
+            if (fresh && last.elapsed() >= SAMPLE) || session_wants_first() {
                 screen_sample(f.w, f.h, &f.rgb);
-            }
-            Ok(_) => {}
-            Err(e) => {
-                stream_ended();
-                let _ = app.emit("screen_ended", e);
-                return;
+                (fresh, last) = (false, Instant::now());
             }
         }
+    }
+    None
+}
+
+fn run(app: AppHandle, stream: stream::Stream, stop: Arc<AtomicBool>) {
+    if let Some(e) = feed(|t| stream.next(t), &stop) {
+        stream_ended();
+        let _ = app.emit("screen_ended", e);
     }
 }
 
@@ -296,6 +325,84 @@ mod tests {
         assert!(!start_session(&d, 5, false).unwrap());
         assert!(!d.join("5.frames").exists());
         fs::remove_dir_all(d).unwrap();
+    }
+
+    fn flat(v: u8) -> stream::Frame {
+        stream::Frame { w: 64, h: 36, rgb: vec![v; 64 * 36 * 3] }
+    }
+
+    /// A fake capture: hands out each (at, frame) once its time has come, then goes quiet.
+    fn script(frames: Vec<(u64, stream::Frame)>) -> impl Fn(Duration) -> Result<Option<stream::Frame>, String> {
+        let t0 = Instant::now();
+        let q = Mutex::new(std::collections::VecDeque::from(frames));
+        move |timeout| {
+            let mut q = q.lock().unwrap();
+            match q.front() {
+                Some((at, _)) if t0.elapsed() >= Duration::from_millis(*at) => Ok(q.pop_front().map(|(_, f)| f)),
+                _ => {
+                    thread::sleep(timeout.min(Duration::from_millis(10)));
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    // Review #1: the last frame of a burst (a slide settling) arrives inside the
+    // sample gap, and nothing follows it. It must still be recorded.
+    #[test]
+    fn feed_records_the_last_frame_of_a_burst() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let d = dir("burst");
+        assert!(start_session(&d, 11, true).unwrap());
+        mark_clock();
+        let stop = AtomicBool::new(false);
+        thread::scope(|sc| {
+            sc.spawn(|| feed(script(vec![(0, flat(10)), (100, flat(120)), (150, flat(240))]), &stop));
+            thread::sleep(Duration::from_millis(700));
+            stop.store(true, Relaxed);
+        });
+        end();
+        let idx = frames::index(&d.join("11.frames")).unwrap();
+        assert_eq!(idx.len(), 2, "{idx:?}"); // the first frame, then the settled one
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    // Review #1: a session that starts on a static screen gets the held frame at
+    // once, not a blank replay until something changes.
+    #[test]
+    fn feed_gives_a_new_session_the_current_screen() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let d = dir("static");
+        let stop = AtomicBool::new(false);
+        thread::scope(|sc| {
+            sc.spawn(|| feed(script(vec![(0, flat(10))]), &stop));
+            thread::sleep(Duration::from_millis(300)); // idle: frame already received
+            assert!(start_session(&d, 12, true).unwrap());
+            thread::sleep(Duration::from_millis(300));
+            stop.store(true, Relaxed);
+        });
+        end();
+        let idx = frames::index(&d.join("12.frames")).unwrap();
+        assert_eq!(idx.len(), 1, "{idx:?}");
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    // Review #7: the audio thread calls these hooks; a panic elsewhere while
+    // holding SESSION must not take the session's audio down with it.
+    #[test]
+    fn hooks_survive_a_poisoned_session_lock() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let _ = thread::spawn(|| {
+            let _s = SESSION.lock().unwrap();
+            panic!("poison SESSION");
+        })
+        .join();
+        assert!(SESSION.is_poisoned());
+        mark_clock();
+        camera_frame(3, &[0; 3]);
+        camera_off();
+        end();
+        SESSION.clear_poison();
     }
 
     #[test]

@@ -8,8 +8,8 @@
 //! request didn't match Hyprland's), so this path is ours.
 //! macOS/Windows: xcap's recorder (ScreenCaptureKit / Windows Graphics Capture).
 use serde::Serialize;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::time::Duration;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
 
 pub struct Frame {
     pub w: usize,
@@ -67,9 +67,49 @@ pub fn displays() -> Vec<Display> {
 /// The newest frame is all the recorder needs; it samples every 250 ms.
 const MIN_GAP: Duration = Duration::from_millis(200);
 
+/// The newest raw frame from the capture, converted and sent at most every
+/// MIN_GAP. A frame held back by the gap isn't lost: `flush` sends it later
+/// (each path calls it on a timer too), because a compositor that only sends
+/// frames on change may never send another (a slide that has settled).
+// ponytail: copies every raw frame (~8 MB at 1080p; ~0.5 GB/s while the screen animates at 60 Hz); convert in place if that shows up.
+#[derive(Default)]
+struct Newest {
+    raw: Vec<u8>,
+    w: usize,
+    h: usize,
+    order: [usize; 3],
+    dirty: bool,
+    last: Option<Instant>,
+}
+
+impl Newest {
+    fn put(&mut self, w: usize, h: usize, raw: &[u8], order: [usize; 3]) {
+        self.raw.clear();
+        self.raw.extend_from_slice(raw);
+        (self.w, self.h, self.order, self.dirty) = (w, h, order, true);
+    }
+
+    /// Sends the held frame if it's new and the gap has passed. Returns false
+    /// once the receiving Stream is gone.
+    fn flush(&mut self, tx: &SyncSender<Result<Frame, String>>) -> bool {
+        if !self.dirty || self.last.is_some_and(|t| t.elapsed() < MIN_GAP) {
+            return true;
+        }
+        match tx.try_send(Ok(Frame { w: self.w, h: self.h, rgb: pack(self.w, self.h, &self.raw, self.order) })) {
+            Ok(()) => {
+                self.dirty = false;
+                self.last = Some(Instant::now());
+                true
+            }
+            Err(TrySendError::Full(_)) => true, // still dirty: retried on the next call
+            Err(TrySendError::Disconnected(_)) => false,
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
-    use super::{pack, Display, Frame, Stream, MIN_GAP};
+    use super::{Display, Frame, Newest, Stream, MIN_GAP};
     use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType};
     use ashpd::desktop::PersistMode;
     use pipewire::spa::param::format::{FormatProperties, MediaSubtype, MediaType};
@@ -78,10 +118,11 @@ mod imp {
     use pipewire::spa::pod::{self, serialize::PodSerializer, Pod};
     use pipewire::spa::utils::{Direction, SpaTypes};
     use pipewire::stream::{StreamFlags, StreamRc, StreamState};
+    use std::cell::RefCell;
     use std::io::Cursor;
     use std::os::fd::OwnedFd;
+    use std::rc::Rc;
     use std::sync::mpsc::{self, SyncSender};
-    use std::time::Instant;
 
     pub fn displays() -> Vec<Display> {
         vec![]
@@ -175,14 +216,12 @@ mod imp {
             },
         )?;
 
-        struct Negotiated {
-            info: VideoInfoRaw,
-            last: Option<Instant>,
-        }
+        let newest = Rc::new(RefCell::new(Newest::default()));
+        let (newest_p, tx_p) = (newest.clone(), tx.clone());
         let err_tx = tx.clone();
         let ended = main_loop.clone();
         let _listener = stream
-            .add_local_listener_with_user_data(Negotiated { info: VideoInfoRaw::default(), last: None })
+            .add_local_listener_with_user_data(VideoInfoRaw::default())
             .state_changed(move |_, _, _, new| {
                 let why = match new {
                     StreamState::Error(e) => e,
@@ -192,22 +231,19 @@ mod imp {
                 let _ = err_tx.send(Err(why));
                 ended.quit();
             })
-            .param_changed(|_, n, id, param| {
+            .param_changed(|_, info, id, param| {
                 let Some(param) = param else { return };
                 if id != ParamType::Format.as_raw() {
                     return;
                 }
                 if let Ok((MediaType::Video, MediaSubtype::Raw)) = format_utils::parse_format(param) {
-                    let _ = n.info.parse(param);
+                    let _ = info.parse(param);
                 }
             })
-            .process(move |stream, n| {
+            .process(move |stream, info| {
                 let Some(mut buffer) = stream.dequeue_buffer() else { return };
-                if n.last.is_some_and(|t| t.elapsed() < MIN_GAP) {
-                    return; // only every ~200 ms is used; don't convert the rest
-                }
-                let Some(&(_, order)) = FORMATS.iter().find(|(f, _)| *f == n.info.format()) else { return };
-                let (w, h) = (n.info.size().width as usize, n.info.size().height as usize);
+                let Some(&(_, order)) = FORMATS.iter().find(|(f, _)| *f == info.format()) else { return };
+                let (w, h) = (info.size().width as usize, info.size().height as usize);
                 let datas = buffer.datas_mut();
                 let Some(d) = datas.first_mut() else { return };
                 let (offset, size) = (d.chunk().offset() as usize, d.chunk().size() as usize);
@@ -216,8 +252,9 @@ mod imp {
                 if w == 0 || h == 0 || bytes.len() < w * h * 4 {
                     return;
                 }
-                n.last = Some(Instant::now());
-                let _ = tx.try_send(Ok(Frame { w, h, rgb: pack(w, h, bytes, order) }));
+                let mut newest = newest_p.borrow_mut();
+                newest.put(w, h, bytes, order);
+                newest.flush(&tx_p);
             })
             .register()?;
 
@@ -249,6 +286,12 @@ mod imp {
         let mut params = [Pod::from_bytes(&bytes).ok_or(pipewire::Error::CreationFailed)?];
         stream.connect(Direction::Input, Some(node), StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS, &mut params)?;
 
+        // Sends a frame the gap held back once no newer one has come.
+        let timer = main_loop.loop_().add_timer(move |_| {
+            newest.borrow_mut().flush(&tx);
+        });
+        let _ = timer.update_timer(Some(MIN_GAP), Some(MIN_GAP));
+
         let quit_loop = main_loop.clone();
         let _quit = quit_rx.attach(main_loop.loop_(), move |()| quit_loop.quit());
         let _ = opened_tx.send(Ok(()));
@@ -259,9 +302,8 @@ mod imp {
 
 #[cfg(not(target_os = "linux"))]
 mod imp {
-    use super::{pack, Display, Frame, Stream, MIN_GAP};
-    use std::sync::mpsc;
-    use std::time::Instant;
+    use super::{Display, Newest, Stream, MIN_GAP};
+    use std::sync::mpsc::{self, RecvTimeoutError};
     use xcap::Monitor;
 
     pub fn displays() -> Vec<Display> {
@@ -282,17 +324,19 @@ mod imp {
         let (rec, frames) = monitor.video_recorder().map_err(|e| e.to_string())?;
         let (tx, rx) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
-            let mut last: Option<Instant> = None;
-            for f in frames {
-                if last.is_some_and(|t| t.elapsed() < MIN_GAP) {
-                    continue;
+            let mut newest = Newest::default();
+            loop {
+                match frames.recv_timeout(MIN_GAP) {
+                    Ok(f) => {
+                        let (w, h) = (f.width as usize, f.height as usize);
+                        if w > 0 && h > 0 && f.raw.len() >= w * h * 4 {
+                            newest.put(w, h, &f.raw, [0, 1, 2]);
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
                 }
-                let (w, h) = (f.width as usize, f.height as usize);
-                if w == 0 || h == 0 || f.raw.len() < w * h * 4 {
-                    continue;
-                }
-                last = Some(Instant::now());
-                if let Err(mpsc::TrySendError::Disconnected(_)) = tx.try_send(Ok(Frame { w, h, rgb: pack(w, h, &f.raw, [0, 1, 2]) })) {
+                if !newest.flush(&tx) {
                     break;
                 }
             }
@@ -317,6 +361,27 @@ fn pack(w: usize, h: usize, data: &[u8], order: [usize; 3]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    // Review #1: a compositor that only sends frames on change may never send
+    // another, so a frame held back by the gap must still go out later.
+    #[test]
+    fn a_frame_held_back_by_the_gap_is_sent_later() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let mut n = Newest::default();
+        n.put(1, 1, &[1, 1, 1, 0], [0, 1, 2]);
+        n.flush(&tx);
+        assert_eq!(rx.try_recv().unwrap().unwrap().rgb, vec![1, 1, 1]);
+        n.put(1, 1, &[2, 2, 2, 0], [0, 1, 2]); // inside the gap: held, not sent
+        n.flush(&tx);
+        assert!(rx.try_recv().is_err());
+        std::thread::sleep(MIN_GAP);
+        n.flush(&tx); // the timer's call, with no new frame
+        assert_eq!(rx.try_recv().unwrap().unwrap().rgb, vec![2, 2, 2]);
+        n.flush(&tx);
+        assert!(rx.try_recv().is_err()); // sent once
+    }
+
     #[test]
     fn packs_bgra_with_padded_rows() {
         // 2×2 BGRA, rows padded to 12 bytes (stride 12, 4 bytes junk each row).
@@ -324,6 +389,6 @@ mod tests {
             3, 2, 1, 255, 6, 5, 4, 255, 9, 9, 9, 9, //
             12, 11, 10, 255, 15, 14, 13, 255, 9, 9, 9, 9,
         ];
-        assert_eq!(super::pack(2, 2, &data, [2, 1, 0]), vec![1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(pack(2, 2, &data, [2, 1, 0]), vec![1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15]);
     }
 }

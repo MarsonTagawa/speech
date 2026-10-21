@@ -1593,6 +1593,8 @@ function setRecordingUi(on: boolean) {
 // display menu here on macOS/Windows. The capture stays open while on, so
 // sessions don't re-prompt; the choice of display is remembered, the toggle isn't.
 const SCREEN_DISPLAY_KEY = "speech.screenDisplay";
+// Bumped by every screen_ended: a prepare that one overtook didn't really start.
+let screenEnds = 0;
 function setScreenUi(on: boolean) {
   $("screen-btn")?.setAttribute("aria-pressed", String(on));
   $("screen-badge")?.toggleAttribute("hidden", !on);
@@ -1632,9 +1634,10 @@ async function toggleScreen() {
   if (display === undefined) return;
   if (display) save(SCREEN_DISPLAY_KEY, display);
   btn.disabled = true;
+  const ends = screenEnds;
   try {
     await invoke("screen_prepare", { display });
-    setScreenUi(true);
+    if (screenEnds === ends) setScreenUi(true);
   } catch (e) {
     appendError(`Screen recording isn't available — ${e}`);
   } finally {
@@ -4563,8 +4566,13 @@ window.addEventListener("DOMContentLoaded", () => {
   $("ribbon-btn")?.addEventListener("click", () => setRibbon(document.body.classList.contains("no-ribbon")));
   for (const id of ["video-btn", "camera-btn"]) $(id)?.addEventListener("click", () => setCamera(!document.body.classList.contains("camera-on")));
   $("screen-btn")?.addEventListener("click", () => void toggleScreen());
+  // The UI starts with the toggle off, so a capture left over from before a
+  // webview reload is released; one that ended (or couldn't save) is too.
+  void invoke("screen_release");
   void listen<string>("screen_ended", (e) => {
+    screenEnds++;
     setScreenUi(false);
+    void invoke("screen_release");
     appendError(`Screen recording stopped — ${e.payload}`);
   });
   if (load(CAMERA_KEY) === "1") void setCamera(true);

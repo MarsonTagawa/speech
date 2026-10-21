@@ -2564,7 +2564,8 @@ body:not(.no-ribbon) #camera-btn {
 }
 
 /* Record screen: badge by the clock while the toggle is on. */
-.screen-badge { font-size: 10px; letter-spacing: 0.08em; color: var(--red); margin-left: 8px; }
+/* Out of the flow, just above the clock, so it never shifts the scope's labels. */
+.screen-badge { position: absolute; right: 0; top: -12px; font-size: 10px; letter-spacing: 0.08em; color: var(--red); white-space: nowrap; }
 #screen-btn[aria-pressed="true"] { color: var(--red); }
 .sd-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
 

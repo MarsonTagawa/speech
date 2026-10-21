@@ -157,6 +157,11 @@ impl Recorder {
         Ok(true)
     }
 
+    /// Whether a screen frame has been saved yet.
+    pub fn has_screen(&self) -> bool {
+        self.thumb.is_some()
+    }
+
     pub fn screen_ended(&mut self, ms: u32) -> io::Result<()> {
         write_record(&mut self.out, SCREEN, ms, &[])
     }
