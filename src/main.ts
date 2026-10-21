@@ -1583,6 +1583,62 @@ function setRecordingUi(on: boolean) {
   $("rec-label")?.classList.toggle("on", on);
   $("live-btn")?.classList.toggle("recording", on);
   document.body.classList.toggle("recording", on); // memorise masks only while reciting
+  const screenBtn = $<HTMLButtonElement>("screen-btn");
+  if (screenBtn) screenBtn.disabled = on; // a session's replay has one source
+}
+
+// Record screen (screen/ in Rust): while on, each session also saves a replay
+// of one display. Turning it on asks the OS — the portal's picker on Linux, a
+// display menu here on macOS/Windows. The capture stays open while on, so
+// sessions don't re-prompt; the choice of display is remembered, the toggle isn't.
+const SCREEN_DISPLAY_KEY = "speech.screenDisplay";
+function setScreenUi(on: boolean) {
+  $("screen-btn")?.setAttribute("aria-pressed", String(on));
+  $("screen-badge")?.toggleAttribute("hidden", !on);
+}
+
+// The display to record: an id, null for the OS's own choice, undefined if cancelled.
+async function pickDisplay(): Promise<string | null | undefined> {
+  const list = await invoke<{ id: string; name: string }[]>("screen_displays");
+  if (list.length < 2) return list[0]?.id ?? null;
+  const dlg = $<HTMLDialogElement>("screen-dialog");
+  const box = $("screen-displays");
+  if (!dlg || !box) return null;
+  const last = load(SCREEN_DISPLAY_KEY);
+  box.innerHTML = list
+    .map((d) => `<button type="button" class="ctl${d.id === last ? " primary" : ""}" data-id="${escapeHtml(d.id)}">${escapeHtml(d.name)}</button>`)
+    .join("");
+  return new Promise((resolve) => {
+    dlg.onclick = (e) => {
+      const b = (e.target as Element).closest<HTMLButtonElement>("button");
+      if (!b) return;
+      dlg.close();
+      resolve(b.dataset.id); // Cancel has no id → undefined
+    };
+    dlg.oncancel = () => resolve(undefined);
+    dlg.showModal();
+  });
+}
+
+async function toggleScreen() {
+  const btn = $<HTMLButtonElement>("screen-btn");
+  if (!btn || recording) return;
+  if (btn.getAttribute("aria-pressed") === "true") {
+    setScreenUi(false);
+    return void invoke("screen_release");
+  }
+  const display = await pickDisplay();
+  if (display === undefined) return;
+  if (display) save(SCREEN_DISPLAY_KEY, display);
+  btn.disabled = true;
+  try {
+    await invoke("screen_prepare", { display });
+    setScreenUi(true);
+  } catch (e) {
+    appendError(`Screen recording isn't available — ${e}`);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Wall-clock session timer on the scope; also counts the timer (drill) down
@@ -4492,6 +4548,11 @@ window.addEventListener("DOMContentLoaded", () => {
   setRibbon(load(RIBBON_KEY) !== "0");
   $("ribbon-btn")?.addEventListener("click", () => setRibbon(document.body.classList.contains("no-ribbon")));
   for (const id of ["video-btn", "camera-btn"]) $(id)?.addEventListener("click", () => setCamera(!document.body.classList.contains("camera-on")));
+  $("screen-btn")?.addEventListener("click", () => void toggleScreen());
+  void listen<string>("screen_ended", (e) => {
+    setScreenUi(false);
+    appendError(`Screen recording stopped — ${e.payload}`);
+  });
   if (load(CAMERA_KEY) === "1") void setCamera(true);
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
   bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);

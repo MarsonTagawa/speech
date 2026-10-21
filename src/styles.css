@@ -2562,3 +2562,8 @@ body:not(.no-ribbon) #camera-btn {
     display: flex;
   }
 }
+
+/* Record screen: badge by the clock while the toggle is on. */
+.screen-badge { font-size: 10px; letter-spacing: 0.08em; color: var(--red); margin-left: 8px; }
+#screen-btn[aria-pressed="true"] { color: var(--red); }
+.sd-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }

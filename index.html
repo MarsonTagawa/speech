@@ -60,6 +60,7 @@
           </div>
           <div class="scope-tr">
             <div id="clock" class="clock" data-tip="Elapsed session time">0:00</div>
+            <span id="screen-badge" class="screen-badge" hidden data-tip="Recording the screen with each session">● SCREEN</span>
             <div id="rms-label" class="sub" data-tip="Current mic signal level (RMS) and model sample rate">rms 0.00 · 16 kHz</div>
           </div>
           <div class="scope-bl sub">
@@ -77,6 +78,7 @@
         <div class="strip" data-tauri-drag-region>
           <button id="record-btn" class="rec-btn" aria-label="Start recording" data-tip="Start recording (Space)"></button>
           <span id="rec-label" class="rec-label">REC</span>
+          <button id="screen-btn" class="tool-btn" type="button" aria-pressed="false" data-tip="Record screen — each session also saves a replay of your screen, with your camera in a corner">Screen</button>
           <div class="strip-sep"></div>
           <button id="reset-btn" class="tool-btn icon" type="button" aria-label="Reset session" data-tip="Reset — clears the transcript and all metrics for this session">
             <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
@@ -355,6 +357,13 @@
           <button class="ctl" value="save">Save</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="screen-dialog" class="modal" aria-labelledby="sd-title">
+      <div class="panel">
+        <span id="sd-title" class="label">Record which display?</span>
+        <div id="screen-displays" class="sd-list"></div>
+        <button type="button" class="ctl">Cancel</button>
+      </div>
     </dialog>
     <dialog id="session-dialog" class="modal session-modal" aria-label="Past session">
       <div id="session-pop" class="session-pop"></div>
