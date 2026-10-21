@@ -41,10 +41,14 @@ pub fn run(latest: Arc<Latest>, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>, o
             return;
         }
     };
+    let mut n = 0u32;
     while !stop.load(Relaxed) {
         match cam.frame().and_then(|f| f.decode_image::<RgbFormat>()) {
             Ok(img) => {
-                *latest.slot.lock().unwrap() = Some((now_ms(), img.into_raw()));
+                let rgb = img.into_raw();
+                n = n.wrapping_add(1);
+                crate::screen::camera_frame(n, &rgb); // replay's camera bubble
+                *latest.slot.lock().unwrap() = Some((now_ms(), rgb));
                 latest.ready.notify_one();
             }
             Err(e) => {

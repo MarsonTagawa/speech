@@ -136,6 +136,7 @@ fn stop_running(slot: &mut Option<Running>) {
         for t in r.threads {
             let _ = t.join();
         }
+        crate::screen::camera_off();
     }
 }
 

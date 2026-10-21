@@ -86,6 +86,7 @@ pub fn run() {
             app.manage(audio::MicTestState::default());
             app.manage(audio::SessionGen::default());
             app.manage(vision::VisionState::default());
+            app.manage(screen::ScreenState::default());
 
             Ok(())
         })
@@ -94,6 +95,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 window.state::<vision::VisionState>().stop();
+                window.state::<screen::ScreenState>().release();
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,6 +116,11 @@ pub fn run() {
             history::list_sessions,
             history::clear_sessions,
             screenshot::screenshot,
+            screen::screen_prepare,
+            screen::screen_release,
+            screen::screen_displays,
+            screen::session_frame,
+            screen::session_has_frames,
             vision::start_vision,
             vision::stop_vision
         ])

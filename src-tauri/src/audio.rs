@@ -188,6 +188,9 @@ pub fn start_recording(app: AppHandle, correct: bool, correction_model: String, 
         vad.reset();
     }
 
+    // Screen replay (screen/): opens sessions/<ts>.frames if the toggle is on.
+    crate::screen::begin(&app, ts);
+
     let pcm_path = crate::history::detail_dir(&app).map(|d| d.join(format!("{ts}.pcm")));
     let app_handle = app.clone();
     let processing_thread = std::thread::spawn(move || {
@@ -221,6 +224,7 @@ pub fn stop_recording(app: AppHandle) -> Result<(), String> {
     if let Some(t) = handle.processing_thread.take() {
         let _ = t.join();
     }
+    crate::screen::end();
     Ok(())
 }
 
@@ -573,6 +577,9 @@ fn run_processing_loop(
     let partial_in_flight = Arc::new(AtomicBool::new(false));
 
     while let Ok(chunk) = audio_rx.recv() {
+        if pcm.is_empty() {
+            crate::screen::mark_clock(); // the replay's ms 0 is the .pcm's
+        }
         let mut resampled = resampler.process(&chunk);
         dc_blocker.process(&mut resampled);
         pending.extend(resampled);

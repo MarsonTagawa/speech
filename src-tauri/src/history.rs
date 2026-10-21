@@ -5,7 +5,8 @@
 //!
 //! Each session also gets a detail file (`sessions/<ts>.json`: per-line timing,
 //! analysis and transcript markup) so History can redraw its full report, and its
-//! audio (`sessions/<ts>.pcm`, written by audio.rs) for line playback. Those
+//! audio (`sessions/<ts>.pcm`, written by audio.rs) for line playback, and,
+//! when the screen was recorded, its replay (`sessions/<ts>.frames`, screen/). Those
 //! are kept only for the newest `KEEP_RECENT` sessions and starred ones; older
 //! sessions fall back to what their summary holds (incl. a per-second pace series).
 //!
