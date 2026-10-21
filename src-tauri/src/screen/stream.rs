@@ -128,16 +128,20 @@ mod imp {
         vec![]
     }
 
+    /// One runtime for every portal call, for the app's lifetime: ashpd shares
+    /// one D-Bus connection process-wide, and its tasks live on the runtime that
+    /// first made it, so a per-open runtime left later opens hanging forever.
+    /// A worker thread keeps that connection serviced between calls.
+    static RT: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().expect("tokio runtime for the screen portal")
+    });
+
     pub fn open(_display: Option<String>) -> Result<Stream, String> {
         let (tx, rx) = mpsc::sync_channel(1);
         let (opened_tx, opened) = mpsc::channel();
         let (quit, quit_rx) = pipewire::channel::channel();
         std::thread::spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(rt) => rt,
-                Err(e) => return void(opened_tx.send(Err(e.to_string()))),
-            };
-            rt.block_on(async move {
+            RT.block_on(async move {
                 let proxy = match Screencast::new().await {
                     Ok(p) => p,
                     Err(e) => return void(opened_tx.send(Err(e.to_string()))),
@@ -161,8 +165,10 @@ mod imp {
                 .await;
                 match started {
                     Ok((node, fd)) => {
-                        // Blocks this thread until the stream ends or the Stream is dropped.
-                        if let Err(e) = pump(node, fd, tx, quit_rx, opened_tx) {
+                        // Runs until the stream ends or the Stream is dropped, off the
+                        // runtime's worker so the portal connection stays serviced.
+                        let pumped = tokio::task::spawn_blocking(move || pump(node, fd, tx, quit_rx, opened_tx)).await;
+                        if let Ok(Err(e)) = pumped {
                             eprintln!("[screen] pipewire: {e}");
                         }
                     }

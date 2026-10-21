@@ -53,7 +53,7 @@ webkit2gtk = "=2.0.2"
 # Screen replay (screen/stream.rs): the ScreenCast portal and its PipeWire stream.
 ashpd = { version = "0.13", features = ["screencast"] }
 pipewire = "0.10"
-tokio = { version = "1", features = ["rt", "net", "time"] } # ashpd's runtime, on the capture thread
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] } # ashpd's runtime (see stream.rs RT)
 
 # Screen replay on macOS/Windows: ScreenCaptureKit / Windows Graphics Capture.
 [target.'cfg(not(target_os = "linux"))'.dependencies]
