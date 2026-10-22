@@ -84,24 +84,47 @@ struct Progress {
 #[tauri::command]
 pub async fn download_model(app: AppHandle, id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let dest = downloaded(&app, file(&id)?)?;
-        std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
-        let part = dest.with_extension("part");
-        let result = fetch(&app, &id, &part).and_then(|_| std::fs::rename(&part, &dest).map_err(|e| e.to_string()));
-        if result.is_err() {
-            let _ = std::fs::remove_file(&part);
-        }
-        result
+        let f = file(&id)?;
+        download(&app, &format!("{BASE_URL}{f}"), &downloaded(&app, f)?, Some(&id))
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-fn fetch(app: &AppHandle, id: &str, part: &PathBuf) -> Result<(), String> {
+/// `url` to `dest` via a `.part` file. Progress events only for a settings-page
+/// model (`progress` = its id).
+fn download(app: &AppHandle, url: &str, dest: &PathBuf, progress: Option<&str>) -> Result<(), String> {
+    std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+    let part = dest.with_extension("part");
+    let result = fetch(app, url, &part, progress).and_then(|_| std::fs::rename(&part, dest).map_err(|e| e.to_string()));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    result
+}
+
+/// Where the screen-OCR models (screen/ocr.rs) live; they may not be there yet.
+pub fn ocr_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    downloaded(app, crate::screen::ocr::DETECTION).map(|p| p.parent().unwrap().to_path_buf())
+}
+
+/// The screen-OCR models' directory, downloading any that are missing. Blocking.
+pub fn ocr_models(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = ocr_dir(app)?;
+    for f in [crate::screen::ocr::DETECTION, crate::screen::ocr::RECOGNITION] {
+        let dest = dir.join(f);
+        if !dest.exists() {
+            download(app, &format!("{}{f}", crate::screen::ocr::MODEL_URL), &dest, None)?;
+        }
+    }
+    Ok(dir)
+}
+
+fn fetch(app: &AppHandle, url: &str, part: &PathBuf, progress: Option<&str>) -> Result<(), String> {
     // ureq defaults to rustls; only native-tls is compiled in (see Cargo.toml).
     let tls = ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build();
     let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(tls).build().into();
-    let mut resp = agent.get(&format!("{BASE_URL}{}", file(id)?)).call().map_err(|e| e.to_string())?;
+    let mut resp = agent.get(url).call().map_err(|e| e.to_string())?;
     let total: u64 = resp
         .headers()
         .get("content-length")
@@ -111,6 +134,11 @@ fn fetch(app: &AppHandle, id: &str, part: &PathBuf) -> Result<(), String> {
     let mut out = std::fs::File::create(part).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; 1 << 16];
     let (mut done, mut emitted) = (0u64, 0u64);
+    let emit = |done, total| {
+        if let Some(id) = progress {
+            let _ = app.emit("model_download", Progress { id: id.into(), done, total });
+        }
+    };
     loop {
         let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
@@ -121,14 +149,14 @@ fn fetch(app: &AppHandle, id: &str, part: &PathBuf) -> Result<(), String> {
         // ~1MB granularity keeps the event rate sane on a fast connection.
         if done - emitted >= 1 << 20 {
             emitted = done;
-            let _ = app.emit("model_download", Progress { id: id.into(), done, total });
+            emit(done, total);
         }
     }
     if total > 0 && done != total {
-        return Err(format!("download of {id} incomplete ({done} of {total} bytes)"));
+        return Err(format!("download of {url} incomplete ({done} of {total} bytes)"));
     }
     out.sync_all().map_err(|e| e.to_string())?;
-    let _ = app.emit("model_download", Progress { id: id.into(), done, total: done });
+    emit(done, done);
     Ok(())
 }
 

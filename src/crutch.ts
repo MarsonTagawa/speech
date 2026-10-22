@@ -28,7 +28,7 @@ const STOPWORDS = new Set(
     "should will just like well right okay ok yeah um uh er ah hmm mm also very too more most one").split(" "),
 );
 
-const isHesitation = (w: string) => /^(u[hm]+|e+r+m*|a+h+|h+m+|m+)$/.test(w);
+export const isHesitation = (w: string) => /^(u[hm]+|e+r+m*|a+h+|h+m+|m+)$/.test(w);
 
 export function crutch(words: string[]): Crutch {
   let repeats = 0;

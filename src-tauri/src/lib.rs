@@ -1,4 +1,5 @@
 mod audio;
+mod drive;
 mod history;
 mod models;
 mod pitch;
@@ -27,6 +28,11 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Screen OCR (rten, screen/ocr.rs) would take every core from whisper and
+    // the camera. Set before any thread starts; rten reads it once.
+    if std::env::var_os("RTEN_NUM_THREADS").is_none() {
+        std::env::set_var("RTEN_NUM_THREADS", "2");
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -121,8 +127,16 @@ pub fn run() {
             screen::screen_displays,
             screen::session_frame,
             screen::session_has_frames,
+            screen::screen_text,
             vision::start_vision,
-            vision::stop_vision
+            vision::stop_vision,
+            vision::save_gesture_report,
+            drive::fetch_google_pdf,
+            drive::google_sign_in,
+            drive::google_sign_in_cancel,
+            drive::google_sign_out,
+            drive::google_status,
+            drive::google_list_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

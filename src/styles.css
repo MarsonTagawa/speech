@@ -443,8 +443,11 @@ body[data-view="settings"] .view-settings {
   height: 100%;
   display: block;
 }
+/* Collapsed rather than display:none, so a floating camera inside it still shows. */
 body.no-ribbon .scope {
-  display: none;
+  flex: none !important; /* not grown back by .tpane-none */
+  height: 0 !important;
+  border-bottom: 0;
 }
 /* Light: white scope. */
 :root[data-theme="light"] .scope {
@@ -543,6 +546,52 @@ body.timer-countdown.has-timer .countdown {
   right: 18px;
   text-align: right;
 }
+/* The stopwatch's slide laps under the clock (main.ts renderLaps). */
+.laps {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+.laps:empty {
+  display: none;
+}
+.laps b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+/* With slides up the clock and laps sit over the slide, under its corner buttons. */
+body.deck-on .scope-tr {
+  top: 40px;
+  right: 10px;
+  z-index: 3;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+body.deck-on .scope-tr :is(#rms-label, .screen-badge) {
+  display: none;
+}
+body.deck-on .laps {
+  color: rgba(255, 255, 255, 0.75);
+}
+body.deck-on .laps b {
+  color: #fff;
+}
+/* Short windows: the scope is a 60 px strip; only the slide up now fits. */
+@media (max-height: 480px) {
+  .laps span {
+    display: none;
+  }
+}
+/* While correcting, the overlay gets the room the scope had. */
+body.correcting .view-live .scope {
+  display: none;
+}
 .clock {
   font-size: 26px;
   font-variant-numeric: tabular-nums;
@@ -595,11 +644,6 @@ body.timer-countdown.has-timer .countdown {
 .seg button[aria-checked="true"] {
   background: color-mix(in srgb, var(--fg) 18%, transparent);
   color: var(--ink);
-}
-.scope-br {
-  position: absolute;
-  bottom: 12px;
-  right: 18px;
 }
 
 /* --- Transcript ----------------------------------------------------------- */
@@ -1655,6 +1699,142 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   color: var(--ink-2);
   margin-top: 2px;
 }
+/* Slides (reading.ts): an expandable section under the report. Closed, a strip
+   of thumbnails with grades; open, a row per slide. */
+#report-slides {
+  flex: 0 0 auto;
+}
+.slides-panel > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.slides-panel > summary::-webkit-details-marker {
+  display: none;
+}
+.slides-panel > summary .label::after {
+  content: " ▸";
+}
+.slides-panel[open] > summary .label::after {
+  content: " ▾";
+}
+.slides-panel[open] .slide-strip {
+  display: none;
+}
+.slide-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.slide-chip {
+  position: relative;
+  flex: none;
+}
+.slide-chip .slide-thumb {
+  width: 96px;
+}
+.slide-chip .grade {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  min-width: 18px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--card);
+  font-style: normal;
+}
+.slide-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.slide-row {
+  display: grid;
+  grid-template-columns: 64px 22px 52px 52px minmax(60px, 1fr) 36px 40px;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.slide-head {
+  cursor: default;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.slide-thumb {
+  display: block;
+  width: 64px;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  border-radius: 3px;
+  background: var(--edge);
+}
+.slide-row .n,
+.slide-row .pct,
+.slide-row .t {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.slide-row .t {
+  color: var(--ink-2);
+}
+.slide-row .fw-bar div {
+  background: var(--blue);
+}
+.slide-row.read .fw-bar div {
+  background: var(--orange);
+}
+.slide-row .grade {
+  text-align: center;
+}
+.grade {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.grade.g-A,
+.grade.g-B {
+  color: var(--green, #30d158);
+}
+.grade.g-D,
+.grade.g-E {
+  color: var(--orange);
+}
+.slide-row.read .pct {
+  color: var(--orange);
+  font-weight: 600;
+}
+
+/* Slides on the pace chart: alternating bands behind the line, numbered. */
+.slide-bands {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.slide-bands .band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed color-mix(in srgb, var(--fg) 18%, transparent);
+}
+.slide-bands .band.alt {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+.slide-bands .band span {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: 10px;
+  color: var(--ink-2);
+}
 .moment:hover b {
   color: var(--blue-2);
 }
@@ -1737,6 +1917,22 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   width: 80px;
   height: 20px;
   overflow: visible;
+}
+/* Drill type: speaking (audio only) or video (judged on the camera). */
+.drill-kind {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 0.5px solid var(--edge-2);
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.drill-kind.video {
+  color: var(--purple);
+  border-color: color-mix(in srgb, var(--purple) 45%, transparent);
 }
 .prof-table tr[data-open],
 .prof-table tr[data-drill] {
@@ -1871,6 +2067,62 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   background: #000; /* the full board's backdrop draws light on black */
 }
 .play-game:focus-visible { outline: 1px solid var(--edge); }
+/* Google sign-in and Drive picker dialogs (main.ts googleSignIn, openDrive). */
+.gd-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.gd-creds {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gd-creds[hidden],
+.gd-error[hidden] {
+  display: none;
+}
+.gd-error {
+  color: var(--amber);
+}
+.drive-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: min(360px, 50vh);
+  overflow-y: auto;
+}
+.drive-list button {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.drive-list button:hover,
+.drive-list button:focus {
+  background: var(--btn-hover);
+  outline: none;
+}
+.drive-list .drive-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drive-list .sub {
+  flex: none;
+  font-size: 10px;
+}
+
 .speech-actions {
   display: flex;
   gap: 6px;
@@ -2256,7 +2508,6 @@ body.no-hover-fx #shards {
     height: 60px;
   }
   .scope-bl,
-  .scope-br,
   #rms-label {
     display: none;
   }
@@ -2442,22 +2693,20 @@ body.snapping .shot-btn { visibility: hidden; }
 /* --- Camera / presence ------------------------------------------------------
    The Presence card and tile only exist with the camera on (or on sessions
    recorded with it), adding one column to the dock/tiles grids. */
-/* Camera view: a small self-view under the clock, or (Settings → Camera in
-   scope) filling the scope in place of the ribbon. Mirrored as a whole, like
-   every video-call self view, so the hand overlay stays on the hands. */
+/* Camera view: fills the scope's height in place of the ribbon, centred and
+   kept 16:9 so nothing is cropped. The canvases are mirrored, like every
+   video-call self view, so the hand overlay stays on the hands; the corner
+   button isn't. */
 .cam-view {
   position: absolute;
-  top: 64px; /* below the clock + rms (12 + 44 + 8 px) */
-  right: 18px;
-  /* Whatever the scope (same formula as .scope's height) leaves above the
-     Video button (~40 px). */
-  height: clamp(0px, calc(clamp(96px, min(34vh, 26vw), 252px) - 104px), 90px);
+  top: 0;
+  left: 50%;
+  height: 100%;
+  max-width: 100%;
+  translate: -50% 0;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-radius: 8px;
-  border: 0.5px solid var(--edge);
   background: #000;
-  transform: scaleX(-1);
 }
 .cam-view canvas {
   position: absolute;
@@ -2465,22 +2714,45 @@ body.snapping .shot-btn { visibility: hidden; }
   width: 100%;
   height: 100%;
   display: block;
+  transform: scaleX(-1);
+}
+/* Corner button (gesture readout only): report a wrong gesture. */
+.cam-corner {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+}
+.cam-corner svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+body:not(.gesture-readout) .cam-report {
+  display: none;
+}
+.cam-report.saved {
+  background: #30d158;
 }
 #self-view {
   object-fit: cover;
-}
-body.cam-scope .cam-view {
-  inset: 0;
-  height: auto;
-  aspect-ratio: auto;
-  border: 0;
-  border-radius: 0;
-}
-body.cam-scope #self-view {
   opacity: 0.7; /* keeps the clock and status readable over the picture */
 }
-body.cam-scope.camera-on #ribbon,
-body.cam-scope.camera-on #shards {
+body.camera-on #ribbon,
+body.camera-on #shards {
   display: none;
 }
 .cam-view[hidden],
@@ -2501,11 +2773,6 @@ body.cam-scope.camera-on #shards {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-/* The strip's camera button is only a fallback for when the scope's Video
-   button can't be seen: scope hidden, or short windows (below). */
-body:not(.no-ribbon) #camera-btn {
-  display: none;
 }
 .camera-on .dock {
   grid-template-columns: 44px repeat(6, minmax(0, 1fr)) minmax(0, 1.5fr);
@@ -2553,14 +2820,154 @@ body:not(.no-ribbon) #camera-btn {
   }
 }
 
-/* Short windows: the scope is a 60 px strip with the clock centred in it. */
-@media (max-height: 480px) {
-  body:not(.cam-scope) .cam-view {
-    display: none;
+/* --- Slides (deck.ts) ------------------------------------------------------ */
+/* The deck covers the scope, overlays included, and the scope grows to fit. */
+body.deck-on .scope {
+  height: clamp(160px, 50vh, 480px);
+}
+.deck-view {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: #000;
+}
+.deck-view[hidden] {
+  display: none;
+}
+#deck-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  cursor: pointer;
+}
+.deck-count {
+  position: absolute;
+  bottom: 8px;
+  right: 10px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+/* Spinner over a slide (or file) that's taking a while (moveDeck, openDeck). */
+.deck-view.loading::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: deckSpin 0.8s linear infinite;
+}
+@keyframes deckSpin {
+  to {
+    transform: rotate(360deg);
   }
-  body:not(.no-ribbon) #camera-btn {
-    display: flex;
-  }
+}
+.deck-menu:not([hidden]) {
+  width: 280px;
+}
+
+/* Video with slides, or with a script while the scope is hidden: the camera floats over the app. Drag to move, drag the
+   corner to resize; clamp() keeps it on screen when the window shrinks. */
+.cam-grip {
+  display: none;
+}
+body.deck-on.camera-on .cam-view,
+body.no-ribbon.script-open.camera-on .cam-view {
+  --cam-w: 240px;
+  position: fixed;
+  z-index: 20;
+  width: var(--cam-w);
+  height: auto;
+  max-width: none;
+  left: clamp(8px, var(--cam-x, 100vw), calc(100vw - var(--cam-w) - 8px));
+  top: clamp(8px, var(--cam-y, 100vh), calc(100vh - var(--cam-w) * 9 / 16 - 8px));
+  translate: none;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  cursor: move;
+  touch-action: none;
+}
+body.deck-on.camera-on .cam-grip,
+body.no-ribbon.script-open.camera-on .cam-grip {
+  display: block;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.6) 50%);
+}
+
+/* Bottom-edge grip for resizing the scope. */
+.scope-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  z-index: 3;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.scope-resize:hover,
+.scope-resize:active {
+  background: color-mix(in srgb, var(--fg) 25%, transparent);
+}
+
+/* Analytics shrink with the room under the scope (fitDock): full cards, then
+   one row of bare numbers, then gone. */
+body.dock-small .dock {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  padding-block: 6px 7px;
+  gap: 6px;
+}
+body.dock-small .dock > * {
+  grid-column: auto;
+  grid-row: auto;
+}
+body.dock-small .dock > .card {
+  padding: 5px 8px;
+}
+body.dock-small .dock :is(.lvl, .card-pace, .track, .pips, .card-sub) {
+  display: none;
+}
+body.dock-small .dock .big {
+  font-size: 18px;
+}
+body.dock-none .dock,
+body.tpane-none .tpane {
+  display: none;
+}
+.deck-full {
+  right: 36px;
+}
+
+/* Presenting fullscreen: nav, transcript and analytics go; the scope fills
+   (flex-basis 0 overrides a dragged inline height). Also with no transcript. */
+body.presenting .nav,
+body.presenting .tpane,
+body.presenting .dock {
+  display: none;
+}
+body.presenting .scope,
+body.tpane-none .scope {
+  flex: 1 1 0;
+}
+body.presenting .scope-resize {
+  display: none;
 }
 
 /* Record screen: badge by the clock while the toggle is on. */

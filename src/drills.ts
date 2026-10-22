@@ -1,5 +1,6 @@
 // Targeted drills: each runs a normal recording with a timer and a goal on one
 // metric, judged from the saved session summary. Pure; checked by drills.check.ts.
+import { PRESENCE_TUNING, type Presence } from "./presence";
 
 export interface DrillStats {
   durationMs: number; // voiced time
@@ -11,6 +12,7 @@ export interface DrillStats {
   pitchRange: number; // mean within-sentence inflection, semitones
   uptalk: number; // sentences ending on a rising pitch
   script: { accuracy: number } | null;
+  presence?: Presence; // absent when the camera was off
 }
 
 export interface Drill {
@@ -20,6 +22,7 @@ export interface Drill {
   secs: number;
   script?: string; // read-along text; otherwise a random topic is shown
   prep?: number; // secs of silent thinking time before recording starts on its own
+  video?: boolean; // judged on camera presence; starting it turns the camera on
   // `band` is the session's target pace range.
   judge(s: DrillStats, band: [number, number]): { pass: boolean; value: string };
 }
@@ -117,6 +120,23 @@ export const DRILLS: Drill[] = [
       pass: spokeEnough(s, 90) && s.fillersPerMin < 2 && s.wpm >= lo && s.wpm <= hi,
       value: `${s.wpm} wpm · ${s.fillersPerMin.toFixed(1)} fillers/min`,
     }),
+  },
+  {
+    id: "eyes-hands",
+    name: "Eyes and hands",
+    goal: "60 s on camera: eye contact 70%+, hands moving 20–60% of the time, and at least 3 different gestures (see Gestures below)",
+    secs: 60,
+    video: true,
+    judge: (s) => {
+      const p = s.presence;
+      if (!p) return { pass: false, value: "camera off" };
+      const [lo, hi] = PRESENCE_TUNING.gestureBand;
+      const kinds = Object.keys(p.gestures ?? {}).length;
+      return {
+        pass: spokeEnough(s, 60) && p.eyeContact >= 0.7 && p.gestureFrac >= lo && p.gestureFrac <= hi && kinds >= 3,
+        value: `${Math.round(p.eyeContact * 100)}% eye contact · ${Math.round(p.gestureFrac * 100)}% gesturing · ${kinds} gesture${kinds === 1 ? "" : "s"}`,
+      };
+    },
   },
 ];
 

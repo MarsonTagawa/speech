@@ -8,6 +8,7 @@
 //! samples every SAMPLE and saves frames that changed. The camera thread hands
 //! frames to a writer thread through a small queue, so it never waits on disk.
 mod frames;
+pub(crate) mod ocr;
 pub mod stream;
 
 use frames::{Rec, Recorder, CAMERA, SCREEN};
@@ -76,17 +77,40 @@ impl ScreenState {
 /// is live; a failure is reported to the UI, never to the recording.
 pub fn begin(app: &AppHandle, ts: i64) {
     let live = app.state::<ScreenState>().live();
-    if let Err(e) = crate::history::detail_dir(app).and_then(|d| start_session(&d, ts, live)) {
+    let models = crate::models::ocr_dir(app).ok();
+    let notify = {
+        let app = app.clone(); // live slide laps (main.ts screen_frame_text)
+        move |ms: u32, text: &str| {
+            let _ = app.emit("screen_frame_text", (ts, ms, text));
+        }
+    };
+    if let Err(e) = crate::history::detail_dir(app).and_then(|d| start_session(&d, ts, live, models.as_deref(), notify)) {
         let _ = app.emit("screen_ended", format!("couldn't save the video — {e}"));
     }
 }
 
-/// Opens `<dir>/<ts>.frames` and the camera writer when `live`. Returns whether it did.
-fn start_session(dir: &Path, ts: i64, live: bool) -> Result<bool, String> {
+/// Opens `<dir>/<ts>.frames` and the camera writer when `live`, with screen OCR
+/// (reporting each frame's text to `notify`) when the `models` are there.
+/// Returns whether it did.
+fn start_session(
+    dir: &Path,
+    ts: i64,
+    live: bool,
+    models: Option<&Path>,
+    notify: impl Fn(u32, &str) + Send + 'static,
+) -> Result<bool, String> {
     if !live {
         return Ok(false);
     }
-    let rec = Recorder::create(&dir.join(format!("{ts}.frames"))).map_err(|e| e.to_string())?;
+    // Before SESSION is set: the capture thread may hand the session its first
+    // frame the moment it is.
+    if let Some(m) = models {
+        ocr::start(ts, m.to_path_buf(), notify);
+    }
+    let rec = Recorder::create(&dir.join(format!("{ts}.frames"))).map_err(|e| {
+        ocr::close();
+        e.to_string()
+    })?;
     *session() = Some(Session { rec, clock: None });
     let (tx, rx) = mpsc::sync_channel::<Option<Vec<u8>>>(CAMERA_QUEUE);
     thread::spawn(move || {
@@ -112,6 +136,7 @@ pub fn mark_clock() {
 
 /// Session stops (audio::stop_recording).
 pub fn end() {
+    ocr::close();
     camera_tx().take(); // the writer thread drains and exits
     if let Some(s) = session().take() {
         if let Err(e) = s.rec.finish() {
@@ -141,9 +166,13 @@ fn screen_sample(w: usize, h: usize, rgb: &[u8]) {
     let mut g = session();
     if let Some(s) = g.as_mut() {
         let ms = s.ms();
-        if let Err(e) = s.rec.screen(ms, w, h, rgb) {
-            eprintln!("[screen] writing a frame failed, video stops here: {e}");
-            *g = None; // keep recording audio; drop the replay's tail
+        match s.rec.screen(ms, w, h, rgb) {
+            Ok(true) => ocr::feed(ms, w, h, rgb),
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("[screen] writing a frame failed, video stops here: {e}");
+                *g = None; // keep recording audio; drop the replay's tail
+            }
         }
     }
 }
@@ -199,6 +228,14 @@ fn run(app: AppHandle, stream: stream::Stream, stop: Arc<AtomicBool>) {
 #[tauri::command]
 pub async fn screen_prepare(app: AppHandle, display: Option<String>) -> Result<(), String> {
     app.state::<ScreenState>().release();
+    {
+        let app = app.clone(); // models for the OCR worker; sessions without them just skip OCR
+        thread::spawn(move || {
+            if let Err(e) = crate::models::ocr_models(&app) {
+                eprintln!("[ocr] model download: {e}");
+            }
+        });
+    }
     let stream = tauri::async_runtime::spawn_blocking(move || stream::open(display)).await.map_err(|e| e.to_string())??;
     let stop = Arc::new(AtomicBool::new(false));
     let thread = {
@@ -267,13 +304,23 @@ pub fn session_has_frames(app: AppHandle, ts: i64) -> Option<Summary> {
     summary(&crate::history::detail_dir(&app).ok()?, ts)
 }
 
+/// Session `ts`'s screen text by frame ms (screen/ocr.rs), once its OCR is
+/// done or after 60 s; empty without OCR.
+#[tauri::command]
+pub async fn screen_text(ts: i64) -> Vec<(u32, String)> {
+    tauri::async_runtime::spawn_blocking(move || ocr::results(ts, Duration::from_secs(60))).await.unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
 
-    // SESSION is process-wide; tests that touch it take turns.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    // SESSION and ocr's JOB are process-wide (end() closes the OCR job); tests
+
+    // that touch either take turns, on one lock so they can't interleave.
+
+    use super::ocr::TEST_LOCK;
 
     fn dir(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("speech-screen-{}-{name}", std::process::id()));
@@ -316,13 +363,30 @@ mod tests {
         fs::remove_dir_all(d).unwrap();
     }
 
+    // Review I-3: OCR is running before the capture thread can see the session,
+    // so the frame a new session gets at once (a static first slide) is read.
+    #[test]
+    fn start_session_starts_ocr_first() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let d = dir("ocr");
+        let models = d.join("models");
+        fs::create_dir_all(&models).unwrap();
+        for f in [ocr::DETECTION, ocr::RECOGNITION] {
+            fs::write(models.join(f), b"").unwrap();
+        }
+        assert!(start_session(&d, 31, true, Some(&models), |_, _| {}).unwrap());
+        assert!(ocr::running(31));
+        end();
+        fs::remove_dir_all(d).unwrap();
+    }
+
     // Review focus 4: no live capture → begin writes nothing, so a session can't
     // fail or leave an empty replay because of the screen.
     #[test]
     fn begin_without_capture_writes_no_file() {
         let _g = TEST_LOCK.lock().unwrap();
         let d = dir("nocap");
-        assert!(!start_session(&d, 5, false).unwrap());
+        assert!(!start_session(&d, 5, false, None, |_, _| {}).unwrap());
         assert!(!d.join("5.frames").exists());
         fs::remove_dir_all(d).unwrap();
     }
@@ -353,7 +417,7 @@ mod tests {
     fn feed_records_the_last_frame_of_a_burst() {
         let _g = TEST_LOCK.lock().unwrap();
         let d = dir("burst");
-        assert!(start_session(&d, 11, true).unwrap());
+        assert!(start_session(&d, 11, true, None, |_, _| {}).unwrap());
         mark_clock();
         let stop = AtomicBool::new(false);
         thread::scope(|sc| {
@@ -377,7 +441,7 @@ mod tests {
         thread::scope(|sc| {
             sc.spawn(|| feed(script(vec![(0, flat(10))]), &stop));
             thread::sleep(Duration::from_millis(300)); // idle: frame already received
-            assert!(start_session(&d, 12, true).unwrap());
+            assert!(start_session(&d, 12, true, None, |_, _| {}).unwrap());
             thread::sleep(Duration::from_millis(300));
             stop.store(true, Relaxed);
         });
@@ -409,7 +473,7 @@ mod tests {
     fn session_records_on_the_audio_clock_and_marks_the_end() {
         let _g = TEST_LOCK.lock().unwrap();
         let d = dir("clock");
-        assert!(start_session(&d, 9, true).unwrap());
+        assert!(start_session(&d, 9, true, None, |_, _| {}).unwrap());
         let rgb = vec![128u8; 64 * 36 * 3];
         screen_sample(64, 36, &rgb); // before the first audio chunk → ms 0
         mark_clock();

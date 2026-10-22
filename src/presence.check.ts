@@ -17,12 +17,12 @@ const pose = Array.from({ length: 33 }, () => ({ x: 0.5, y: 0.5 }));
 pose[0] = { x: 0.5, y: 0.3 }; // nose
 pose[11] = { x: 0.4, y: 0.5 }; // left shoulder
 pose[12] = { x: 0.6, y: 0.5 }; // right shoulder
-const raw = (o: Partial<RawResults> = {}): RawResults => ({ blend: facing, head: { yaw: 5, pitch: 0 }, pose, wrists: [], ...o });
+const raw = (o: Partial<RawResults> = {}): RawResults => ({ blend: facing, head: { yaw: 5, pitch: 0 }, pose, hands: [], handed: [], ...o });
 
 const none = toFrame(raw({ blend: null, head: null, pose: null }), 640, 360, 0);
-assert.deepStrictEqual(none, { t: 0, face: false, looking: false, smile: 0, brows: 0, body: null, wrists: [], sw: 0 });
+assert.deepStrictEqual(none, { t: 0, face: false, looking: false, smile: 0, brows: 0, body: null, wrists: [], sw: 0, u: 128, hands: [], poses: [] });
 
-const f = toFrame(raw({ wrists: [{ x: 0.5, y: 0.8 }] }), 640, 360, 42);
+const f = toFrame(raw({ hands: [Array(21).fill({ x: 0.5, y: 0.8 })] }), 640, 360, 42);
 assert.equal(f.t, 42);
 assert.equal(f.face, true);
 assert.equal(f.looking, true); // 5° yaw, eyes 0.2 < 0.5
@@ -42,13 +42,13 @@ assert.equal(toFrame(raw({ head: null }), 640, 360, 0).looking, false); // no he
 // Degenerate pose (shoulders coincide): no body, no wrists, nothing infinite.
 const flat = pose.map((p) => ({ ...p }));
 flat[12] = { ...flat[11] };
-const d = toFrame(raw({ pose: flat, wrists: [{ x: 0.5, y: 0.8 }] }), 640, 360, 0);
+const d = toFrame(raw({ pose: flat, hands: [Array(21).fill({ x: 0.5, y: 0.8 })] }), 640, 360, 0);
 assert.equal(d.body, null);
 assert.deepStrictEqual(d.wrists, []);
 
 // --- summarize ------------------------------------------------------------
 const STEP = 100; // 10 fps keeps the expected timings round
-const F = (t: number, o: Partial<Frame> = {}): Frame => ({ t, face: true, looking: true, smile: 0, brows: 0, body: [[2.5, 1.4], [2.5, 0.8]], wrists: [], sw: 1, ...o });
+const F = (t: number, o: Partial<Frame> = {}): Frame => ({ t, face: true, looking: true, smile: 0, brows: 0, body: [[2.5, 1.4], [2.5, 0.8]], wrists: [], sw: 1, u: 1, hands: [], poses: [], ...o });
 const frames = (secs: number, make: (t: number, i: number) => Partial<Frame> = () => ({})): Frame[] =>
   Array.from({ length: (secs * 1000) / STEP + 1 }, (_, i) => F(i * STEP, make(i * STEP, i)));
 const open = { scriptOpen: false };
@@ -131,7 +131,7 @@ const stillRaw = (i: number): RawResults => {
   const p = pose.map((q) => ({ ...q }));
   p[11] = { x: 0.5 - half, y: 0.5 };
   p[12] = { x: 0.5 + half, y: 0.5 };
-  return { blend: facing, head: { yaw: 0, pitch: 0 }, pose: p, wrists: [{ x: 0.7, y: 0.8 }] };
+  return { blend: facing, head: { yaw: 0, pitch: 0 }, pose: p, hands: [Array(21).fill({ x: 0.7, y: 0.8 })], handed: [0] };
 };
 const stillFrames = Array.from({ length: 101 }, (_, i) => toFrame(stillRaw(i), 640, 360, i * STEP));
 const stillP = summarize(stillFrames, open)!;
@@ -154,17 +154,18 @@ assert.equal(liveCue(frames(2), { recording: true, scriptOpen: false }), "warmin
 assert.equal(liveCue(frames(10), { recording: true, scriptOpen: false }), "smile more");
 
 // --- hand highlight ---------------------------------------------------------
-// A hand counts as moving when its wrist travels more than gestureStep shoulder
-// widths since the previous frame — the same rule the gesture score uses.
+// A hand counts as moving when its wrist travels faster than gestureSpeed shoulder
+// widths a second since the previous frame — the same rule the gesture score uses.
 const hand = (x: number, y: number) => Array.from({ length: 21 }, () => ({ x, y }));
-// 640×360 frame, shoulders 128 px → gestureStep 0.04 = 5.12 px
-assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 10 / 640, 0.5)], 640, 360, 128), [true]); // 10 px
-assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 3 / 640, 0.5)], 640, 360, 128), [false]); // 3 px: jitter
-assert.deepStrictEqual(movingHands([], [hand(0.5, 0.5)], 640, 360, 128), [false]); // just appeared: no motion yet
+// 640×360 frame, shoulders 128 px, 80 ms apart → 0.5 × 128 × 0.08 = 5.12 px
+assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 10 / 640, 0.5)], 640, 360, 128, 80), [true]); // 10 px
+assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 3 / 640, 0.5)], 640, 360, 128, 80), [false]); // 3 px: jitter
+assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 3 / 640, 0.5)], 640, 360, 128, 40), [true]); // the same 3 px in half the time: twice as fast
+assert.deepStrictEqual(movingHands([], [hand(0.5, 0.5)], 640, 360, 128, 80), [false]); // just appeared: no motion yet
 // two hands, matched to the nearest previous wrist; only the right one moved
-assert.deepStrictEqual(movingHands([hand(0.2, 0.5), hand(0.8, 0.5)], [hand(0.2, 0.5), hand(0.8, 0.6)], 640, 360, 128), [false, true]);
+assert.deepStrictEqual(movingHands([hand(0.2, 0.5), hand(0.8, 0.5)], [hand(0.2, 0.5), hand(0.8, 0.6)], 640, 360, 128, 80), [false, true]);
 // no body to scale by → assume a typical shoulder width (20% of the frame): 10 px still counts
-assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 10 / 640, 0.5)], 640, 360, 0), [true]);
+assert.deepStrictEqual(movingHands([hand(0.5, 0.5)], [hand(0.5 + 10 / 640, 0.5)], 640, 360, 0, 80), [true]);
 
 // coverMap: normalised camera coords → pixels in an object-fit: cover box.
 const exact = coverMap(1920, 1080, 160, 90); // same aspect: no crop

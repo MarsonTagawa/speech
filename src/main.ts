@@ -11,12 +11,16 @@ import { Halo } from "./halo";
 import { Shards } from "./shards";
 import { Flappy } from "./flappy";
 import { troubleSpots } from "./passages";
-import { DRILLS, MEMORISE, drillById } from "./drills";
+import { DRILLS, MEMORISE, drillById, type Drill } from "./drills";
 import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
 import { showReplay, followClip, stopFollow } from "./replay";
 import { scoreLinear, summarize, liveCue, movingHands, coverMap, type Frame, type Presence, type Pt } from "./presence";
-import { startCamera, stopCamera, FRAME_W, FRAME_H, HAND_BONES } from "./camera";
+import { GESTURES, GESTURE_TUNING, counts, detect, gestureInfo, gestureSummary, type GestureId } from "./gestures";
+import { startCamera, stopCamera, recentVision, FRAME_W, FRAME_H, HAND_BONES } from "./camera";
+import { loadDeck, loadPdf, closeDeck, stepDeck, paintDeck, deckSize, deckAt, deckText, thumbDeck } from "./deck";
+import { type Reading, type Said, type SlideRead, type SlideSpan, frameAt, groupScreens, isRead, reading, READ_FRAC, runsOf, slideRows, slideScore, slideSpans, withoutSpoken } from "./reading";
+import { googleFile, type GoogleKind } from "./google";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
@@ -697,6 +701,7 @@ function showCorrectBar(on: boolean) {
   if (on) correctHalo?.setMode("thinking");
   correctGame?.stop();
   if (recordBtn) recordBtn.disabled = on; // no new recording until this pass lands
+  document.body.classList.toggle("correcting", on); // the scope hides meanwhile (styles.css)
   clearTimeout(celebrateTimer);
   correctShown = 0;
   countdownEnd = 0;
@@ -1003,6 +1008,27 @@ let scriptEndTimer = 0; // pending auto-stop once the script's last word is read
 // stays cheap instead of re-parsing the whole transcript each time. Interim-to-
 // final replacement is automatic since both share an index.
 const tokensByIndex = new Map<number, string[]>();
+// The slide on screen when each utterance started (index → slide + its text
+// tokens), for reading.ts; absent when no slides were showing.
+const slideByIndex = new Map<number, { slide: number; shown: string[] }>();
+// This session's deck thumbnails by slide (data URLs), saved in its detail.
+// Replaced, not cleared, by clearLive, so a render finishing late lands in the
+// old session's map.
+let slideThumbs = new Map<number, string>();
+// The session's screen text by frame ms (screen/ocr.rs), fetched at Stop; the
+// report waits for it (screen_text gives up after 60 s).
+let screenTexts: [number, string][] = [];
+let screenTextsReady: Promise<void> = Promise.resolve();
+// Until it lands, Record stays locked (as during correcting), so a new session
+// can't flush this one's save before its report reads the text.
+let screenTextsPending = false;
+// Slide changes this session, [session ms, 0-based slide] (-1: none up): the
+// in-app deck's as they happen, else the recorded screen's as OCR reads them
+// (screen_frame_text). The stopwatch's laps and the report's times come from these.
+let deckChanges: [number, number][] = [];
+let liveScreenTexts: [number, string][] = [];
+let screenChanges: [number, number][] = [];
+let stoppedAtMs = 0; // session ms at Stop; 0 while recording
 
 let scriptInput: HTMLTextAreaElement | null;
 let scriptFile: HTMLInputElement | null;
@@ -1426,6 +1452,16 @@ function updateScriptFromSegment(segment: TranscriptSegment) {
   if (segment.refined && segment.text === "") return;
   // Correction already applied; ignore a late fast segment (see refinedIndices).
   if (!segment.refined && refinedIndices.has(segment.index)) return;
+  const b = document.body.classList;
+  if (!slideByIndex.has(segment.index) && deckSize() && b.contains("deck-on") && !b.contains("no-ribbon")) {
+    const slide = deckAt();
+    slideByIndex.set(segment.index, { slide, shown: tokenizeWithOffsets(deckText()).map((t) => t.norm) });
+    if (!slideThumbs.has(slide)) {
+      const thumbs = slideThumbs;
+      thumbs.set(slide, "");
+      thumbDeck(slide).then((url) => thumbs.set(slide, url), () => {}); // no image → row without one
+    }
+  }
   if (segment.is_final && segment.text === "") {
     tokensByIndex.delete(segment.index);
   } else {
@@ -1667,6 +1703,7 @@ function tickClock() {
     return;
   }
   setText("clock", formatTimestamp(recordStartedAt ? now - recordStartedAt : 0));
+  renderLaps();
   const left = drillEndsAt - now;
   if (drillEndsAt && left <= 0 && recording) {
     drillEndsAt = 0;
@@ -1704,6 +1741,32 @@ function moveGhost(elapsed: number) {
   scriptSpans[ghostIdx]?.classList.remove("script-ghost");
   scriptSpans[i]?.classList.add("script-ghost");
   ghostIdx = i;
+}
+
+const sessionMs = () => (recordStartedAt ? performance.now() - recordStartedAt : 0);
+const slidesUp = () => {
+  const b = document.body.classList;
+  return deckSize() > 0 && b.contains("deck-on") && !b.contains("no-ribbon");
+};
+
+// The in-app deck changed slide (or hid: -1) while recording: a lap.
+function noteSlide(slide: number) {
+  if (!recording || !recordStartedAt) return;
+  if (deckChanges[deckChanges.length - 1]?.[1] !== slide) deckChanges.push([sessionMs(), slide]);
+}
+
+// The stopwatch's laps under the clock (shown over slides too, styles.css): the
+// slide up now and how long, then the last few before it.
+function renderLaps() {
+  const el = $("laps");
+  if (!el) return;
+  const changes = deckChanges.length ? deckChanges : screenChanges;
+  const spans = recording ? slideSpans(changes, sessionMs()) : [];
+  const open = (changes[changes.length - 1]?.[1] ?? -1) >= 0;
+  const lap = (x: SlideSpan) => `${x.slide + 1} · ${formatTimestamp(x.end - x.start)}`;
+  const cur = open ? spans[spans.length - 1] : null;
+  const past = (open ? spans.slice(0, -1) : spans).slice(-3).reverse();
+  el.innerHTML = (cur ? `<b>Slide ${lap(cur)}</b>` : "") + past.map((x) => `<span>${lap(x)}</span>`).join("");
 }
 
 function startClock() {
@@ -1827,7 +1890,7 @@ async function playClip(ts: number, el: HTMLElement, startMs: number, endMs: num
 }
 
 async function toggleRecording() {
-  if (!recordBtn || (!recording && correcting())) return;
+  if (!recordBtn || (!recording && (correcting() || screenTextsPending))) return;
 
   recordBtn.disabled = true;
   clearTimeout(scriptEndTimer);
@@ -1852,12 +1915,25 @@ async function toggleRecording() {
       currentSaved = false;
       renderSessionLabel();
       startClock();
+      if (slidesUp()) noteSlide(deckAt());
       showView("live");
       setRecordingUi(true);
       ribbon?.setMode("listening");
       setStatus("Recording");
     } else {
+      stoppedAtMs = sessionMs();
       await invoke("stop_recording");
+      const ts = sessionStartTs;
+      screenTextsPending = true;
+      screenTextsReady = invoke<[number, string][]>("screen_text", { ts })
+        .then(
+          (r) => void (ts === sessionStartTs && (screenTexts = r)),
+          () => {},
+        )
+        .finally(() => {
+          screenTextsPending = false;
+          if (recordBtn && !recording) recordBtn.disabled = correcting();
+        });
       recording = false;
       stopClock();
       if (activeDrill !== MEMORISE) endDrill(); // memorising stays armed for retries
@@ -1876,7 +1952,7 @@ async function toggleRecording() {
     setStatus("Error");
     appendError(String(e));
   } finally {
-    recordBtn.disabled = correcting();
+    recordBtn.disabled = correcting() || screenTextsPending;
   }
 }
 
@@ -1897,7 +1973,8 @@ function resetSession() {
 }
 
 const CAMERA_KEY = "speech.camera";
-const CAM_SCOPE_KEY = "speech.cameraScope";
+const SCOPE_H_KEY = "speech.scopeHeight";
+const CAM_FLOAT_KEY = "speech.camFloat";
 
 function onPresenceFrame(f: Frame, hands: Pt[][]) {
   if (recording) presenceFrames.push(f);
@@ -1916,18 +1993,30 @@ function renderPresenceCard() {
   setText("presence-sub", liveCue(presenceFrames, { recording, scriptOpen: scriptUsed }));
 }
 
-// Hand highlight: a hand that just moved (by the gesture score's own rule)
-// glows on the camera view and fades out, so a run of movement leaves a
-// short trail. Drawn once per inference frame (~12 fps).
+// Hand wireframes: every tracked hand is drawn faintly; one that just moved
+// (by the gesture score's own rule) glows on top and fades out, so a run of
+// movement leaves a short trail. Gestures (gestures.ts) recognised in the last few seconds are
+// labelled where they happened, fading out, along with finger counts 2–4 while
+// listing. Drawn once per inference frame (~12 fps).
 const HIGHLIGHT_MS = 300;
+const LABEL_MS = 1500;
 let prevHands: Pt[][] = [];
+let prevHandsAt = 0;
 let litHands: Array<{ at: number; hand: Pt[] }> = [];
+let liveFrames: Frame[] = []; // the last 3 s, recording or not
+let gestureReadout = false; // Settings → Gesture readout: what readHand sees, per hand
 
 function drawHands(f: Frame, hands: Pt[][]) {
-  const moving = movingHands(prevHands, hands, FRAME_W, FRAME_H, f.sw);
-  prevHands = hands;
+  const moving = movingHands(prevHands, hands, FRAME_W, FRAME_H, f.sw, f.t - prevHandsAt);
+  [prevHands, prevHandsAt] = [hands, f.t];
   hands.forEach((hand, i) => moving[i] && litHands.push({ at: f.t, hand }));
   litHands = litHands.filter((l) => f.t - l.at < HIGHLIGHT_MS);
+  liveFrames.push(f);
+  liveFrames = liveFrames.filter((g) => f.t - g.t <= 3000);
+  const shown = counts(liveFrames)
+    .map((c) => ({ t: c.t, text: String(c.ext.filter(Boolean).length), at: c.at }))
+    .filter((c) => c.text >= "2" && c.text <= "4");
+  const labels = [...detect(liveFrames).map((e) => ({ t: e.t, text: gestureInfo(e.g).short, at: e.at })), ...shown].filter((l) => f.t - l.t < LABEL_MS);
 
   const cv = $<HTMLCanvasElement>("hand-overlay");
   const cx = cv?.getContext("2d");
@@ -1940,17 +2029,16 @@ function drawHands(f: Frame, hands: Pt[][]) {
   }
   cx.setTransform(dpr, 0, 0, dpr, 0, 0);
   cx.clearRect(0, 0, bw, bh);
-  if (!litHands.length) return;
+  if (!hands.length && !litHands.length && !labels.length && !gestureReadout) return;
 
   // Landmarks are normalised to the 640×360 camera frame the preview shows.
   const map = coverMap(FRAME_W, FRAME_H, bw, bh);
-  const u = Math.max(1, bw / 220); // line scale: thin in the small view, bolder full-scope
+  const u = Math.max(1, bw / 220); // line scale, with the view's width
   cx.strokeStyle = cx.fillStyle = cx.shadowColor = "#30d158";
   cx.shadowBlur = 6 * u;
   cx.lineWidth = u;
   cx.lineCap = "round";
-  for (const { at, hand } of litHands) {
-    cx.globalAlpha = 1 - (f.t - at) / HIGHLIGHT_MS;
+  const skeleton = (hand: Pt[]) => {
     const pts = hand.map(map);
     cx.beginPath();
     for (const { start, end } of HAND_BONES) {
@@ -1963,13 +2051,105 @@ function drawHands(f: Frame, hands: Pt[][]) {
       cx.arc(x, y, 1.3 * u, 0, Math.PI * 2);
       cx.fill();
     }
+  };
+  cx.shadowBlur = 0;
+  cx.globalAlpha = 0.45;
+  hands.forEach(skeleton);
+  cx.shadowBlur = 6 * u;
+  for (const { at, hand } of litHands) {
+    cx.globalAlpha = 1 - (f.t - at) / HIGHLIGHT_MS;
+    skeleton(hand);
+  }
+  cx.font = `600 ${8 * u}px "IBM Plex Mono", monospace`;
+  cx.textAlign = "center";
+  const placed: Array<[number, number]> = [];
+  for (const l of labels) {
+    let [x, y] = map({ x: l.at[0] / FRAME_W, y: l.at[1] / FRAME_H });
+    y -= 12 * u; // above the palm centre
+    while (placed.some(([px, py]) => Math.abs(px - x) < 30 * u && Math.abs(py - y) < 9 * u)) y -= 9 * u; // stack, don't overlap
+    placed.push([x, y]);
+    cx.globalAlpha = 1 - (f.t - l.t) / LABEL_MS;
+    cx.save();
+    cx.translate(x, y);
+    cx.scale(-1, 1); // the view is mirrored; keep the text readable
+    cx.fillText(l.text, 0, 0);
+    cx.restore();
   }
   cx.globalAlpha = 1;
+  if (gestureReadout) drawReadout(cx, f, map, u, bw);
+}
+
+// The gesture readout: per hand, below its palm, the readings every gesture
+// rule is built from (gestures.ts readHand) and the poses seen this frame,
+// before the hold that turns them into gestures.
+// Which way the fingers point, from the hand's wrist → knuckle axis (y down, z − = toward the camera).
+const pointing = ([x, y, z]: number[]) => {
+  const k = [x, y, z].map(Math.abs).indexOf(Math.max(Math.abs(x), Math.abs(y), Math.abs(z)));
+  return k === 0 ? "across" : k === 1 ? (y < 0 ? "up" : "down") : z < 0 ? "fwd" : "back";
+};
+// Debugging a wrong gesture: the last 5 s of raw hand tracking (replayable
+// through toFrame/detect), what each frame read, and the gestures detected,
+// saved as JSON in the app data dir's gesture-reports/.
+async function reportGesture() {
+  const btn = $("cam-report-btn");
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  const report = {
+    savedAt: new Date().toISOString(),
+    vision: recentVision(),
+    read: liveFrames.map((f) => ({
+      t: f.t,
+      poses: f.poses.map((p) => p.g),
+      hands: f.hands.map((h) => ({ right: h.right, palm: h.palm, tilt: h.tilt, ext: h.ext.map(Number).join(""), straightness: h.straightness.map(r2), axis: h.axis.map(r2), n: h.n.map(r2), size: Math.round(h.size), c: h.c.map(Math.round) })),
+    })),
+    detected: detect(liveFrames).map(({ t, g }) => ({ t, g })),
+  };
+  try {
+    const path = await invoke<string>("save_gesture_report", { json: JSON.stringify(report) });
+    console.info("gesture report:", path);
+    btn?.classList.add("saved");
+    setTimeout(() => btn?.classList.remove("saved"), 800);
+  } catch (e) {
+    console.error("gesture report failed:", e);
+  }
+}
+
+function drawReadout(cx: CanvasRenderingContext2D, f: Frame, map: (p: Pt) => [number, number], u: number, bw: number) {
+  cx.shadowBlur = 0;
+  cx.font = `500 ${7 * u}px "IBM Plex Mono", monospace`;
+  const lh = 9 * u;
+  // Text in the mirrored canvas: (x, y) is where it lands on screen after the flip.
+  const block = (x: number, y: number, lines: string[], align: CanvasTextAlign) => {
+    const w = Math.max(...lines.map((l) => cx.measureText(l).width)) + 6 * u;
+    cx.save();
+    cx.translate(x, y);
+    cx.scale(-1, 1);
+    const left = align === "center" ? -w / 2 : 0;
+    cx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    cx.fillRect(left, -lh + 2 * u, w, lines.length * lh + 2 * u);
+    cx.fillStyle = "#fff";
+    cx.textAlign = align;
+    lines.forEach((l, k) => cx.fillText(l, align === "center" ? 0 : 3 * u, k * lh));
+    cx.restore();
+  };
+  for (const h of f.hands) {
+    const [x, y] = map({ x: h.c[0] / FRAME_W, y: h.c[1] / FRAME_H });
+    const near = f.poses.filter((p) => Math.hypot(p.at[0] - h.c[0], p.at[1] - h.c[1]) < h.size).map((p) => gestureInfo(p.g).short);
+    block(x, y + 14 * u, [
+      `${h.right ? "R" : "L"} ${h.ext.map((e, i) => (e ? "●" : i && h.straightness[i - 1] > GESTURE_TUNING.fingerCurled ? "◐" : "○")).join("")}`,
+      h.straightness.map((r) => Math.round(r * 100)).join(" "),
+      `${h.palm}${h.tilt ? "+" + h.tilt : ""} · fingers ${pointing(h.axis)} · ${h.shape}`,
+      ...(near.length ? [near.join(", ")] : []),
+    ], "center");
+  }
+  // Two-hand and body poses (grand, ready, we…) aren't at either hand.
+  const loose = f.poses.filter((p) => !f.hands.some((h) => Math.hypot(p.at[0] - h.c[0], p.at[1] - h.c[1]) < h.size));
+  const corner = [...(f.sw ? [] : ["no shoulders: u guessed"]), ...loose.map((p) => gestureInfo(p.g).short)];
+  if (corner.length) block(bw - 6 * u, 12 * u, corner, "left");
 }
 
 async function setCamera(on: boolean) {
   const video = $<HTMLCanvasElement>("self-view");
-  for (const id of ["video-btn", "camera-btn"]) $(id)?.setAttribute("aria-pressed", String(on));
+  $("camera-btn")?.setAttribute("aria-pressed", String(on));
   document.body.classList.toggle("camera-on", on);
   $("presence-card")?.toggleAttribute("hidden", !on);
   $("cam-view")?.toggleAttribute("hidden", !on);
@@ -1978,6 +2158,7 @@ async function setCamera(on: boolean) {
     stopCamera();
     prevHands = [];
     litHands = [];
+    liveFrames = [];
     return;
   }
   try {
@@ -2000,6 +2181,14 @@ function clearLive() {
   finalized.clear();
   refinedIndices.clear();
   tokensByIndex.clear();
+  slideByIndex.clear();
+  slideThumbs = new Map();
+  screenTexts = [];
+  deckChanges = [];
+  liveScreenTexts = [];
+  screenChanges = [];
+  stoppedAtMs = 0;
+  setText("laps", "");
   reachedMs = [];
   renderScriptMatch();
   resetStats();
@@ -2011,11 +2200,92 @@ function clearLive() {
   if (document.body.classList.contains("camera-on")) renderPresenceCard();
 }
 
+// Slides: the deck shows over the scope; hiding keeps it loaded, × unloads it.
+// The ribbon toggle hides the whole scope, slides included, so showing slides
+// brings the scope back.
+function showDeck(on: boolean) {
+  if (on && document.body.classList.contains("no-ribbon")) $("ribbon-btn")?.click();
+  if (!on && document.body.classList.contains("presenting")) setPresenting(false);
+  if (!on) noteSlide(-1);
+  document.body.classList.toggle("deck-on", on);
+  $("deck-view")?.toggleAttribute("hidden", !on);
+  $("deck-btn")?.setAttribute("aria-pressed", String(on));
+  if (on) moveDeck(0);
+}
+
+// Google sign-in dialog (drive.rs does the OAuth): resolves true once signed
+// in, false if dismissed. The client ID/secret fields only show until a client
+// is saved, or after a failed attempt so a wrong one can be replaced.
+let signInDone: ((ok: boolean) => void) | null = null;
+const SIGN_IN_NEEDED = "SIGN_IN_NEEDED"; // drive.rs's error when a file needs a signed-in account
+
+async function googleSignIn(why: string): Promise<boolean> {
+  const dlg = $<HTMLDialogElement>("google-dialog");
+  if (!dlg) return false;
+  const { hasClient } = await invoke<{ signedIn: boolean; hasClient: boolean }>("google_status");
+  $("gd-why")!.textContent = why;
+  $("gd-creds")?.toggleAttribute("hidden", hasClient);
+  $("gd-error")?.setAttribute("hidden", "");
+  if (!dlg.open) dlg.showModal();
+  signInDone?.(false); // an earlier ask still open: it's superseded
+  return new Promise((done) => (signInDone = done));
+}
+
+function endSignIn(ok: boolean) {
+  const done = signInDone;
+  signInDone = null; // before close(), whose handler treats a pending sign-in as cancelled
+  $<HTMLDialogElement>("google-dialog")?.close();
+  done?.(ok);
+}
+
+// Downloads a Google file as PDF; a private one opens the sign-in dialog and retries.
+async function fetchGooglePdf(file: { kind: GoogleKind; id: string }): Promise<Uint8Array> {
+  for (;;) {
+    try {
+      return new Uint8Array(await invoke<ArrayBuffer>("fetch_google_pdf", file));
+    } catch (e) {
+      if (e !== SIGN_IN_NEEDED) throw e;
+      if (!(await googleSignIn("That file isn't public. Sign in with a Google account that can open it.")))
+        throw new Error("it's private: sign in to Google, or use File → Download → PDF and open that");
+    }
+  }
+}
+
+// Fullscreen presenting: the window goes fullscreen and the slides take
+// everything but the toolbar. Esc, the button again, or closing slides exits.
+function setPresenting(on: boolean) {
+  document.body.classList.toggle("presenting", on);
+  $("deck-full")?.setAttribute("aria-pressed", String(on));
+  getCurrentWindow().setFullscreen(on).catch((e) => appendError(`Fullscreen failed — ${e}`));
+}
+
+// by = 0 repaints the current slide (shown, resized). A spinner covers slow
+// renders; the last slide stays up underneath until the new one is ready.
+let deckPaints = 0;
+function moveDeck(by: number) {
+  const canvas = $<HTMLCanvasElement>("deck-canvas");
+  if (!canvas || !deckSize()) return;
+  if (!stepDeck(by) && by) return; // ← on the first slide, → on the last
+  if (slidesUp()) noteSlide(deckAt());
+  const count = $("deck-count");
+  if (count) count.textContent = `${deckAt() + 1} / ${deckSize()}`;
+  const view = $("deck-view");
+  const my = ++deckPaints;
+  const slow = setTimeout(() => view?.classList.add("loading"), 150);
+  paintDeck(canvas)
+    .catch((e) => appendError(`Slide failed to render — ${e instanceof Error ? e.message : e}`))
+    .finally(() => {
+      clearTimeout(slow);
+      if (my === deckPaints) view?.classList.remove("loading");
+    });
+}
+
 function toggleScript(open?: boolean) {
   const pane = $("script-pane");
   if (!pane) return;
   const show = open ?? pane.hidden;
   pane.hidden = !show;
+  document.body.classList.toggle("script-open", show);
   $("script-btn")?.setAttribute("aria-pressed", String(show));
   if (recording) scriptUsed = show;
 }
@@ -2100,6 +2370,7 @@ interface SessionSummary {
   pace?: PaceData; // absent on sessions saved before it was kept
   crutch?: Crutch; // word habits; absent on sessions saved before it was tracked
   presence?: Presence; // camera metrics; absent when the camera was off
+  reading?: Reading; // read off the slides; absent without text slides showing
   scores: Scores;
 }
 
@@ -2149,6 +2420,77 @@ function scorePace(wpm: number, low: number, high: number): number {
 // Relative weights of each dimension in the composite. Fillers and articulation
 // (a graded read-along) weigh most; pauses/volume are secondary.
 const SCORE_WEIGHTS = { pace: 1, fillers: 1.5, pauses: 0.75, pitch: 1, volume: 0.75, articulation: 1.5, presence: 1.5 };
+
+// This session's lines in order, with their timing and spoken tokens.
+function sessionUtts() {
+  return [...tokensByIndex.keys()]
+    .sort((a, b) => a - b)
+    .map((index) => {
+      const t = timingByIndex.get(index);
+      return { index, ms: t?.start ?? 0, dur: t ? t.end - t.start : 0, said: tokensByIndex.get(index) ?? [] };
+    });
+}
+
+// Recorded-screen frames as slides (reading.ts groupScreens), each cut of what
+// had been said before it (the app's own transcript).
+// ponytail: regroups every frame per call (live: per OCR'd frame); fine for a talk's few hundred.
+function screenSlides(texts: [number, string][], utts: { ms: number; said: string[] }[]) {
+  const spoken = new Set<string>();
+  let next = 0;
+  return groupScreens(
+    texts.map(([ms, text]) => {
+      for (; next < utts.length && utts[next].ms < ms; next++) runsOf(utts[next].said).forEach((r) => spoken.add(r));
+      const raw = tokenizeWithOffsets(text).map((t) => t.norm);
+      return { ms, text: withoutSpoken(raw, spoken), raw };
+    }),
+  );
+}
+
+// A slide's delivery (reading.ts slideScore) from its lines; null under 5 s of speech.
+function slideGrade(lines: Said[], row: SlideRead): number | null {
+  const ms = lines.reduce((a, u) => a + u.dur, 0);
+  if (ms < 5000) return null;
+  const min = ms / 60000;
+  const sum = (f: (i: number) => number) => lines.reduce((a, u) => a + f(u.index), 0);
+  const preset = PRESETS[currentPreset];
+  return slideScore({
+    pace: scorePace(Math.round(sum((i) => wordsByIndex.get(i) ?? 0) / min), preset.wpmLow, preset.wpmHigh),
+    fillersPerMin: sum((i) => fillersByIndex.get(i) ?? 0) / min,
+    pausesPerMin: sum((i) => analysisByIndex.get(i)?.pauses.length ?? 0) / min,
+    read: row.runs >= 3 ? row.frac : null,
+  });
+}
+
+// Per-slide reading, times and grades (reading.ts): the in-app deck's slides
+// when it showed, else the recorded screen's (not with a read-along script: the
+// script is on screen and graded already).
+function readingResult(): Reading | null {
+  const utts = sessionUtts();
+  let said: Said[];
+  let changes: [number, number][];
+  if (slideByIndex.size) {
+    said = utts.flatMap((u) => {
+      const d = slideByIndex.get(u.index);
+      return d ? [{ ...u, ...d }] : [];
+    });
+    changes = deckChanges;
+  } else if (screenTexts.length && !scriptUsed) {
+    const frames = screenSlides(screenTexts, utts);
+    said = utts.flatMap((u) => {
+      const f = frameAt(frames, u.ms);
+      return f && f.slide >= 0 ? [{ ...u, slide: f.slide, shown: f.text }] : [];
+    });
+    changes = frames.map((f) => [f.ms, f.slide]);
+  } else return null;
+  const r = reading(said);
+  if (!r) return null;
+  const spans = slideSpans(changes, stoppedAtMs || sessionMs());
+  for (const row of r.slides) {
+    row.shownMs = spans.filter((x) => x.slide === row.slide - 1).reduce((a, x) => a + x.end - x.start, 0);
+    row.score = slideGrade(said.filter((u) => u.slide === row.slide - 1), row);
+  }
+  return slideByIndex.size ? { ...r, spans } : { ...r, spans, screen: true };
+}
 
 function computeSummary(): SessionSummary {
   const minutes = speakingMs / 60000;
@@ -2224,6 +2566,7 @@ function computeSummary(): SessionSummary {
     saved: currentSaved || undefined,
     crutch: crutch(spokenWords()),
     presence: presence ?? undefined,
+    reading: readingResult() ?? undefined,
     scores,
   };
 }
@@ -2269,6 +2612,9 @@ function generateTips(s: SessionSummary): Tip[] {
   if (hedgesPerMin >= 3 && s.crutch)
     push(60, 0.5, `You hedged ${hedgeCount(s.crutch)} times — mostly “${s.crutch.hedges[0][0]}”. Say it plainly; hedges make solid points sound unsure.`);
 
+  if (s.reading && s.reading.frac !== null && (s.reading.frac >= READ_FRAC || slideRows(s.reading).some(isRead)))
+    push(Math.round((1 - s.reading.frac) * 100), 1, `${Math.round(s.reading.frac * 100)}% of what you said over your slides was the slide text, word for word${slidesList(s.reading)}. Keep keywords on the slide and say the sentence in your own words.`);
+
   if (s.script)
     push(s.script.accuracy, SCORE_WEIGHTS.articulation, `You matched ${s.script.accuracy}% of the script${s.script.misses ? ` — ${s.script.misses} skipped` : ""}${s.script.subs ? `, ${s.script.subs} misread` : ""}.`, "twisters");
 
@@ -2277,15 +2623,20 @@ function generateTips(s: SessionSummary): Tip[] {
     const w = SCORE_WEIGHTS.presence;
     const pct = (f: number) => `${Math.round(f * 100)}%`;
     if (p.eyeScored && p.eyeContact < 0.6)
-      push(p.scores.eye, w, `You looked at the camera ${pct(p.eyeContact)} of the time — aim for 70%+. Glance at your notes, then come back to the lens.`);
+      push(p.scores.eye, w, `You looked at the camera ${pct(p.eyeContact)} of the time — aim for 70%+. Glance at your notes, then come back to the lens.`, "eyes-hands");
     if (p.scores.expr !== null && p.scores.expr < 60)
       push(p.scores.expr, w, `Your face stayed mostly neutral (smiling ${pct(p.smileFrac)} of the time). Smile on your opening and closing lines.`);
     if (p.scores.still !== null && p.motion > 0.4)
       push(p.scores.still, w, `You moved around a lot (${p.motion.toFixed(2)} shoulder-widths a second). Plant your feet and keep your head steady.`);
     if (p.scores.gesture !== null && p.gestureFrac < 0.1)
-      push(p.scores.gesture, w, `Your hands were still or out of frame ${pct(1 - p.gestureFrac)} of the time. Use them to mark your key points.`);
+      push(p.scores.gesture, w, `Your hands were still or out of frame ${pct(1 - p.gestureFrac)} of the time. Use them to mark your key points.`, "eyes-hands");
     else if (p.scores.gesture !== null && p.gestureFrac > 0.8)
       push(p.scores.gesture, w, `You gestured almost constantly (${pct(p.gestureFrac)} of the time). Save gestures for the points that matter.`);
+    const g = p.gestures ?? {};
+    if ((g.point ?? 0) >= 3)
+      push(60, 0.5, `You pointed ${g.point} times — pointing reads as accusatory. Reach out an open palm instead.`, "eyes-hands");
+    if ((g.palmsdown ?? 0) >= 4 && (g.palmsdown ?? 0) > (g.palmsup ?? 0))
+      push(60, 0.5, `Your palms faced down ${g.palmsdown}× and up ${g.palmsup ?? 0}× — palms down reads as commanding. Turn them up for warmth.`, "eyes-hands");
   }
 
   tips.sort((a, b) => b.impact - a.impact);
@@ -2370,6 +2721,7 @@ function sessionDetail(): string {
     // The envelope only draws the waveform, which is already in `lines`.
     analysis: [...analysisByIndex].map(([i, a]) => [i, { ...a, envelope: [] }]),
     lines: liveLinesHtml(),
+    thumbs: [...slideThumbs].filter(([, url]) => url),
   });
 }
 
@@ -2377,6 +2729,7 @@ interface Detail {
   ts: number;
   L: Lines;
   lines: Array<[number, string]>;
+  thumbs: Map<number, string>; // deck slide → thumbnail data URL; empty on older sessions
 }
 function parseDetail(ts: number, json: string): Detail | null {
   try {
@@ -2388,7 +2741,7 @@ function parseDetail(ts: number, json: string): Detail | null {
       fillerWords: new Map(d.fillerWords),
       analysis: new Map(d.analysis),
     };
-    return { ts, L, lines: d.lines ?? [] };
+    return { ts, L, lines: d.lines ?? [], thumbs: new Map(d.thumbs ?? []) };
   } catch {
     return null;
   }
@@ -2566,6 +2919,7 @@ function presenceTileHtml(s: SessionSummary, prev: SessionSummary | undefined): 
     `<span>smiling ${pct(p.smileFrac)}</span>` +
     `<span>movement ${moves}</span>` +
     `<span>gesturing ${pct(p.gestureFrac)}</span>` +
+    (gestureSummary(p.gestures) ? `<span>${escapeHtml(gestureSummary(p.gestures))}</span>` : "") +
     `</div></div>`
   );
 }
@@ -2584,6 +2938,11 @@ function renderReport() {
   if (statsBtn) statsBtn.disabled = false;
   const { s, d } = reportSnap;
   body.innerHTML = reportBodyHtml(s, d.L, s.pace!);
+  const slides = $("report-slides");
+  if (slides) {
+    slides.innerHTML = slidesSectionHtml(s, d.thumbs);
+    frameThumbs(slides, d.ts);
+  }
   // The coach stands in for the hero's static top tip (re-inserted each render).
   if (coachEl) body.querySelector(".rep-tip")?.replaceWith(coachEl);
   body.querySelector(".rep-title h2")?.insertAdjacentHTML("beforeend", SHOT_BTN);
@@ -2658,6 +3017,17 @@ function transcriptCopyHtml(lines: Array<[number, string]>): string {
 const replays = (root: ParentNode, ts: number) =>
   root.querySelectorAll<HTMLCanvasElement>("canvas.rep-video").forEach((c) => void showReplay(c, ts));
 
+// Fills the Slides panel's recorded-screen thumbnails (data-frame = session ms).
+// A pruned .frames file leaves them blank.
+const frameThumbs = (root: ParentNode, ts: number) =>
+  root.querySelectorAll<HTMLImageElement>("img.slide-thumb[data-frame]").forEach((img) =>
+    void invoke<ArrayBuffer>("session_frame", { ts, kind: 0, ms: Number(img.dataset.frame) })
+      .then((buf) => {
+        if (buf.byteLength) img.src = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
+      })
+      .catch(() => {}),
+  );
+
 // A session's pace, second by second — all the pace chart draws. Saved with
 // every session, so older sessions (whose per-line data is pruned) keep it.
 interface PaceData {
@@ -2677,7 +3047,7 @@ function paceData(L = live): PaceData {
 }
 
 // Pace across the session, with filler dots and pause ticks on shared time.
-function paceChartHtml(p: PaceData, preset: Preset): string {
+function paceChartHtml(p: PaceData, preset: Preset, spans?: SlideSpan[]): string {
   const totalSec = Math.max(1, p.wpm.length - 1);
   const [lo, hi] = wpmAxis(Math.max(0, ...p.wpm));
   const W = 960;
@@ -2691,10 +3061,16 @@ function paceChartHtml(p: PaceData, preset: Preset): string {
   const ticks = p.pauseMs.map((ms) => `<div class="tick" style="${at(ms / 1000)}"></div>`).join("");
   const yLabels = [0, 1, 2, 3].map((k) => `<span>${Math.round(hi - ((hi - lo) * k) / 3)}</span>`).join("");
   const xLabels = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${formatTimestamp(f * p.lengthMs)}</span>`).join("");
+  // Slides (reading.ts slideSpans): alternating bands, numbered along the top.
+  const f = (ms: number) => Math.min(100, (ms / 1000 / totalSec) * 100);
+  const bands = (spans ?? [])
+    .map((b, i) => `<div class="band${i % 2 ? " alt" : ""}" style="left:${f(b.start).toFixed(2)}%;width:${(f(b.end) - f(b.start)).toFixed(2)}%" data-tip="Slide ${b.slide + 1} · ${formatTimestamp(b.end - b.start)}"><span>${b.slide + 1}</span></div>`)
+    .join("");
   return (
     `<div class="panel pace-panel">` +
-    `<div class="panel-head"><span class="label">Pace across session</span><div class="legend"><span style="color:#4aa8ff">— wpm</span><span style="color:#30d158">▮ target ${preset.wpmLow}–${preset.wpmHigh}</span><span style="color:#ffd60a">● filler</span><span>| pause</span></div></div>` +
+    `<div class="panel-head"><span class="label">Pace across session</span><div class="legend"><span style="color:#4aa8ff">— wpm</span><span style="color:#30d158">▮ target ${preset.wpmLow}–${preset.wpmHigh}</span><span style="color:#ffd60a">● filler</span><span>| pause</span>${bands ? "<span>▯ slide</span>" : ""}</div></div>` +
     `<div class="pace-grid"><div class="y-labels">${yLabels}</div><div class="pace-plot" data-tip="">` +
+    (bands ? `<div class="slide-bands">${bands}</div>` : "") +
     `<div class="pace-cursor"></div>` +
     `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
     `<line x1="0" y1="0.5" x2="${W}" y2="0.5" stroke="currentColor" stroke-opacity="0.06" />` +
@@ -2908,7 +3284,7 @@ function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
   const num = prior.length + 1;
   const title = speechTitle(s.speech);
   const hero = reportHeroHtml(s, prev, num, pace.lengthMs);
-  const chart = paceChartHtml(pace, preset);
+  const chart = paceChartHtml(pace, preset, s.reading?.spans);
   const tiles = reportTilesHtml(s, prev);
 
   // Filler breakdown by word.
@@ -2953,6 +3329,59 @@ function reportBodyHtml(s: SessionSummary, L: Lines, pace: PaceData): string {
     `<div class="panel"><div class="panel-head"><span class="label">${title ? `${escapeHtml(title)} · ${bars.length} attempt${bars.length === 1 ? "" : "s"}` : `Score · last ${bars.length}`}</span>${trend}</div><div class="hist">${hist}</div></div>` +
     `<div class="panel"><span class="label">Key moments</span><div class="moments">${momentsHtml}</div></div>` +
     `</div>`
+  );
+}
+
+// " (slides 3, 4)" for the slides read from, or nothing.
+function slidesList(r: Reading): string {
+  const read = slideRows(r).filter(isRead).map((x) => x.slide);
+  return read.length ? ` (slide${read.length === 1 ? "" : "s"} ${read.join(", ")})` : "";
+}
+
+// The report's Slides section, under the report and above the transcript:
+// collapsed, a strip of slide thumbnails with grades; open, a row per slide with
+// time on it, time spoken, % read word for word and its grade. Deck thumbnails
+// come from the session's detail; recorded screens' are fetched after render
+// (data-frame, see frameThumbs). Nothing without rows.
+const SLIDES_OPEN_KEY = "speech.slidesOpen";
+function slidesSectionHtml(s: SessionSummary, thumbs: Map<number, string>): string {
+  const rows = s.reading ? slideRows(s.reading) : [];
+  if (!rows.length) return "";
+  const img = (r: SlideRead) => {
+    if (s.reading?.screen) return `<img class="slide-thumb" data-frame="${r.ms}" alt="">`;
+    const url = thumbs.get(r.slide - 1);
+    return url ? `<img class="slide-thumb" src="${url}" alt="">` : `<span class="slide-thumb"></span>`;
+  };
+  const letter = (r: SlideRead) => (typeof r.score === "number" ? grade(r.score) : "—");
+  const strip = rows
+    .map((r) => `<span class="slide-chip" data-tip="Slide ${r.slide} — grade ${letter(r)}">${img(r)}<i class="grade g-${letter(r)}">${letter(r)}</i></span>`)
+    .join("");
+  const list = rows
+    .map((r, i) => {
+      const pct = Math.round(r.frac * 100);
+      const judged = r.runs >= 3;
+      return (
+        `<button type="button" class="slide-row${isRead(r) ? " read" : ""}" style="--i:${i}" data-index="${r.index}" data-ms="${r.ms}" ` +
+        `data-tip="Slide ${r.slide} — ${judged ? `${pct}% read word for word` : "too little said to judge reading"} · jump to ${formatTimestamp(r.ms)}">` +
+        `${img(r)}<span class="n">${r.slide}</span>` +
+        `<span class="t">${r.shownMs === undefined ? "—" : formatTimestamp(r.shownMs)}</span><span class="t">${formatTimestamp(r.spokeMs)}</span>` +
+        `<div class="fw-bar"><div style="width:${judged ? pct : 0}%"></div></div><span class="pct">${judged ? `${pct}%` : "—"}</span>` +
+        `<span class="grade g-${letter(r)}">${letter(r)}</span></button>`
+      );
+    })
+    .join("");
+  const read = s.reading!.frac === null ? "" : ` · read ${Math.round(s.reading!.frac * 100)}%`;
+  let open = false;
+  try {
+    open = localStorage.getItem(SLIDES_OPEN_KEY) === "1";
+  } catch {
+    // no storage: starts closed
+  }
+  return (
+    `<details class="panel slides-panel"${open ? " open" : ""}>` +
+    `<summary><span class="label">Slides · ${rows.length}${read}</span><span class="slide-strip">${strip}</span></summary>` +
+    `<div class="slide-row slide-head"><span></span><span class="n">#</span><span class="t">On slide</span><span class="t">Spoken</span><span>Read word for word</span><span></span><span class="grade">Grade</span></div>` +
+    `<div class="slide-list">${list}</div></details>`
   );
 }
 
@@ -3083,7 +3512,7 @@ function bindReport(root: HTMLElement | null, cur: () => { ts: number; pace: Pac
     if (!c.L) return;
     const ts = t.closest<HTMLElement>(".rep-transcript .seg-ts");
     if (ts) return void playLine(c.ts, ts, c.L);
-    const m = t.closest<HTMLElement>(".moment");
+    const m = t.closest<HTMLElement>(".moment, button.slide-row");
     if (m) jumpInCopy(root, Number(m.dataset.index), Number(m.dataset.ms), c.L);
     clickPace(e, root, c.pace, c.L);
   });
@@ -3207,6 +3636,7 @@ function startDrill(id: string) {
   applyMemory();
   showPrompt(reads ? undefined : randomPrompt());
   showView("live");
+  if (d.video && !document.body.classList.contains("camera-on")) void setCamera(true);
   if (d.prep) {
     prepEndsAt = performance.now() + d.prep * 1000;
     clearInterval(clockTimer);
@@ -3239,7 +3669,7 @@ function applyMemory() {
 // The memorise drill's panel: pick a speech and mask, see the ladder.
 function memoriseHtml(): string {
   const d = drillById(MEMORISE)!;
-  const head = `<div class="panel-head"><span class="label">${escapeHtml(d.name)}</span>`;
+  const head = `<div class="panel-head"><span class="label">${escapeHtml(d.name)}${drillKindHtml(d)}</span>`;
   if (!speeches.length)
     return `<div class="panel">${head}</div><div class="empty">Save a speech on the Speeches tab to memorise it.</div></div>`;
   if (!speechTitle(memoSpeech)) memoSpeech = speeches[0].id;
@@ -3261,6 +3691,24 @@ function memoriseHtml(): string {
   );
 }
 
+// The gestures the camera recognises (gestures.ts), with how often each has
+// shown up across camera sessions.
+function gesturesHtml(): string {
+  const used = (id: GestureId) => history.reduce((n, h) => n + (h.presence?.gestures?.[id] ?? 0), 0);
+  const rows = GESTURES.map(
+    (g) =>
+      `<tr><td>${escapeHtml(g.name)}${g.caution ? ` <span class="down" data-tip="Use sparingly">!</span>` : ""}<div class="sub">${escapeHtml(g.how)}</div></td>` +
+      `<td>${used(g.id) || "—"}</td></tr>`,
+  ).join("");
+  return (
+    `<div class="panel"><div class="panel-head"><span class="label">Gestures<span class="drill-kind video">Video</span></span></div>` +
+    `<span class="sub">Recognised from the camera during any session; they show on the camera view as you make them.</span>` +
+    `<table class="prof-table"><tr><th>Gesture</th><th>Used</th></tr>${rows}</table></div>`
+  );
+}
+
+const drillKindHtml = (d: Drill) => `<span class="drill-kind${d.video ? " video" : ""}">${d.video ? "Video" : "Speaking"}</span>`;
+
 function renderDrills() {
   const el = $("drills");
   if (!el) return;
@@ -3270,7 +3718,7 @@ function renderDrills() {
     const last = tries[tries.length - 1];
     const r = last && drillResult(last);
     return (
-      `<tr data-drill="${d.id}" data-tip="Set it up on the Live tab"><td>${escapeHtml(d.name)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
+      `<tr data-drill="${d.id}" data-tip="Set it up on the Live tab"><td>${escapeHtml(d.name)}${drillKindHtml(d)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
       `<td>${tries.length ? `${passes}/${tries.length}` : "—"}</td>` +
       `<td>${r ? `<span class="${r.pass ? "up" : "down"}">${r.pass ? "✓" : "✗"}</span> ${escapeHtml(r.value)}<div class="sub">${fmtDate(last.ts)}</div>` : "—"}</td></tr>`
     );
@@ -3278,7 +3726,8 @@ function renderDrills() {
   el.innerHTML =
     `<div class="panel"><div class="panel-head"><span class="label">Drills</span></div>` +
     `<table class="prof-table"><tr><th>Drill</th><th>Passed</th><th>Last</th></tr>${rows}</table></div>` +
-    memoriseHtml();
+    memoriseHtml() +
+    gesturesHtml();
   for (const id of ["memo-speech", "memo-mask"]) {
     const sel = $<HTMLSelectElement>(id);
     if (sel) enhanceSelect(sel);
@@ -4125,6 +4574,7 @@ function renderSessionPop() {
   const head = `<div class="panel"><div class="panel-head"><button type="button" class="ctl" data-pop-history>Open in History</button><button type="button" class="ctl" data-pop-close>Close</button></div></div>`;
   el.innerHTML = sessionPageHtml(i, popDetail, head);
   replays(el, history[i].ts);
+  frameThumbs(el, history[i].ts);
 }
 
 // `anim`: play the open/back choreography (styles.css .enter); plain
@@ -4135,7 +4585,10 @@ function renderHistory(anim = false) {
   const i = history.findIndex((h) => h.ts === histPage);
   if (i < 0) histPage = 0; // cleared since
   el.innerHTML = i < 0 ? historyListHtml() : historyPageHtml(i);
-  if (i >= 0) replays(el, history[i].ts);
+  if (i >= 0) {
+    replays(el, history[i].ts);
+    frameThumbs(el, history[i].ts);
+  }
   el.classList.remove("leave");
   el.classList.toggle("enter", anim);
   if (anim && i >= 0) countUp(el, [[".rep-hero .ring-num", 200, 850], [".rep-delta .num", 420, 600], [".tile .big", 640, 650], [".fw-list.dims .n", 900, 700]]);
@@ -4212,6 +4665,7 @@ function sessionPageHtml(i: number, detail: Detail | null, head: string): string
     return (
       head +
       `<div class="hist-report">${reportBodyHtml(s, detail.L, s.pace ?? paceData(detail.L))}</div>` +
+      slidesSectionHtml(s, detail.thumbs) +
       `<section class="panel rep-transcript">${transcriptCopyHtml(detail.lines)}</section>`
     );
   const dims = DIMENSIONS.filter(([k]) => typeof s.scores[k] === "number")
@@ -4223,9 +4677,10 @@ function sessionPageHtml(i: number, detail: Detail | null, head: string): string
   return (
     head +
     reportHeroHtml(s, history[i - 1], i + 1, s.pace?.lengthMs ?? s.durationMs) +
-    (s.pace ? paceChartHtml(s.pace, PRESETS[s.preset]) : "") +
+    (s.pace ? paceChartHtml(s.pace, PRESETS[s.preset], s.reading?.spans) : "") +
     reportTilesHtml(s, history[i - 1]) +
     `<div class="panel"><span class="label">Score breakdown</span><div class="fw-list dims">${dims}</div></div>` +
+    slidesSectionHtml(s, new Map()) +
     `<div class="panel"><span class="label">What to work on</span><ul class="overview">` +
     generateTips(s).map((t) => `<li>${escapeHtml(t.text)}${drillBtnHtml(t)}</li>`).join("") +
     `</ul></div>`
@@ -4257,22 +4712,27 @@ window.addEventListener("DOMContentLoaded", () => {
   if (ribbonCanvas) ribbon = new Ribbon(ribbonCanvas, "idle");
   const shardsCanvas = document.querySelector<HTMLCanvasElement>("#shards");
   if (shardsCanvas) new Shards(shardsCanvas, shardsCanvas.parentElement!);
-  // The scope drags the window only once a held pointer actually moves.
+  // The scope, nav rail and toolbar strip drag the window, but only once a held
+  // pointer actually moves (and only from their bare background, not buttons).
   // data-tauri-drag-region starts a WM move on every press and maximizes on
-  // double-click, so spam-clicking the scope's click effect stalled the app.
+  // double-click, so clicks on the bars grabbed the window.
   const scope = shardsCanvas?.parentElement;
   let pressAt: { x: number; y: number } | null = null;
-  scope?.addEventListener("pointerdown", (e) => {
-    pressAt = e.button === 0 && (e.target === scope || (e.target as Element).matches(".ribbon, .countdown")) ? { x: e.clientX, y: e.clientY } : null;
-  });
-  scope?.addEventListener("pointerup", () => (pressAt = null));
-  scope?.addEventListener("pointerleave", () => (pressAt = null));
-  scope?.addEventListener("pointermove", (e) => {
-    if (pressAt && e.buttons === 1 && Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) > 4) {
-      pressAt = null;
-      getCurrentWindow().startDragging();
-    }
-  });
+  for (const bar of [scope, document.querySelector(".nav"), document.querySelector(".strip")]) {
+    bar?.addEventListener("pointerdown", (e) => {
+      const ev = e as PointerEvent;
+      pressAt = ev.button === 0 && (ev.target as Element).matches(".scope, .ribbon, .countdown, .nav, .rail-spacer, .strip") ? { x: ev.clientX, y: ev.clientY } : null;
+    });
+    bar?.addEventListener("pointerup", () => (pressAt = null));
+    bar?.addEventListener("pointerleave", () => (pressAt = null));
+    bar?.addEventListener("pointermove", (e) => {
+      const ev = e as PointerEvent;
+      if (pressAt && ev.buttons === 1 && Math.hypot(ev.clientX - pressAt.x, ev.clientY - pressAt.y) > 4) {
+        pressAt = null;
+        getCurrentWindow().startDragging();
+      }
+    });
+  }
   const sparkEl = $("pace-spark");
   if (sparkEl) new ResizeObserver(() => drawSpark()).observe(sparkEl);
 
@@ -4290,6 +4750,268 @@ window.addEventListener("DOMContentLoaded", () => {
   recordBtn?.addEventListener("click", toggleRecording);
   $("reset-btn")?.addEventListener("click", resetSession);
   $("script-btn")?.addEventListener("click", () => toggleScript());
+  // With no deck loaded the Slides button opens a menu: a file, or a Google link.
+  const deckFile = $<HTMLInputElement>("deck-file");
+  const deckMenu = $("deck-menu");
+  const deckLink = $<HTMLInputElement>("deck-link");
+  const closeDeckMenu = () => deckMenu?.setAttribute("hidden", "");
+  // The slides area shows a spinner while a file loads or downloads.
+  const openDeck = async (load: () => Promise<number>) => {
+    closeDeckMenu();
+    const view = $("deck-view");
+    const wasOn = document.body.classList.contains("deck-on");
+    showDeck(true);
+    view?.classList.add("loading");
+    try {
+      await load();
+      view?.classList.remove("loading"); // before the paint, which brings back its own if slow
+      showDeck(true);
+    } catch (e) {
+      view?.classList.remove("loading");
+      if (!wasOn || !deckSize()) showDeck(false);
+      appendError(`Couldn't open slides — ${e instanceof Error ? e.message : e}`);
+    }
+  };
+  const openDeckMenu = (e: MouseEvent) => {
+    if (!deckMenu) return;
+    if (!deckMenu.hidden) return closeDeckMenu();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    deckMenu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 288))}px`;
+    deckMenu.style.top = `${r.bottom + 6}px`;
+    if (deckLink) deckLink.value = "";
+    deckMenu.removeAttribute("hidden");
+    deckLink?.focus();
+  };
+  // Click shows/hides a loaded deck (or opens the menu if none); right-click
+  // always opens the menu, to switch to another file or link.
+  $("deck-btn")?.addEventListener("click", (e) => {
+    const body = document.body.classList;
+    if (deckSize()) showDeck(body.contains("no-ribbon") || !body.contains("deck-on"));
+    else openDeckMenu(e);
+  });
+  $("deck-btn")?.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openDeckMenu(e);
+  });
+  $("deck-pick")?.addEventListener("click", () => {
+    closeDeckMenu();
+    deckFile?.click();
+  });
+  deckFile?.addEventListener("change", () => {
+    const files = [...(deckFile.files ?? [])];
+    deckFile.value = "";
+    if (files.length) void openDeck(() => loadDeck(files));
+  });
+  deckLink?.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") return closeDeckMenu();
+    if (e.key !== "Enter" || !deckLink.value.trim()) return;
+    const file = googleFile(deckLink.value);
+    if (!file) return appendError("Couldn't open slides — paste a Google Slides, Docs, Sheets or Drive file link");
+    if (!recording) setStatus("Downloading slides…");
+    void openDeck(async () => {
+      try {
+        return await loadPdf(await fetchGooglePdf(file));
+      } finally {
+        if (!recording) setStatus("Idle");
+      }
+    });
+  });
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target as Element;
+    if (deckMenu && !deckMenu.contains(t) && !t.closest("#deck-btn")) closeDeckMenu();
+  });
+
+  // Drive picker: your Slides, Docs and PDFs, most recently viewed first.
+  const driveDlg = $<HTMLDialogElement>("drive-dialog");
+  const driveList = $("drive-list");
+  const driveSearch = $<HTMLInputElement>("drive-search");
+  type DriveFile = { id: string; name: string; kind: GoogleKind; modified: string };
+  const openGoogle = (f: { kind: GoogleKind; id: string }) => {
+    if (!recording) setStatus("Downloading slides…");
+    void openDeck(async () => {
+      try {
+        return await loadPdf(await fetchGooglePdf(f));
+      } finally {
+        if (!recording) setStatus("Idle");
+      }
+    });
+  };
+  const KIND_LABEL: Record<string, string> = { presentation: "Slides", document: "Doc", file: "PDF" };
+  let driveAsk = 0;
+  const listDrive = async () => {
+    if (!driveList) return;
+    const my = ++driveAsk;
+    driveList.innerHTML = '<p class="empty">Loading…</p>';
+    let files: DriveFile[];
+    try {
+      files = await invoke<DriveFile[]>("google_list_files", { query: driveSearch?.value ?? "" });
+    } catch (e) {
+      if (my !== driveAsk) return;
+      if (e === SIGN_IN_NEEDED) {
+        driveDlg?.close();
+        return void openDrive();
+      }
+      driveList.innerHTML = "";
+      driveList.append(Object.assign(document.createElement("p"), { className: "empty", textContent: `Couldn't list Drive — ${e}` }));
+      return;
+    }
+    if (my !== driveAsk) return; // typed again since
+    driveList.innerHTML = files.length ? "" : '<p class="empty">Nothing found.</p>';
+    for (const f of files) {
+      // Names come from Drive: textContent only.
+      const b = document.createElement("button");
+      b.type = "button";
+      const name = Object.assign(document.createElement("span"), { className: "drive-name", textContent: f.name });
+      const kind = Object.assign(document.createElement("span"), { className: "sub", textContent: KIND_LABEL[f.kind] ?? "" });
+      const when = Object.assign(document.createElement("span"), {
+        className: "sub",
+        textContent: f.modified ? new Date(f.modified).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "",
+      });
+      b.append(kind, name, when);
+      b.addEventListener("click", () => {
+        driveDlg?.close();
+        openGoogle(f);
+      });
+      driveList.append(b);
+    }
+  };
+  const openDrive = async () => {
+    closeDeckMenu();
+    const { signedIn } = await invoke<{ signedIn: boolean }>("google_status");
+    if (!signedIn && !(await googleSignIn("Sign in to pick slides from your Google Drive."))) return;
+    if (driveSearch) driveSearch.value = "";
+    driveDlg?.showModal();
+    void listDrive();
+  };
+  let driveTyping = 0;
+  driveSearch?.addEventListener("input", () => {
+    clearTimeout(driveTyping);
+    driveTyping = window.setTimeout(listDrive, 300);
+  });
+  $("deck-drive")?.addEventListener("click", () => void openDrive());
+  $("drive-close")?.addEventListener("click", () => driveDlg?.close());
+
+  // Sign-in dialog buttons. Esc or Cancel stops the wait for the browser.
+  const gdGo = $<HTMLButtonElement>("gd-go");
+  gdGo?.addEventListener("click", async () => {
+    gdGo.disabled = true;
+    gdGo.textContent = "Finish in your browser…";
+    $("gd-error")?.setAttribute("hidden", "");
+    try {
+      await invoke("google_sign_in", {
+        clientId: $<HTMLInputElement>("gd-id")?.value ?? "",
+        clientSecret: $<HTMLInputElement>("gd-secret")?.value ?? "",
+      });
+      endSignIn(true);
+    } catch (e) {
+      if (!signInDone) return; // cancelled
+      const err = $("gd-error");
+      if (err) {
+        err.textContent = `Sign-in failed: ${e}`;
+        err.removeAttribute("hidden");
+      }
+      $("gd-creds")?.removeAttribute("hidden");
+    } finally {
+      gdGo.disabled = false;
+      gdGo.textContent = "Sign in with Google";
+    }
+  });
+  $("gd-cancel")?.addEventListener("click", () => $<HTMLDialogElement>("google-dialog")?.close());
+  $("google-dialog")?.addEventListener("close", () => {
+    if (!signInDone) return;
+    void invoke("google_sign_in_cancel");
+    endSignIn(false);
+  });
+  $("deck-full")?.addEventListener("click", () => setPresenting(!document.body.classList.contains("presenting")));
+  $("deck-close")?.addEventListener("click", () => {
+    closeDeck();
+    showDeck(false);
+  });
+  $("deck-canvas")?.addEventListener("click", (e) => {
+    const r = (e.target as HTMLElement).getBoundingClientRect();
+    moveDeck(e.clientX - r.left < r.width / 2 ? -1 : 1);
+  });
+  // Drag the scope's bottom edge to resize it; the height sticks (inline, so it
+  // beats the stylesheet's per-layout heights) until a double-click resets it.
+  const grip = $("scope-resize");
+  const liveView = document.querySelector<HTMLElement>(".view-live");
+  const strip = document.querySelector<HTMLElement>(".strip");
+  const TPANE_MIN = 120; // .tpane's min-height
+  const setScopeH = (px: number | null) => {
+    if (!scope) return;
+    scope.style.height = px === null ? "" : `${Math.round(Math.max(100, Math.min((liveView?.clientHeight ?? innerHeight) - (strip?.offsetHeight ?? 0), px)))}px`;
+    save(SCOPE_H_KEY, scope.style.height);
+    fitDock(); // with no transcript the scope fills regardless, so no resize fires to do this
+  };
+  if (scope) scope.style.height = load(SCOPE_H_KEY) ?? "";
+  grip?.addEventListener("pointerdown", (e) => {
+    if (!scope) return;
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    // With no transcript, start from the height that brings it back, so the
+    // first pixel up shows it instead of dragging through dead space.
+    const hidden = document.body.classList.contains("tpane-none") && liveView && strip;
+    const h0 = hidden ? liveView.clientHeight - strip.offsetHeight - TPANE_MIN + 1 : scope.offsetHeight;
+    const y0 = e.clientY;
+    const move = (m: PointerEvent) => setScopeH(h0 + m.clientY - y0);
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("lostpointercapture", () => grip.removeEventListener("pointermove", move), { once: true });
+  });
+  grip?.addEventListener("dblclick", () => setScopeH(null));
+  // The less room under the scope, the less below it: full analytics, then one
+  // row of numbers, then none, then no transcript either (the scope then fills
+  // down to the toolbar). Measured with the classes off, so the scope is at the
+  // height the user dragged it to, then trying each dock mode.
+  const dock = document.querySelector<HTMLElement>(".dock");
+  const fitDock = () => {
+    const body = document.body.classList;
+    if (!liveView || !dock || !scope || !liveView.clientHeight || body.contains("presenting")) return;
+    body.remove("dock-small", "dock-none", "tpane-none");
+    const room = liveView.clientHeight - scope.offsetHeight - (strip?.offsetHeight ?? 0);
+    if (room - dock.offsetHeight >= TPANE_MIN) return;
+    body.add("dock-small");
+    if (room - dock.offsetHeight >= TPANE_MIN) return;
+    body.replace("dock-small", "dock-none");
+    if (room < TPANE_MIN) body.add("tpane-none");
+  };
+  if (liveView && scope && dock) {
+    const ro = new ResizeObserver(fitDock);
+    for (const el of [liveView, scope, ...dock.children]) ro.observe(el);
+  }
+
+  // The floating camera (with slides): drag to move, drag the corner to resize.
+  const cam = $("cam-view");
+  const camPos = JSON.parse(load(CAM_FLOAT_KEY) ?? "{}") as { x?: number; y?: number; w?: number };
+  const placeCam = () => {
+    if (!cam) return;
+    for (const k of ["x", "y", "w"] as const) {
+      const v = camPos[k];
+      if (v !== undefined) cam.style.setProperty(`--cam-${k}`, `${v}px`);
+    }
+  };
+  placeCam();
+  cam?.addEventListener("pointerdown", (e) => {
+    if (getComputedStyle(cam).position !== "fixed" || (e.target as Element).closest("button")) return;
+    e.preventDefault();
+    cam.setPointerCapture(e.pointerId);
+    const r = cam.getBoundingClientRect();
+    const resize = (e.target as Element).classList.contains("cam-grip");
+    const move = (m: PointerEvent) => {
+      const [dx, dy] = [m.clientX - e.clientX, m.clientY - e.clientY];
+      if (resize) camPos.w = Math.round(Math.max(160, Math.min(innerWidth * 0.8, r.width + dx)));
+      else [camPos.x, camPos.y] = [Math.round(r.left + dx), Math.round(r.top + dy)];
+      placeCam();
+    };
+    cam.addEventListener("pointermove", move);
+    cam.addEventListener("lostpointercapture", () => {
+      cam.removeEventListener("pointermove", move);
+      save(CAM_FLOAT_KEY, JSON.stringify(camPos));
+    }, { once: true });
+  });
+
+  // Re-render sharp when the scope resizes (window resize, deck toggles).
+  const deckView = $("deck-view");
+  if (deckView) new ResizeObserver(() => document.body.classList.contains("deck-on") && moveDeck(0)).observe(deckView);
   $("stats-btn")?.addEventListener("click", () => showView("report"));
   $("live-btn")?.addEventListener("click", () => showView("live"));
   $("profile-btn")?.addEventListener("click", () => showView("profile"));
@@ -4325,6 +5047,10 @@ window.addEventListener("DOMContentLoaded", () => {
         save(RECORD_KEY, recordKey);
       }
       bindBtn?.blur(); // ends capture via the blur handler
+      return;
+    }
+    if (e.key === "Escape" && document.body.classList.contains("presenting") && !(e.target as Element).closest("dialog, .dd, input")) {
+      setPresenting(false);
       return;
     }
     // Esc on a speech's page goes back to the list (the popup and open
@@ -4366,6 +5092,18 @@ window.addEventListener("DOMContentLoaded", () => {
       e.preventDefault();
       (document.activeElement as HTMLElement | null)?.blur(); // so Space doesn't also click a button
       return correctingSpace();
+    }
+    // Slide changes: arrows, and PgUp/PgDn, which presentation clickers send.
+    const slideBy = { ArrowRight: 1, PageDown: 1, ArrowLeft: -1, PageUp: -1 }[e.code];
+    if (
+      slideBy &&
+      document.body.classList.contains("deck-on") &&
+      !document.body.classList.contains("no-ribbon") &&
+      document.body.dataset.view === "live" &&
+      !(e.target as Element).closest("input, textarea, select, .dd, .timer-menu, dialog, [contenteditable]")
+    ) {
+      e.preventDefault();
+      return moveDeck(slideBy);
     }
     if (e.code !== recordKey || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     // Starts only from the live tab; a running recording can be stopped from anywhere.
@@ -4485,6 +5223,23 @@ window.addEventListener("DOMContentLoaded", () => {
   $("mic-replay")?.addEventListener("click", playMicClip);
   $("set-search")?.addEventListener("input", filterSettings);
 
+  // Google sign-in (drive.rs) so private files open as slides. The client ID and
+  // secret are only asked for while signed out; Rust keeps them with the token.
+  const gSign = $<HTMLButtonElement>("g-sign");
+  const gStatus = $("g-status");
+  const syncGoogle = async () => {
+    const { signedIn } = await invoke<{ signedIn: boolean }>("google_status");
+    if (gSign) gSign.textContent = signedIn ? "Sign out" : "Sign in";
+    if (gStatus) gStatus.textContent = signedIn ? "Signed in: any file your account can open works as slides" : "Sign in to open private Slides, Docs and Drive files as slides";
+  };
+  gSign?.addEventListener("click", async () => {
+    if (gSign.textContent === "Sign out") await invoke("google_sign_out").catch(() => {});
+    else await googleSignIn("Sign in to open private Slides, Docs and Drive files as slides.");
+    void syncGoogle();
+  });
+  $("google-dialog")?.addEventListener("close", () => void syncGoogle()); // signed in from the slides menu
+  void syncGoogle();
+
   const pauseSel = $<HTMLSelectElement>("set-pause");
   const savedPause = Number(load(PAUSE_KEY));
   if (savedPause > 0) INTER_PAUSE_MS = savedPause;
@@ -4564,7 +5319,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   setRibbon(load(RIBBON_KEY) !== "0");
   $("ribbon-btn")?.addEventListener("click", () => setRibbon(document.body.classList.contains("no-ribbon")));
-  for (const id of ["video-btn", "camera-btn"]) $(id)?.addEventListener("click", () => setCamera(!document.body.classList.contains("camera-on")));
+  $("camera-btn")?.addEventListener("click", () => setCamera(!document.body.classList.contains("camera-on")));
   $("screen-btn")?.addEventListener("click", () => void toggleScreen());
   // The UI starts with the toggle off, so a capture left over from before a
   // webview reload is released; one that ended (or couldn't save) is too.
@@ -4578,7 +5333,8 @@ window.addEventListener("DOMContentLoaded", () => {
   if (load(CAMERA_KEY) === "1") void setCamera(true);
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
   bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);
-  bindToggle("set-cam-scope", CAM_SCOPE_KEY, (on) => document.body.classList.toggle("cam-scope", on), false);
+  bindToggle("set-gesture-readout", "speech.gestureReadout", (on) => document.body.classList.toggle("gesture-readout", (gestureReadout = on)), false);
+  $("cam-report-btn")?.addEventListener("click", () => void reportGesture());
 
   renderFlappyBest();
   $("set-flappy")?.addEventListener("click", openFlappyDialog);
@@ -4635,6 +5391,19 @@ window.addEventListener("DOMContentLoaded", () => {
     const shot = (e.target as Element).closest<HTMLElement>("[data-shot]");
     if (shot) void shootReport(shot, (e as MouseEvent).shiftKey);
   });
+  document.addEventListener(
+    "toggle",
+    (e) => {
+      const d = e.target as HTMLDetailsElement;
+      if (!d.classList?.contains("slides-panel")) return;
+      try {
+        localStorage.setItem(SLIDES_OPEN_KEY, d.open ? "1" : "0");
+      } catch {
+        // no storage: forgotten next time
+      }
+    },
+    true,
+  );
   bindReport($("report"), () => reportSnap && { ts: reportSnap.s.ts, pace: reportSnap.s.pace!, L: reportSnap.d.L });
   const pop = $<HTMLDialogElement>("session-dialog");
   pop?.addEventListener("click", (e) => {
@@ -4923,21 +5692,34 @@ window.addEventListener("DOMContentLoaded", () => {
     // its decode failed, or correction is off — never get a refined segment, so
     // settle them here: the fast text is final.
     for (const el of segmentEls.values()) el.classList.replace("draft", "final");
-    // A new recording or reset during the celebration cancels this (resetCountdown);
-    // both flush the save themselves.
-    finishCorrecting(() => {
-      if (reportPending) {
-        reportPending = false;
-        // The report keeps a copy of the session, then the live view resets.
-        if (totalWords > 0) reportSnap = { s: { ...computeSummary(), pace: paceData() }, d: parseDetail(sessionStartTs, sessionDetail())! };
+    // Waits for the screen text (screen_text) the report reads; Record is locked
+    // meanwhile (screenTextsPending). A session started anyway (a different ts)
+    // already flushed this one's save, so this one's report is dropped.
+    const ts = sessionStartTs;
+    void screenTextsReady.then(() => {
+      if (ts !== sessionStartTs) return;
+      finishCorrecting(() => {
+        if (reportPending) {
+          reportPending = false;
+          // The report keeps a copy of the session, then the live view resets.
+          if (totalWords > 0) reportSnap = { s: { ...computeSummary(), pace: paceData() }, d: parseDetail(sessionStartTs, sessionDetail())! };
+          flushSave();
+          clearLive();
+          renderReport();
+          if (reportSnap && document.body.dataset.view === "live") showView("report");
+        }
         flushSave();
-        clearLive();
-        renderReport();
-        if (reportSnap && document.body.dataset.view === "live") showView("report");
-      }
-      flushSave();
-      if (!recording) setStatus("Idle");
+        if (!recording) setStatus("Idle");
+      });
     });
+  });
+
+  // Live laps for slides in another app: the recorded screen's text as OCR
+  // reads each frame (screen/ocr.rs), regrouped into slides.
+  listen<[number, number, string]>("screen_frame_text", ({ payload: [ts, ms, text] }) => {
+    if (ts !== sessionStartTs || !recording || scriptUsed) return;
+    liveScreenTexts.push([ms, text]);
+    screenChanges = screenSlides(liveScreenTexts, sessionUtts()).map((x) => [x.ms, x.slide]);
   });
 
   listen<string>("transcription_error", (event) => {

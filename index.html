@@ -11,8 +11,8 @@
   <body data-view="live">
     <div class="app">
       <!-- Nav rail: page switches keep the same slot on every page. The titlebar
-           is gone (decorations off), so the nav rail and toolbar strip double as the drag region. -->
-      <nav class="nav" data-tauri-drag-region>
+           is gone (decorations off), so the nav rail, scope and toolbar strip drag the window (main.ts). -->
+      <nav class="nav">
         <button id="live-btn" class="nav-btn" aria-label="Live" type="button" data-tip="Live session">
           <svg class="nav-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg><span class="nav-dot"></span>
         </button>
@@ -28,7 +28,7 @@
         <button id="history-btn" class="nav-btn" aria-label="History" type="button" data-tip="History — past sessions and their stats">
           <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l4 2" /></svg>
         </button>
-        <div class="rail-spacer" data-tauri-drag-region></div>
+        <div class="rail-spacer"></div>
         <button id="profile-btn" class="nav-btn" aria-label="Profile" type="button" data-tip="Profile — your progress across sessions">
           <svg viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
         </button>
@@ -45,6 +45,10 @@
           <div id="cam-view" class="cam-view" hidden>
             <canvas id="self-view"></canvas>
             <canvas id="hand-overlay" aria-hidden="true"></canvas>
+            <span class="cam-grip" aria-hidden="true"></span>
+            <button id="cam-report-btn" class="cam-corner cam-report" type="button" aria-label="Report a wrong gesture: saves the last 5 seconds of hand tracking" data-tip="Wrong gesture? Save the last 5 s for debugging">
+              <svg viewBox="0 0 24 24"><path d="M5 21V4h11l-2 4 2 4H5" /></svg>
+            </button>
           </div>
           <div id="countdown" class="countdown" data-tip="Time left on the timer"></div>
           <div class="scope-grid"></div>
@@ -60,6 +64,7 @@
           </div>
           <div class="scope-tr">
             <div id="clock" class="clock" data-tip="Elapsed session time">0:00</div>
+            <div id="laps" class="laps" data-tip="Laps — time on each slide: the one up now, then the last few"></div>
             <div id="rms-label" class="sub" data-tip="Current mic signal level (RMS) and model sample rate">rms 0.00 · 16 kHz</div>
             <span id="screen-badge" class="screen-badge" hidden data-tip="Recording the screen with each session">● SCREEN</span>
           </div>
@@ -67,18 +72,25 @@
             <span id="model-chain" data-tip="Model chain — the live model streams text instantly, the correction model re-decodes it for accuracy (change in Settings)">tiny.en → medium.en</span>
             <span class="gpu" data-tip="Running on the local GPU — audio never leaves this machine"><i></i>GPU · on-device</span>
           </div>
-          <div class="seg scope-br">
-            <button id="video-btn" type="button" aria-pressed="false" data-tip="Video — grade eye contact, expression, stillness and gestures">
-              <svg viewBox="0 0 24 24"><path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11" /><rect x="2" y="6" width="14" height="12" rx="2" /></svg>Video
+          <div id="deck-view" class="deck-view" hidden>
+            <canvas id="deck-canvas"></canvas>
+            <span id="deck-count" class="deck-count"></span>
+            <button id="deck-full" class="cam-corner deck-full" type="button" aria-pressed="false" aria-label="Present fullscreen" data-tip="Present fullscreen (Esc exits)">
+              <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M21 8V5a2 2 0 0 0-2-2h-3" /><path d="M3 16v3a2 2 0 0 0 2 2h3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
+            </button>
+            <button id="deck-close" class="cam-corner" type="button" aria-label="Close slides" data-tip="Close slides">
+              <svg viewBox="0 0 24 24"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
             </button>
           </div>
+          <div id="scope-resize" class="scope-resize" role="separator" aria-orientation="horizontal" aria-label="Resize the top area" data-tip="Drag to resize · double-click to reset"></div>
         </section>
 
         <!-- Toolbar strip: transport + session tools, atop the transcript. -->
-        <div class="strip" data-tauri-drag-region>
+        <div class="strip">
           <button id="record-btn" class="rec-btn" aria-label="Start recording" data-tip="Start recording (Space)"></button>
           <span id="rec-label" class="rec-label">REC</span>
           <button id="screen-btn" class="tool-btn" type="button" aria-pressed="false" data-tip="Record screen — each session also saves a replay of your screen, with your camera in a corner">Screen</button>
+          <button id="camera-btn" class="tool-btn" type="button" aria-pressed="false" data-tip="Video — grade eye contact, expression, stillness and gestures">Video</button>
           <div class="strip-sep"></div>
           <button id="reset-btn" class="tool-btn icon" type="button" aria-label="Reset session" data-tip="Reset — clears the transcript and all metrics for this session">
             <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
@@ -90,9 +102,10 @@
           <button id="script-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Script read-along" data-tip="Script read-along — paste a script and track your words against it">
             <svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M16 13H8" /><path d="M16 17H8" /><path d="M10 9H8" /></svg>
           </button>
-          <button id="camera-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Camera" data-tip="Camera — grade eye contact, expression, stillness and gestures">
-            <svg viewBox="0 0 24 24"><path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11" /><rect x="2" y="6" width="14" height="12" rx="2" /></svg>
+          <button id="deck-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Slides" data-tip="Slides — present from a PDF, images or a Google Slides/Docs link. ← → or click to change slide · right-click to change the source">
+            <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M12 17v4" /><path d="M8 21h8" /></svg>
           </button>
+          <input id="deck-file" type="file" accept=".pdf,application/pdf,image/*" multiple hidden />
           <button id="ribbon-btn" class="tool-btn icon" type="button" aria-label="Hide ribbon" data-tip="Hide the ribbon">
             <svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6" /></svg>
           </button>
@@ -206,6 +219,7 @@
       <!-- 3a: session report -->
       <main id="report" class="view view-report">
         <div id="report-body"></div>
+        <div id="report-slides"></div>
         <section id="report-transcript" class="panel rep-transcript"></section>
         <div id="coach" class="coach">
           <div class="coach-avatar"><canvas class="coach-halo"></canvas></div>
@@ -257,8 +271,8 @@
             <input id="set-countdown" type="checkbox" role="switch" />
           </label>
           <label class="set-row">
-            <span>Camera in scope<span class="sub">While the camera is on, show it in place of the ribbon</span></span>
-            <input id="set-cam-scope" type="checkbox" role="switch" />
+            <span>Gesture readout<span class="sub">Show what the camera reads from each hand: left/right, fingers out, palm direction</span></span>
+            <input id="set-gesture-readout" type="checkbox" role="switch" />
           </label>
           <label class="set-row">
             <span>Ghost caret<span class="sub">When reading a saved speech, underline where your best attempt was at this moment</span></span>
@@ -283,6 +297,13 @@
         <div class="panel">
           <span class="label">Models</span>
           <div id="model-list"></div>
+        </div>
+        <div class="panel">
+          <span class="label">Google</span>
+          <div class="set-row">
+            <span>Google account<span id="g-status" class="sub">Sign in to open private Slides, Docs and Drive files as slides</span></span>
+            <button id="g-sign" class="ctl" type="button">Sign in</button>
+          </div>
         </div>
         <div class="panel">
           <span class="label">Data</span>
@@ -358,6 +379,33 @@
         </div>
       </form>
     </dialog>
+    <dialog id="google-dialog" class="modal" aria-labelledby="gd-title">
+      <div class="panel">
+        <span id="gd-title" class="label">Sign in to Google</span>
+        <p id="gd-why" class="gd-text"></p>
+        <div id="gd-creds" class="gd-creds">
+          <p class="gd-text sub">
+            One-time setup in Google Cloud Console: create a project, enable the Google Drive API, add yourself as a
+            test user on the OAuth consent screen, then create an OAuth client ID of type <b>Desktop app</b> and paste it here.
+          </p>
+          <input id="gd-id" class="ctl" type="text" spellcheck="false" autocomplete="off" placeholder="OAuth client ID" aria-label="OAuth client ID" />
+          <input id="gd-secret" class="ctl" type="password" spellcheck="false" autocomplete="off" placeholder="OAuth client secret" aria-label="OAuth client secret" />
+        </div>
+        <p id="gd-error" class="gd-text gd-error" hidden></p>
+        <div class="speech-actions">
+          <button id="gd-cancel" class="ctl" type="button">Cancel</button>
+          <button id="gd-go" class="ctl" type="button">Sign in with Google</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="drive-dialog" class="modal" aria-labelledby="dv-title">
+      <div class="panel">
+        <span id="dv-title" class="label">Google Drive</span>
+        <input id="drive-search" class="ctl" type="search" spellcheck="false" placeholder="Search your Slides, Docs and PDFs" aria-label="Search Drive" />
+        <div id="drive-list" class="drive-list"></div>
+        <div class="speech-actions"><button id="drive-close" class="ctl" type="button">Close</button></div>
+      </div>
+    </dialog>
     <dialog id="screen-dialog" class="modal" aria-labelledby="sd-title">
       <div class="panel">
         <span id="sd-title" class="label">Record which display?</span>
@@ -375,6 +423,11 @@
         <div class="speech-actions"><button id="fd-close" class="ctl" type="button">Close</button></div>
       </div>
     </dialog>
+    <div id="deck-menu" class="dd-list timer-menu deck-menu" role="menu" aria-label="Open slides" hidden>
+      <button id="deck-pick" type="button" role="menuitem">Choose PDF or images…</button>
+      <button id="deck-drive" type="button" role="menuitem">From Google Drive…</button>
+      <input id="deck-link" class="ctl" type="url" spellcheck="false" placeholder="Paste a Google Slides, Docs or Drive link ⏎" aria-label="Google Slides, Docs or Drive link" />
+    </div>
     <div id="timer-menu" class="dd-list timer-menu" role="menu" aria-label="Timer length" hidden>
       <button type="button" role="menuitem" data-s="0">Off</button>
       <button type="button" role="menuitem" data-s="30">30 s</button>

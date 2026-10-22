@@ -19,26 +19,43 @@ interface VisionFrame {
   head: { yaw: number; pitch: number } | null;
   pose: Pt[] | null;
   hands: Pt[][];
+  handed: number[];
+  world: number[][][];
 }
 type VisionMsg = VisionFrame | { ended: true };
 
 let gen = 0; // bumps on every start/stop so a stale session's messages are ignored
+const REPORT_MS = 5000;
+let recent: Omit<VisionFrame, "blend">[] = []; // the last REPORT_MS of raw results, for a gesture report
+
+// The last few seconds as Rust sent them (no blendshapes), to replay through the gesture code.
+export const recentVision = () => recent;
 
 // onFrame gets the scored Frame plus each hand's 21 normalised landmarks (for
 // the live highlight only; never stored).
 export async function startCamera(view: HTMLCanvasElement, onFrame: (f: Frame, hands: Pt[][]) => void, onEnded: () => void): Promise<void> {
   const my = ++gen;
   const results = new Channel<VisionMsg>();
+  let last: Frame | undefined; // smooths each hand's palm direction frame to frame
+  recent = [];
   results.onmessage = (m) => {
     if (my !== gen) return;
     if ("ended" in m) return onEnded();
-    onFrame(toFrame({ blend: m.blend, head: m.head, pose: m.pose, wrists: m.hands.map((h) => h[0]) }, FRAME_W, FRAME_H, m.t), m.hands);
+    const { blend: _, ...raw } = m;
+    recent.push(raw);
+    recent = recent.filter((r) => m.t - r.t <= REPORT_MS);
+    last = toFrame({ blend: m.blend, head: m.head, pose: m.pose, hands: m.hands, handed: m.handed, world: m.world }, FRAME_W, FRAME_H, m.t, last);
+    onFrame(last, m.hands);
   };
   const preview = new Channel<ArrayBuffer>();
   const cx = view.getContext("2d")!;
+  let [got, drawn] = [0, 0]; // decodes can finish out of order at 30 fps: never paint an older frame over a newer one
   preview.onmessage = async (buf) => {
     if (my !== gen) return;
+    const n = ++got;
     const bmp = await createImageBitmap(new Blob([buf], { type: "image/jpeg" })); // decoded off the main thread
+    if (n < drawn) return bmp.close();
+    drawn = n;
     if (view.width !== bmp.width || view.height !== bmp.height) [view.width, view.height] = [bmp.width, bmp.height];
     cx.drawImage(bmp, 0, 0);
     bmp.close();

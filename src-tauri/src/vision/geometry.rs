@@ -137,12 +137,6 @@ impl Roi {
         let (s, c) = rot.sin_cos();
         Roi { cx: cx - h * shift_y * s, cy: cy + h * shift_y * c, size: w.max(h) * scale, rot }
     }
-
-    /// Overlap of the two squares, ignoring rotation (for deduplicating tracks).
-    pub fn iou(&self, o: &Roi) -> f32 {
-        let d = |r: &Roi| Detection { score: 0.0, cx: r.cx, cy: r.cy, w: r.size, h: r.size, kps: vec![] };
-        iou(&d(self), &d(o))
-    }
 }
 
 #[derive(Clone, Copy)]

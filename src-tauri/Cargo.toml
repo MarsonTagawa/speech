@@ -43,6 +43,16 @@ nokhwa = { version = "0.10", features = ["input-native"] } # camera (v4l2 on Lin
 jpeg-encoder = "0.7" # camera preview frames for the webview
 # Model downloads; same TLS setup ort-sys already builds it with.
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
+# Google sign-in (drive.rs): PKCE and the loopback redirect. Versions already in the tree.
+getrandom = "0.3"
+sha2 = "0.10"
+base64 = "0.22"
+url = "2"
+# Screen OCR (screen/ocr.rs): reading off the slides from the screen replay.
+# ponytail: 0.11 / rten 0.22 because rten-gemm ≥ 0.24 doesn't build on the flake's
+# rustc 1.98.1 (AVX-512 VNNI intrinsic vs nixpkgs LLVM); move up once it does.
+ocrs = "=0.11.0"
+rten = "=0.22.1" # the version ocrs 0.11.0 depends on
 
 
 # Report screenshot (screenshot.rs): each platform's webview snapshot and
@@ -70,4 +80,3 @@ objc2-web-kit = { version = "0.3", default-features = false, features = ["std", 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows = "0.61"
-base64 = "0.22"

@@ -1,7 +1,8 @@
 //! Camera capture and face/pose/hand inference for presence grading, run in
 //! Rust so the webview's UI thread stays free (see
 //! docs/superpowers/specs/2026-10-08-rust-vision-design.md). The webview gets
-//! one JSON result and one JPEG preview per processed frame (~12.5 Hz).
+//! one JSON result per processed frame (hands 25 Hz, face and body 12.5 Hz)
+//! and a JPEG preview of every camera frame (30 fps).
 mod capture;
 pub mod face;
 pub mod geometry;
@@ -25,16 +26,22 @@ use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Manager, State};
 
-const TICK: Duration = Duration::from_millis(80);
+/// Hands run every tick (25 Hz): a fast hand leaves the ROI it was tracked in
+/// between slower ticks. Face and body change slower and cost more (~20 ms vs
+/// ~7 per hand), so they run every BODY_EVERY ticks (12.5 Hz).
+const TICK: Duration = Duration::from_millis(40);
+const BODY_EVERY: u32 = 2;
 const MAX_FAILS: u32 = 30;
 
 #[derive(Serialize, Clone, Copy)]
 pub struct Pt {
     x: f32,
     y: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    z: Option<f32>, // hands only: depth, normalised by width like x
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Head {
     yaw: f32,
     pitch: f32,
@@ -43,7 +50,7 @@ pub struct Head {
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum VisionMsg {
-    Frame { t: u64, blend: Option<BTreeMap<&'static str, f32>>, head: Option<Head>, pose: Option<Vec<Pt>>, hands: Vec<Vec<Pt>> },
+    Frame { t: u64, blend: Option<BTreeMap<&'static str, f32>>, head: Option<Head>, pose: Option<Vec<Pt>>, hands: Vec<Vec<Pt>>, world: Vec<Vec<[f32; 3]>>, handed: Vec<f32> },
     Ended { ended: bool },
 }
 
@@ -51,37 +58,49 @@ pub struct Pipelines {
     face: Face,
     pose: Pose,
     hands: Hands,
+    body: Body,
 }
+
+/// The last face and pose results, sent again on hands-only ticks.
+type Body = (Option<BTreeMap<&'static str, f32>>, Option<Head>, Option<Vec<Pt>>);
 
 impl Pipelines {
     pub fn load(dir: &Path) -> Result<Pipelines, String> {
-        Ok(Pipelines { face: Face::load(dir)?, pose: Pose::load(dir)?, hands: Hands::load(dir)? })
+        Ok(Pipelines { face: Face::load(dir)?, pose: Pose::load(dir)?, hands: Hands::load(dir)?, body: (None, None, None) })
     }
 
-    pub fn frame(&mut self, t: u64, rgb: &[u8]) -> Result<VisionMsg, String> {
-        let norm = |p: &[f32; 2]| Pt { x: p[0] / W as f32, y: p[1] / H as f32 };
-        let face = self.face.process(rgb, W, H)?;
-        let pose = self.pose.process(rgb, W, H)?;
+    /// One frame's results; face and pose only when `body`, else last time's.
+    pub fn frame(&mut self, t: u64, rgb: &[u8], body: bool) -> Result<VisionMsg, String> {
+        let norm = |p: &[f32; 2]| Pt { x: p[0] / W as f32, y: p[1] / H as f32, z: None };
+        let norm3 = |p: &[f32; 3]| Pt { x: p[0] / W as f32, y: p[1] / H as f32, z: Some(p[2] / W as f32) };
+        if body {
+            let face = self.face.process(rgb, W, H)?;
+            let pose = self.pose.process(rgb, W, H)?;
+            self.body = (
+                face.as_ref().map(|f| BLENDSHAPE_NAMES.iter().copied().zip(f.blend.iter().copied()).collect()),
+                face.as_ref().map(|f| Head { yaw: f.yaw, pitch: f.pitch }),
+                pose.map(|p| p.iter().map(norm).collect()),
+            );
+        }
         let hands = self.hands.process(rgb, W, H)?;
+        let (blend, head, pose) = self.body.clone();
         Ok(VisionMsg::Frame {
             t,
-            blend: face.as_ref().map(|f| BLENDSHAPE_NAMES.iter().copied().zip(f.blend.iter().copied()).collect()),
-            head: face.as_ref().map(|f| Head { yaw: f.yaw, pitch: f.pitch }),
-            pose: pose.map(|p| p.iter().map(norm).collect()),
-            hands: hands.iter().map(|hd| hd.iter().map(norm).collect()).collect(),
+            blend,
+            head,
+            pose,
+            hands: hands.iter().map(|hd| hd.pts.iter().map(norm3).collect()).collect(),
+            world: hands.iter().map(|hd| hd.world.clone()).collect(),
+            handed: hands.iter().map(|hd| hd.handed).collect(),
         })
     }
 }
 
-fn jpeg(rgb: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let _ = jpeg_encoder::Encoder::new(&mut buf, 70).encode(rgb, W as u16, H as u16, jpeg_encoder::ColorType::Rgb);
-    buf
-}
-
-/// Inference thread: ~12.5 Hz on the newest frame; one result + one preview per frame.
-fn infer(mut pipes: Pipelines, latest: Arc<Latest>, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>, results: Channel<VisionMsg>, preview: Channel<InvokeResponseBody>) {
+/// Inference thread: every TICK on the newest frame, one result each. (The
+/// preview goes out from the capture thread at the camera's 30 fps.)
+fn infer(mut pipes: Pipelines, latest: Arc<Latest>, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>, results: Channel<VisionMsg>) {
     let mut fails = 0;
+    let mut tick = 0u32;
     let mut last = Instant::now() - TICK;
     while !stop.load(Relaxed) && !ended.load(Relaxed) {
         thread::sleep(TICK.saturating_sub(last.elapsed()));
@@ -94,11 +113,12 @@ fn infer(mut pipes: Pipelines, latest: Arc<Latest>, stop: Arc<AtomicBool>, ended
             g.take()
         };
         let Some((t, rgb)) = frame else { continue };
-        match pipes.frame(t, &rgb) {
+        let body = tick % BODY_EVERY == 0;
+        tick += 1;
+        match pipes.frame(t, &rgb, body) {
             Ok(msg) => {
                 fails = 0;
                 let _ = results.send(msg);
-                let _ = preview.send(InvokeResponseBody::Raw(jpeg(&rgb)));
             }
             Err(e) => {
                 eprintln!("[vision] frame failed: {e}");
@@ -156,7 +176,7 @@ pub async fn start_vision(app: AppHandle, state: State<'_, VisionState>, results
     let (tx, rx) = mpsc::channel();
     let cap = {
         let (latest, stop, ended) = (latest.clone(), stop.clone(), ended.clone());
-        thread::spawn(move || capture::run(latest, stop, ended, tx))
+        thread::spawn(move || capture::run(latest, stop, ended, tx, preview))
     };
     if let Err(e) = rx.recv().map_err(|e| e.to_string()).and_then(|r| r) {
         let _ = cap.join();
@@ -164,10 +184,23 @@ pub async fn start_vision(app: AppHandle, state: State<'_, VisionState>, results
     }
     let inf = {
         let stop = stop.clone();
-        thread::spawn(move || infer(pipes, latest, stop, ended, results, preview))
+        thread::spawn(move || infer(pipes, latest, stop, ended, results))
     };
     *slot = Some(Running { stop, threads: vec![cap, inf] });
     Ok(())
+}
+
+/// A gesture report (the webview's JSON: the last few seconds of results and
+/// what the gesture code made of them) to <app data>/gesture-reports/<ms>.json,
+/// for debugging a wrong gesture. Returns the file's path.
+#[tauri::command]
+pub fn save_gesture_report(app: AppHandle, json: String) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("gesture-reports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
+    let file = dir.join(format!("{ms}.json"));
+    std::fs::write(&file, json).map_err(|e| e.to_string())?;
+    Ok(file.display().to_string())
 }
 
 #[tauri::command]

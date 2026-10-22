@@ -1,6 +1,7 @@
 // Video presence: reduces MediaPipe results to small per-frame records and
 // (summarize, below) turns a session's frames into metrics + a 0–100 score.
 // Pure; capture and inference live in camera.ts.
+import { detect, poses, readHand, type GestureId, type Hand, type Pose } from "./gestures";
 
 export function scoreLinear(v: number, good: number, bad: number): number {
   if (good === bad) return 100;
@@ -19,7 +20,7 @@ export const PRESENCE_TUNING = {
   smileFrac: [0.25, 0],
   exprRange: [0.08, 0.01], // mean 1 s std-dev of smile + brows
   motion: [0.15, 0.6], // shoulder widths travelled per second
-  gestureStep: 0.04, // wrist travel per frame (shoulder widths) that counts as gesturing
+  gestureSpeed: 0.5, // wrist speed (shoulder widths a second) that counts as gesturing
   gestureBand: [0.2, 0.6], // gesturing fraction that scores 100
   minShoulder: 0.05, // shoulder width below this fraction of the frame (side-on) is too unreliable to scale by
   maxGapMs: 500, // frames further apart than this aren't compared
@@ -31,6 +32,7 @@ export type XY = [number, number];
 export interface Pt {
   x: number;
   y: number;
+  z?: number; // hand landmarks only: depth on x's scale, negative = nearer the camera
 }
 
 export interface Frame {
@@ -42,6 +44,9 @@ export interface Frame {
   body: XY[] | null; // [shoulder midpoint, nose], in pixels
   wrists: XY[]; // in pixels; empty without a body to scale by
   sw: number; // shoulder width in pixels; 0 without a body
+  u: number; // shoulder width in pixels, or a typical one (20% of the frame) without a body
+  hands: Hand[];
+  poses: Pose[]; // gestures held in this frame
 }
 
 // One frame of MediaPipe output, already unpacked by camera.ts.
@@ -49,12 +54,16 @@ export interface RawResults {
   blend: Record<string, number> | null; // face blendshapes by name; null = no face
   head: { yaw: number; pitch: number } | null; // degrees, from Rust (vision/face.rs)
   pose: Pt[] | null; // 33 normalised pose landmarks
-  wrists: Pt[]; // hand landmark 0 per detected hand, normalised
+  hands: Pt[][]; // 21 normalised landmarks per detected hand
+  handed: number[]; // per hand: the model's handedness score, > 0.5 = the speaker's right
+  world?: number[][][]; // per hand: 21 metric 3D landmarks (see gestures.ts readHand)
 }
 
 const EYE_LOOK = ["Up", "Down", "In", "Out"].flatMap((d) => [`eyeLook${d}Left`, `eyeLook${d}Right`]);
 
-export function toFrame(r: RawResults, w: number, h: number, t: number): Frame {
+// `prev` is the previous frame, if recent: each hand's palm direction is
+// smoothed against the same hand's in it.
+export function toFrame(r: RawResults, w: number, h: number, t: number, prev?: Frame): Frame {
   const T = PRESENCE_TUNING;
   const b = r.blend;
   let looking = false;
@@ -73,17 +82,43 @@ export function toFrame(r: RawResults, w: number, h: number, t: number): Frame {
   let wrists: XY[] = [];
   let sw = 0;
   const p = r.pose;
+  const px = (q: Pt): XY => [q.x * w, q.y * h];
   if (p && p.length > 12) {
-    const px = (q: Pt): XY => [q.x * w, q.y * h];
     const [l, rs, nose] = [px(p[11]), px(p[12]), px(p[0])];
     const width = Math.hypot(l[0] - rs[0], l[1] - rs[1]);
     if (width >= T.minShoulder * w) {
       sw = width;
       body = [[(l[0] + rs[0]) / 2, (l[1] + rs[1]) / 2], nose];
-      wrists = r.wrists.map(px);
+      wrists = r.hands.map((l) => px(l[0]));
     }
   }
-  return { t, face: !!b, looking, smile, brows, body, wrists, sw };
+  const pw = p && p.length > 16 ? [px(p[15]), px(p[16])] : null;
+  const rights = whichHands(r.hands.map((l) => px(l[0])), pw, r.handed);
+  const recent = prev && t - prev.t <= 500 ? prev.hands : [];
+  const hands = r.hands.map((l, i) => {
+    const wr = px(l[0]);
+    const right = rights[i];
+    const same = recent.filter((h) => h.right === right).sort((a, b) => dist(a.c, wr) - dist(b.c, wr))[0];
+    return readHand(l, right, w, h, same, r.world?.[i]);
+  });
+  const u = sw || 0.2 * w;
+  return { t, face: !!b, looking, smile, brows, body, wrists, sw, u, hands, poses: poses(hands, u, body && body[0]) };
+}
+
+// Which hand is which (true = the speaker's right): by the pose's wrists (15 =
+// the speaker's left) when there's a pose, else the hand model's own guess.
+// Two hands are always one of each — whichever pairing fits best — since
+// calling both "right" breaks every two-hand gesture.
+export function whichHands(wrists: XY[], pw: XY[] | null, handed: number[]): boolean[] {
+  if (pw) {
+    const right = wrists.map((wr) => dist(wr, pw[1]) < dist(wr, pw[0]));
+    if (wrists.length !== 2 || right[0] !== right[1]) return right;
+    const [a, b] = wrists;
+    return dist(a, pw[1]) + dist(b, pw[0]) <= dist(a, pw[0]) + dist(b, pw[1]) ? [true, false] : [false, true];
+  }
+  const score = wrists.map((_, i) => handed[i] ?? 0);
+  if (wrists.length === 2) return score[0] >= score[1] ? [true, false] : [false, true];
+  return score.map((x) => x > 0.5);
 }
 
 export interface PresenceScores {
@@ -99,6 +134,7 @@ export interface Presence {
   exprRange: number; // mean per-second std-dev of smile + brows
   motion: number; // shoulder widths per second
   gestureFrac: number; // fraction of body frames with a moving hand
+  gestures?: Partial<Record<GestureId, number>>; // gestures.ts events by kind; absent on older sessions
   scores: PresenceScores;
   eyeScored: boolean; // false when a script was open (reading looks down)
   score: number;
@@ -151,7 +187,7 @@ export function summarize(frames: Frame[], opts: { scriptOpen: boolean }): Prese
     pairs++;
     secs += (b.t - a.t) / 1000;
     travelled += mean(b.body.map((q, j) => dist(q, a.body![j]))) / scale;
-    if (a.wrists.length && b.wrists.some((w) => Math.min(...a.wrists.map((v) => dist(w, v))) / scale > T.gestureStep)) gesturing++;
+    if (a.wrists.length && b.wrists.some((w) => Math.min(...a.wrists.map((v) => dist(w, v))) / scale > T.gestureSpeed * ((b.t - a.t) / 1000))) gesturing++;
   }
   const motion = secs > 0 ? travelled / secs : 0;
   const gestureFrac = pairs ? gesturing / pairs : 0;
@@ -166,7 +202,9 @@ export function summarize(frames: Frame[], opts: { scriptOpen: boolean }): Prese
     (s): s is number => s !== null,
   );
   if (!parts.length) return null;
-  return { eyeContact, smileFrac, exprRange, motion, gestureFrac, scores, eyeScored: !opts.scriptOpen, score: Math.round(mean(parts)) };
+  const gestures: Partial<Record<GestureId, number>> = {};
+  for (const e of detect(frames)) gestures[e.g] = (gestures[e.g] ?? 0) + 1;
+  return { eyeContact, smileFrac, exprRange, motion, gestureFrac, gestures, scores, eyeScored: !opts.scriptOpen, score: Math.round(mean(parts)) };
 }
 
 // How long the speaker has been looking away, as of the latest frame.
@@ -188,13 +226,13 @@ export function weakestCue(p: Presence): string {
   return worst && worst[0] < 70 ? worst[1] : "looking good";
 }
 
-// Which of the current hands moved since the previous frame, by the gesture
-// score's own rule (wrist travel > gestureStep shoulder widths), so what the
+// Which of the current hands moved since the previous frame, `ms` earlier, by
+// the gesture score's own rule (wrist speed > gestureSpeed), so what the
 // live highlight shows is what gets counted. Hands are 21 normalised landmarks
 // (0 = wrist); each is matched to the nearest previous wrist. Without a body
 // to scale by, assume a typical shoulder width of 20% of the frame.
-export function movingHands(prev: Pt[][], cur: Pt[][], w: number, h: number, sw: number): boolean[] {
-  const step = PRESENCE_TUNING.gestureStep * (sw || 0.2 * w);
+export function movingHands(prev: Pt[][], cur: Pt[][], w: number, h: number, sw: number, ms: number): boolean[] {
+  const step = PRESENCE_TUNING.gestureSpeed * (sw || 0.2 * w) * (ms / 1000);
   const px = (q: Pt): XY => [q.x * w, q.y * h];
   const before = prev.map((l) => px(l[0]));
   return cur.map((l) => before.length > 0 && Math.min(...before.map((b) => dist(px(l[0]), b))) > step);
