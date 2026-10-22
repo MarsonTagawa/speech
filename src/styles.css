@@ -324,7 +324,7 @@ body[data-view="settings"] #settings-btn {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-#ribbon-btn {
+#drill-btn {
   margin-left: auto;
 }
 #ribbon-btn:not(:hover) {
@@ -675,26 +675,43 @@ body.correcting .view-live .scope {
   width: 0;
   height: 0;
 }
-.practice-prompt:not([hidden]) + .transcript {
-  top: 44px;
-}
-
+/* The prompt floats over the ribbon, centred between the scope's corner
+   readouts; a halo in the scope's own colour keeps it legible over the wave.
+   Clicks fall through, so the scope still drags the window. A big timer
+   countdown takes the middle, so the prompt moves up out of its way; over
+   the camera it sits low, like a caption, off your face. */
 .practice-prompt {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 3;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  width: max-content;
+  max-width: min(60%, 640px);
   margin: 0;
-  padding: 12px 34px;
-  font-size: 13px;
+  text-align: center;
+  font-size: 15px;
+  line-height: 1.4;
   color: var(--ink);
-  background: var(--pane);
-  border-bottom: 0.5px solid var(--edge);
+  text-shadow: 0 0 8px #000, 0 0 3px #000;
+  pointer-events: none;
+}
+:root[data-theme="light"] .practice-prompt {
+  text-shadow: 0 0 8px #fff, 0 0 3px #fff;
+}
+body.timer-countdown.has-timer .practice-prompt {
+  top: 14px;
+  transform: translateX(-50%);
+}
+body.camera-on .practice-prompt {
+  top: auto;
+  bottom: 14px;
+  transform: translateX(-50%);
 }
 .practice-prompt::before {
   content: "PROMPT";
-  margin-right: 12px;
+  display: block;
+  margin-bottom: 4px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;

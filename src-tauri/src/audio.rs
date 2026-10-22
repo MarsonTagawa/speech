@@ -146,15 +146,16 @@ pub struct RecordingState(pub Mutex<Option<RecordingHandle>>);
 /// `correction_model` is the model id (see `models`) the pass decodes with.
 /// `ts` is the session's id (its start time); the session's audio is kept as
 /// `sessions/<ts>.pcm` for line playback (see `history::session_clip`).
+/// `mic` is the input device's name (Settings → Microphone); None = system default.
 #[tauri::command]
-pub fn start_recording(app: AppHandle, correct: bool, correction_model: String, ts: i64) -> Result<(), String> {
+pub fn start_recording(app: AppHandle, correct: bool, correction_model: String, ts: i64, mic: Option<String>) -> Result<(), String> {
     let recording_state = app.state::<RecordingState>();
     let mut guard = recording_state.0.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
         return Err("already recording".into());
     }
 
-    let sample_rate = native_sample_rate()?;
+    let sample_rate = native_sample_rate(mic.as_deref())?;
 
     // Claim a fresh session generation. The correction worker stamps its
     // results with this so any decode still running from a prior session is
@@ -179,7 +180,7 @@ pub fn start_recording(app: AppHandle, correct: bool, correction_model: String, 
     }
 
     let capture_thread = std::thread::spawn(move || {
-        if let Err(e) = run_capture(audio_tx, stop_rx) {
+        if let Err(e) = run_capture(mic.as_deref(), audio_tx, stop_rx) {
             eprintln!("audio capture failed: {e}");
         }
     });
@@ -231,10 +232,8 @@ pub fn stop_recording(app: AppHandle) -> Result<(), String> {
 /// Only probed to learn the native sample rate; the capture thread builds its
 /// own Device/Stream since cpal's stream types aren't Send on Linux and must be
 /// created and live entirely on one thread.
-fn native_sample_rate() -> Result<u32, String> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("no input device available")?;
+fn native_sample_rate(mic: Option<&str>) -> Result<u32, String> {
+    let device = input_device(mic)?;
     Ok(device.default_input_config().map_err(|e| e.to_string())?.sample_rate().0)
 }
 
@@ -253,7 +252,7 @@ pub struct MicTestState(pub Mutex<Option<MicTestHandle>>);
 const MIC_TEST_KEEP_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 10;
 
 #[tauri::command]
-pub fn start_mic_test(app: AppHandle) -> Result<(), String> {
+pub fn start_mic_test(app: AppHandle, mic: Option<String>) -> Result<(), String> {
     if app.state::<RecordingState>().0.lock().map_err(|e| e.to_string())?.is_some() {
         return Err("stop recording before testing the mic".into());
     }
@@ -262,11 +261,11 @@ pub fn start_mic_test(app: AppHandle) -> Result<(), String> {
     if guard.is_some() {
         return Err("mic test already running".into());
     }
-    let sample_rate = native_sample_rate()?;
+    let sample_rate = native_sample_rate(mic.as_deref())?;
     let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let capture_thread = std::thread::spawn(move || {
-        if let Err(e) = run_capture(audio_tx, stop_rx) {
+        if let Err(e) = run_capture(mic.as_deref(), audio_tx, stop_rx) {
             eprintln!("mic test capture failed: {e}");
         }
     });
@@ -329,10 +328,37 @@ fn run_mic_test_loop(app: AppHandle, audio_rx: Receiver<Vec<f32>>, native_sample
     clip.into()
 }
 
-fn run_capture(audio_tx: Sender<Vec<f32>>, stop_rx: Receiver<()>) -> Result<(), String> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("no input device available")?;
+/// Input device names for Settings → Microphone, in the host's order.
+#[tauri::command]
+pub fn list_mics() -> Vec<String> {
+    cpal::default_host()
+        .input_devices()
+        .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// The input device called `name`, or the system default when none is chosen.
+fn input_device(name: Option<&str>) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    let default = || host.default_input_device().ok_or_else(|| "no input device available".to_string());
+    let Some(name) = name else { return default() };
+    let found = host
+        .input_devices()
+        .map_err(|e| e.to_string())?
+        .find(|d| d.name().is_ok_and(|n| n == name));
+    match found {
+        Some(d) => Ok(d),
+        // The chosen mic is gone (unplugged since it was picked): record from
+        // the default rather than not at all.
+        None => {
+            eprintln!("[audio] mic {name:?} not found, using the default");
+            default()
+        }
+    }
+}
+
+fn run_capture(mic: Option<&str>, audio_tx: Sender<Vec<f32>>, stop_rx: Receiver<()>) -> Result<(), String> {
+    let device = input_device(mic)?;
     let config = device.default_input_config().map_err(|e| e.to_string())?;
     let sample_format = config.sample_format();
     let channels = config.channels();

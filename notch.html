@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Notch</title>
+    <style>
+      /* Always black around the notch, whatever the app theme; green/amber are
+         the dark theme's (styles.css). --wing/--row match WING/ROW in
+         src-tauri/src/notch.rs. */
+      :root { --wing: 110px; --row: 28px; --green: #30d158; --amber: #ffd60a; --dim: #8e8e93; }
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; cursor: default; user-select: none; }
+      body { display: flex; flex-direction: column; font: 600 11px/1 "IBM Plex Mono", monospace; color: #f2f2f7; -webkit-font-smoothing: antialiased; }
+      [hidden] { display: none !important; }
+      .bar { flex: 1; display: grid; grid-template-columns: var(--wing) 1fr var(--wing); align-items: center; background: #000; border-radius: 0 0 14px 14px; }
+      .wing { display: flex; align-items: center; gap: 6px; padding: 0 10px; white-space: nowrap; }
+      .wing.right { justify-content: flex-end; }
+      #dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+      #dot.rec { background: #ff453a; }
+      #wpm.in { color: var(--green); }
+      #wpm.out { color: var(--amber); }
+      .unit { color: var(--dim); font-weight: 400; }
+      /* The script row hangs under the bar like a tab; empty keeps its space but shows nothing. */
+      #script { height: var(--row); margin: 0 22px; padding: 0 12px; display: flex; align-items: center; justify-content: center; background: #000; border-radius: 0 0 12px 12px; font-weight: 400; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      #script:empty { visibility: hidden; }
+    </style>
+  </head>
+  <body>
+    <div class="bar">
+      <div class="wing"><i id="dot"></i><span id="time"></span></div>
+      <div></div>
+      <div class="wing right"><b id="wpm">0</b><span class="unit">wpm</span><b id="fpm">0.0</b><span class="unit">um</span></div>
+    </div>
+    <div id="script" hidden></div>
+    <script type="module">
+      import "@fontsource/ibm-plex-mono/400.css";
+      import "@fontsource/ibm-plex-mono/600.css";
+      import { emitTo, listen } from "@tauri-apps/api/event";
+
+      const $ = (id) => document.getElementById(id);
+      // Renders whatever the main window sends (src/main.ts pushNotch); no state of its own.
+      listen("notch", ({ payload: s }) => {
+        $("dot").className = s.rec ? "rec" : "";
+        $("time").textContent = s.time ?? "";
+        $("wpm").textContent = String(s.wpm);
+        $("wpm").className = s.band;
+        $("fpm").textContent = s.fpm;
+        $("script").hidden = s.script === null;
+        $("script").textContent = s.script ?? "";
+      }).then(() => emitTo("main", "notch-ready")); // pushes sent before this loaded were lost
+    </script>
+  </body>
+</html>

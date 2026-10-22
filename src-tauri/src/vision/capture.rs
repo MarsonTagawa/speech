@@ -3,7 +3,7 @@
 //! frame also goes to the webview as a JPEG, so the video runs at 30 fps while
 //! inference runs at its own rate.
 use nokhwa::pixel_format::RgbFormat;
-use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType};
+use nokhwa::utils::{ApiBackend, CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType};
 use nokhwa::Camera;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::Sender;
@@ -31,7 +31,7 @@ pub struct Latest {
 
 /// Runs until `stop`; sets `ended` if the camera fails mid-stream. Reports the
 /// open result on `opened` first so start_vision can fail fast (busy/missing).
-pub fn run(latest: Arc<Latest>, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>, opened: Sender<Result<(), String>>, preview: Channel<InvokeResponseBody>) {
+pub fn run(camera: Option<String>, latest: Arc<Latest>, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>, opened: Sender<Result<(), String>>, preview: Channel<InvokeResponseBody>) {
     // macOS asks for camera permission here (once); elsewhere it answers true at once.
     let (tx, rx) = std::sync::mpsc::channel();
     nokhwa::nokhwa_initialize(move |ok| {
@@ -41,7 +41,7 @@ pub fn run(latest: Arc<Latest>, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>, o
         let _ = opened.send(Err("camera permission denied".into()));
         return;
     }
-    let mut cam = match open() {
+    let mut cam = match open(camera.as_deref()) {
         Ok(c) => {
             let _ = opened.send(Ok(()));
             c
@@ -74,11 +74,26 @@ pub fn run(latest: Arc<Latest>, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>, o
     latest.ready.notify_one();
 }
 
-/// Opens camera 0 in the mode `pick` chooses from the ones it lists.
-fn open() -> Result<Camera, nokhwa::NokhwaError> {
-    let mut cam = Camera::new(CameraIndex::Index(0), RequestedFormat::new::<RgbFormat>(RequestedFormatType::None))?;
+/// The cameras the OS lists, by name.
+pub fn names() -> Vec<String> {
+    nokhwa::query(ApiBackend::Auto).map(|cs| cs.iter().map(|c| c.human_name()).collect()).unwrap_or_default()
+}
+
+/// Opens the camera called `name` (camera 0 when it's None or gone) in the
+/// mode `pick` chooses from the ones it lists.
+fn open(name: Option<&str>) -> Result<Camera, nokhwa::NokhwaError> {
+    let index = name
+        .and_then(|n| nokhwa::query(ApiBackend::Auto).ok()?.into_iter().find(|c| c.human_name() == n))
+        .map_or(CameraIndex::Index(0), |c| c.index().clone());
+    // Camera::new already sets a mode. `None` takes the first one listed, which on
+    // macOS can be the bottom of a frame-rate range that nokhwa can't set (see
+    // `pick`); the fastest mode is always a range's top, so it always opens.
+    let mut cam = Camera::new(index, RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate))?;
     if let Some(fmt) = pick(&cam.compatible_camera_formats()?) {
-        cam.set_camera_requset(RequestedFormat::new::<RgbFormat>(RequestedFormatType::Exact(fmt)))?;
+        // Not fatal: `fit` scales whatever mode the camera stays in.
+        if let Err(e) = cam.set_camera_requset(RequestedFormat::new::<RgbFormat>(RequestedFormatType::Exact(fmt))) {
+            eprintln!("[vision] keeping the camera's default mode: {e}");
+        }
     }
     cam.open_stream()?;
     Ok(cam)
@@ -89,6 +104,9 @@ fn open() -> Result<Camera, nokhwa::NokhwaError> {
 /// down. Mac and Windows cameras mostly offer NV12/MJPEG at 720p or 640×480.
 /// (nokhwa's own `Closest` can't do this: it looks up frame rates at the
 /// requested resolution, so it fails whenever that resolution is missing.)
+/// On macOS nokhwa lists both ends of each frame-rate range but can only set
+/// the top one, and some cameras top out at 29.97 (listed as 29) — so 29
+/// counts as 30, and the fastest rate wins a tie.
 fn pick(formats: &[CameraFormat]) -> Option<CameraFormat> {
     formats
         .iter()
@@ -100,7 +118,7 @@ fn pick(formats: &[CameraFormat]) -> Option<CameraFormat> {
                 FrameFormat::NV12 => 1,
                 _ => 2, // MJPEG costs a JPEG decode per frame
             };
-            (w < W || h < H, f.frame_rate() < 30, w * h, rank)
+            (w < W || h < H, f.frame_rate() < 29, w * h, rank, std::cmp::Reverse(f.frame_rate()))
         })
         .copied()
 }
@@ -153,6 +171,9 @@ mod tests {
         // Mac-style: no 640×360, no YUYV; smallest 30 fps mode that covers it.
         let mac = [f(1920, 1080, NV12, 30), f(1280, 720, NV12, 30), f(640, 480, NV12, 15), f(320, 240, NV12, 30)];
         assert_eq!(super::pick(&mac), Some(mac[1]));
+        // Mac external camera: 15–29.97 fps ranges list as @15 and @29; only @29 can be set.
+        let ext = [f(1920, 1080, YUYV, 15), f(1920, 1080, YUYV, 29), f(320, 240, YUYV, 30)];
+        assert_eq!(super::pick(&ext), Some(ext[1]));
     }
 
     #[test]

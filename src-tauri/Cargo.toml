@@ -30,7 +30,7 @@ tauri-build = { version = "2", features = [] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 
@@ -77,8 +77,8 @@ whisper-rs = { version = "0.14", features = ["metal"] } # Macs have no Vulkan
 objc2 = "0.6"
 block2 = "0.6"
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSPasteboard"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSColor", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSPasteboard", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKSnapshotConfiguration"] }
 
 [target.'cfg(windows)'.dependencies]

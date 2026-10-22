@@ -32,8 +32,9 @@ let recent: Omit<VisionFrame, "blend">[] = []; // the last REPORT_MS of raw resu
 export const recentVision = () => recent;
 
 // onFrame gets the scored Frame plus each hand's 21 normalised landmarks (for
-// the live highlight only; never stored).
-export async function startCamera(view: HTMLCanvasElement, onFrame: (f: Frame, hands: Pt[][]) => void, onEnded: () => void): Promise<void> {
+// the live highlight only; never stored). `camera` is a name from
+// list_cameras; null = the default.
+export async function startCamera(view: HTMLCanvasElement, camera: string | null, onFrame: (f: Frame, hands: Pt[][]) => void, onEnded: () => void): Promise<void> {
   const my = ++gen;
   const results = new Channel<VisionMsg>();
   let last: Frame | undefined; // smooths each hand's palm direction frame to frame
@@ -60,7 +61,7 @@ export async function startCamera(view: HTMLCanvasElement, onFrame: (f: Frame, h
     cx.drawImage(bmp, 0, 0);
     bmp.close();
   };
-  await invoke("start_vision", { results, preview });
+  await invoke("start_vision", { results, preview, camera });
 }
 
 export function stopCamera() {

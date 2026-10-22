@@ -42,6 +42,7 @@
         <section class="scope">
           <canvas id="shards" class="ribbon" aria-hidden="true"></canvas>
           <canvas id="ribbon" class="ribbon" aria-hidden="true"></canvas>
+          <p id="practice-prompt" class="practice-prompt" hidden></p>
           <div id="cam-view" class="cam-view" hidden>
             <canvas id="self-view"></canvas>
             <canvas id="hand-overlay" aria-hidden="true"></canvas>
@@ -96,9 +97,6 @@
             <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
           </button>
           <button id="prompt-btn" class="tool-btn" type="button" data-tip="Prompt — show a random speaking topic">PRM</button>
-          <button id="drill-btn" class="tool-btn timer" type="button" data-tip="Timer — recordings stop automatically after this long">
-            <svg viewBox="0 0 24 24"><line x1="10" x2="14" y1="2" y2="2" /><line x1="12" x2="15" y1="14" y2="11" /><circle cx="12" cy="14" r="8" /></svg><span id="drill-label">Off</span><i class="chev"></i>
-          </button>
           <button id="script-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Script read-along" data-tip="Script read-along — paste a script and track your words against it">
             <svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M16 13H8" /><path d="M16 17H8" /><path d="M10 9H8" /></svg>
           </button>
@@ -106,6 +104,9 @@
             <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M12 17v4" /><path d="M8 21h8" /></svg>
           </button>
           <input id="deck-file" type="file" accept=".pdf,application/pdf,image/*" multiple hidden />
+          <button id="drill-btn" class="tool-btn timer" type="button" data-tip="Timer — recordings stop automatically after this long">
+            <svg viewBox="0 0 24 24"><line x1="10" x2="14" y1="2" y2="2" /><line x1="12" x2="15" y1="14" y2="11" /><circle cx="12" cy="14" r="8" /></svg><span id="drill-label">Off</span><i class="chev"></i>
+          </button>
           <button id="ribbon-btn" class="tool-btn icon" type="button" aria-label="Hide ribbon" data-tip="Hide the ribbon">
             <svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6" /></svg>
           </button>
@@ -128,7 +129,6 @@
               </div>
             </div>
           </div>
-          <p id="practice-prompt" class="practice-prompt" hidden></p>
           <div id="transcript" class="transcript">
             <p class="placeholder">Your transcript will appear here as you speak.</p>
           </div>
@@ -271,12 +271,31 @@
             <input id="set-countdown" type="checkbox" role="switch" />
           </label>
           <label class="set-row">
+            <span>Hand highlights<span class="sub">Draw a green wireframe over your hands in the video, glowing as they move</span></span>
+            <input id="set-hand-lines" type="checkbox" role="switch" />
+          </label>
+          <label class="set-row">
             <span>Gesture readout<span class="sub">Show what the camera reads from each hand: left/right, fingers out, palm direction</span></span>
             <input id="set-gesture-readout" type="checkbox" role="switch" />
           </label>
           <label class="set-row">
             <span>Ghost caret<span class="sub">When reading a saved speech, underline where your best attempt was at this moment</span></span>
             <input id="set-ghost" type="checkbox" role="switch" />
+          </label>
+        </div>
+        <div id="notch-panel" class="panel">
+          <span class="label">Notch</span>
+          <label class="set-row">
+            <span>Show notch<span class="sub">Live cues around the MacBook notch while you record, over your slides and fullscreen apps</span></span>
+            <input id="set-notch" type="checkbox" role="switch" />
+          </label>
+          <label class="set-row">
+            <span>Timer and stopwatch<span class="sub">The timer counting down when one is set, otherwise the time elapsed</span></span>
+            <input id="set-notch-time" type="checkbox" role="switch" />
+          </label>
+          <label class="set-row">
+            <span>Script<span class="sub">The next few words of your read-along script, under the notch</span></span>
+            <input id="set-notch-script" type="checkbox" role="switch" />
           </label>
         </div>
         <div class="panel">
@@ -331,6 +350,14 @@
         </div>
         <div class="panel">
           <span class="label">Input</span>
+          <div class="set-row">
+            <span>Microphone<span class="sub">What recordings and the mic test listen to</span></span>
+            <select id="set-mic"></select>
+          </div>
+          <div class="set-row">
+            <span>Camera<span class="sub">What Video watches for eye contact, expression and gestures</span></span>
+            <select id="set-camera"></select>
+          </div>
           <label class="set-row">
             <span>Mic sensitivity<span class="sub">Raise if the level meter barely moves when you speak</span></span>
             <input id="set-gain" type="range" min="2" max="24" step="1" />

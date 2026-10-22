@@ -33,6 +33,12 @@ pub struct Stream {
     rec: xcap::VideoRecorder,
 }
 
+// macOS: xcap's recorder wraps an AVCaptureSession, which objc2 doesn't mark
+// Send. Apple documents it as safe to start/stop from any queue, and `Stream`
+// is only moved between threads, never used from two at once.
+#[cfg(target_os = "macos")]
+unsafe impl Send for Stream {}
+
 impl Stream {
     /// `Ok(None)` on timeout; `Err` once the stream has ended.
     pub fn next(&self, timeout: Duration) -> Result<Option<Frame>, String> {

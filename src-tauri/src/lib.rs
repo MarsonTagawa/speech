@@ -1,7 +1,9 @@
 mod audio;
+mod corners;
 mod drive;
 mod history;
 mod models;
+mod notch;
 mod pitch;
 mod screen;
 mod screenshot;
@@ -94,14 +96,32 @@ pub fn run() {
             app.manage(vision::VisionState::default());
             app.manage(screen::ScreenState::default());
 
+            if let Some(main) = app.get_webview_window("main") {
+                corners::apply(&main);
+            }
+
             Ok(())
         })
-        // Release the camera when the window closes (vision threads otherwise
-        // run until the process exits).
+        // Release the camera when the main window closes (vision threads
+        // otherwise run until the process exits), and take the notch with it
+        // so the app can quit. The notch closing (notch.rs) touches nothing.
         .on_window_event(|window, event| {
+            // Entering/leaving fullscreen arrives as a resize: square the
+            // corners there, round them again after.
+            if let (tauri::WindowEvent::Resized(_), Some(main)) = (event, window.app_handle().get_webview_window("main")) {
+                if window.label() == "main" {
+                    corners::apply(&main);
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
                 window.state::<vision::VisionState>().stop();
                 window.state::<screen::ScreenState>().release();
+                if let Some(notch) = window.app_handle().get_webview_window("notch") {
+                    let _ = notch.destroy();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -115,6 +135,7 @@ pub fn run() {
             audio::stop_recording,
             audio::start_mic_test,
             audio::stop_mic_test,
+            audio::list_mics,
             history::save_session,
             history::set_session_saved,
             history::load_session_detail,
@@ -122,6 +143,7 @@ pub fn run() {
             history::list_sessions,
             history::clear_sessions,
             screenshot::screenshot,
+            notch::notch_show,
             screen::screen_prepare,
             screen::screen_release,
             screen::screen_displays,
@@ -130,6 +152,7 @@ pub fn run() {
             screen::screen_text,
             vision::start_vision,
             vision::stop_vision,
+            vision::list_cameras,
             vision::save_gesture_report,
             drive::fetch_google_pdf,
             drive::google_sign_in,

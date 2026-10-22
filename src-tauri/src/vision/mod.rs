@@ -164,9 +164,10 @@ fn stop_running(slot: &mut Option<Running>) {
 // not block the main thread (sync Tauri commands run on it). The state lock is
 // held for the whole start (there are no awaits), so overlapping start/stop
 // calls — a quick off→on click — run one after another instead of two starts
-// both opening the camera (EBUSY) and one session leaking.
+// both opening the camera (EBUSY) and one session leaking. `camera` is the
+// camera's name (Settings → Camera); None = the first one.
 #[tauri::command]
-pub async fn start_vision(app: AppHandle, state: State<'_, VisionState>, results: Channel<VisionMsg>, preview: Channel<InvokeResponseBody>) -> Result<(), String> {
+pub async fn start_vision(app: AppHandle, state: State<'_, VisionState>, results: Channel<VisionMsg>, preview: Channel<InvokeResponseBody>, camera: Option<String>) -> Result<(), String> {
     let mut slot = state.0.lock().unwrap();
     stop_running(&mut slot);
     let dir = app.path().resolve("resources/vision", tauri::path::BaseDirectory::Resource).map_err(|e| e.to_string())?;
@@ -176,7 +177,7 @@ pub async fn start_vision(app: AppHandle, state: State<'_, VisionState>, results
     let (tx, rx) = mpsc::channel();
     let cap = {
         let (latest, stop, ended) = (latest.clone(), stop.clone(), ended.clone());
-        thread::spawn(move || capture::run(latest, stop, ended, tx, preview))
+        thread::spawn(move || capture::run(camera, latest, stop, ended, tx, preview))
     };
     if let Err(e) = rx.recv().map_err(|e| e.to_string()).and_then(|r| r) {
         let _ = cap.join();
@@ -201,6 +202,13 @@ pub fn save_gesture_report(app: AppHandle, json: String) -> Result<String, Strin
     let file = dir.join(format!("{ms}.json"));
     std::fs::write(&file, json).map_err(|e| e.to_string())?;
     Ok(file.display().to_string())
+}
+
+/// Camera names for Settings → Camera. async: the query talks to the OS
+/// camera stack, which can take a moment.
+#[tauri::command]
+pub async fn list_cameras() -> Vec<String> {
+    capture::names()
 }
 
 #[tauri::command]
