@@ -2,6 +2,7 @@ mod audio;
 mod drive;
 mod history;
 mod models;
+mod notch;
 mod pitch;
 mod screen;
 mod screenshot;
@@ -122,6 +123,7 @@ pub fn run() {
             history::list_sessions,
             history::clear_sessions,
             screenshot::screenshot,
+            notch::notch_show,
             screen::screen_prepare,
             screen::screen_release,
             screen::screen_displays,
