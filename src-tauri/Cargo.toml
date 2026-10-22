@@ -34,7 +34,6 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 
-whisper-rs = { version = "0.14", features = ["vulkan"] }
 ort = "=2.0.0-rc.13" # ONNX Runtime bindings for Rust
 cpal = "0.15"       # cross-platform audio capture
 ndarray = "0.15"
@@ -57,6 +56,10 @@ rten = "=0.22.1" # the version ocrs 0.11.0 depends on
 
 # Report screenshot (screenshot.rs): each platform's webview snapshot and
 # clipboard. Same versions tauri/wry already build with.
+# whisper.cpp on the GPU: Vulkan here and on Windows (needs the Vulkan SDK to build), Metal on macOS.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+whisper-rs = { version = "0.14", features = ["vulkan"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 webkit2gtk = "=2.0.2"
@@ -70,6 +73,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] } # ashpd
 xcap = "0.9.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.14", features = ["metal"] } # Macs have no Vulkan
 objc2 = "0.6"
 block2 = "0.6"
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
