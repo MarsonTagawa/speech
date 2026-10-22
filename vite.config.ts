@@ -10,6 +10,10 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // Two pages: the app and the macOS notch overlay (src-tauri/src/notch.rs).
+  build: {
+    rollupOptions: { input: { main: "index.html", notch: "notch.html" } },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
