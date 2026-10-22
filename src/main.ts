@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/400-italic.css";
@@ -21,6 +21,7 @@ import { startCamera, stopCamera, recentVision, FRAME_W, FRAME_H, HAND_BONES } f
 import { loadDeck, loadPdf, closeDeck, stepDeck, paintDeck, deckSize, deckAt, deckText, thumbDeck } from "./deck";
 import { type Reading, type Said, type SlideRead, type SlideSpan, frameAt, groupScreens, isRead, reading, READ_FRAC, runsOf, slideRows, slideScore, slideSpans, withoutSpoken } from "./reading";
 import { googleFile, type GoogleKind } from "./google";
+import { notchState, scriptAhead } from "./notch";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
@@ -430,6 +431,8 @@ function renderStats() {
   setText("wpm-sub", `target ${preset.wpmLow}–${preset.wpmHigh}`);
 
   setText("stat-fpm", s.fillersPerMin.toFixed(1));
+  notchWpm = s.wpm;
+  notchFpm = s.fillersPerMin;
   setWidth("fpm-bar", s.fillersPerMin / 12); // 12/min scores 0 (computeSummary)
   setText("fpm-sub", `${s.fillers} total · aim <3`);
 
@@ -457,6 +460,7 @@ function renderStats() {
   drawSpark(series);
   setText("peak-label", `peak ${Math.max(0, ...series.map((p) => p.wpm))}`);
   setLiveRing(s.words > 0 ? s.scores.overall : null);
+  pushNotch();
 }
 
 function setWidth(id: string, frac: number) {
@@ -1244,12 +1248,15 @@ function renderScriptMatch() {
   if (scriptTokens.length === 0) {
     scriptDisplay.setAttribute("hidden", "");
     scriptProgress.setAttribute("hidden", "");
+    scriptCursor = 0;
+    pushNotch();
     return;
   }
   scriptDisplay.removeAttribute("hidden");
   scriptProgress.removeAttribute("hidden");
 
   const { matched, substituted, cursor } = alignToScript(spokenWords());
+  scriptCursor = cursor;
   let hits = 0;
   let misses = 0;
   let subs = 0;
@@ -1307,6 +1314,7 @@ function renderScriptMatch() {
   if (currentSpan) {
     scriptDisplay.scrollTop = currentSpan.offsetTop - scriptDisplay.clientHeight / 2;
   }
+  pushNotch();
 }
 
 // Saved speeches: named scripts you come back to. Sessions recorded against one
@@ -1681,6 +1689,53 @@ async function toggleScreen() {
   }
 }
 
+// --- Live notch (macOS) --------------------------------------------------------
+// notch.html renders what this pushes; src-tauri/src/notch.rs opens the window.
+// The latest dock values are kept here so pushes from tickClock don't recompute.
+let notchOn = false;
+let notchTime = true;
+let notchScript = true;
+let notchWpm = 0;
+let notchFpm = 0;
+let scriptCursor = 0;
+let lastNotch = ""; // JSON of the last push; identical pushes are skipped
+
+function pushNotch() {
+  if (!notchOn) return;
+  const p = PRESETS[currentPreset];
+  const timer = drillMs > 0 || prepEndsAt > 0; // same choice as #countdown vs #clock
+  const s = notchState({
+    rec: recording,
+    time: notchTime ? ($(timer ? "countdown" : "clock")?.textContent ?? "") : null,
+    wpm: notchWpm,
+    low: p.wpmLow,
+    high: p.wpmHigh,
+    fpm: notchFpm,
+    script: notchScript ? scriptAhead(scriptText, scriptTokens, scriptCursor) : null,
+  });
+  const json = JSON.stringify(s);
+  if (json === lastNotch) return;
+  lastNotch = json;
+  emitTo("notch", "notch", s).catch(() => {});
+}
+
+// Opens, re-places (Script changes its height) or closes the notch. On failure
+// the switch flips back off and stays off.
+async function setNotch(on = notchOn) {
+  notchOn = on;
+  try {
+    await invoke("notch_show", { on, script: notchScript });
+    lastNotch = "";
+    pushNotch();
+  } catch (e) {
+    console.error("notch:", e);
+    notchOn = false;
+    save(NOTCH_KEY, "0");
+    const box = $<HTMLInputElement>("set-notch");
+    if (box) box.checked = false;
+  }
+}
+
 // Wall-clock session timer on the scope; also counts the timer (drill) down
 // and stops the recording when it runs out. drillMs 0 = no timer.
 let clockTimer = 0;
@@ -1700,6 +1755,7 @@ function tickClock() {
     const label = `Think ${formatTimestamp(Math.ceil(prepLeft / 1000) * 1000)}`;
     setText("drill-label", label);
     setText("countdown", label);
+    pushNotch();
     return;
   }
   setText("clock", formatTimestamp(recordStartedAt ? now - recordStartedAt : 0));
@@ -1716,6 +1772,7 @@ function tickClock() {
   setText("countdown", label);
   document.body.classList.toggle("has-timer", drillMs > 0);
   $("drill-btn")?.classList.toggle("drilling", running);
+  pushNotch();
 }
 
 // The best-scoring saved attempt at this exact script (same speech, same
@@ -4174,6 +4231,9 @@ const GAIN_KEY = "speech.levelGain";
 const PAUSE_KEY = "speech.pauseMs";
 const HOVER_KEY = "speech.hoverFx";
 const COUNTDOWN_KEY = "speech.timerCountdown";
+const NOTCH_KEY = "speech.notch";
+const NOTCH_TIME_KEY = "speech.notch.time";
+const NOTCH_SCRIPT_KEY = "speech.notch.script";
 const GHOST_KEY = "speech.ghost";
 const RIBBON_KEY = "speech.ribbon";
 const CORRECT_KEY = "speech.accurateCorrection";
@@ -5324,6 +5384,11 @@ window.addEventListener("DOMContentLoaded", () => {
   // The UI starts with the toggle off, so a capture left over from before a
   // webview reload is released; one that ended (or couldn't save) is too.
   void invoke("screen_release");
+  // A freshly opened notch missed earlier pushes: send the current state again.
+  void listen("notch-ready", () => {
+    lastNotch = "";
+    pushNotch();
+  });
   void listen<string>("screen_ended", (e) => {
     screenEnds++;
     setScreenUi(false);
@@ -5333,6 +5398,23 @@ window.addEventListener("DOMContentLoaded", () => {
   if (load(CAMERA_KEY) === "1") void setCamera(true);
   bindToggle("set-hover", HOVER_KEY, (on) => document.body.classList.toggle("no-hover-fx", !on));
   bindToggle("set-countdown", COUNTDOWN_KEY, (on) => document.body.classList.toggle("timer-countdown", on), false);
+  // Live notch: macOS only (notch.rs no-ops elsewhere). Removed, not hidden,
+  // so the settings search (filterSettings) can't bring it back.
+  if (navigator.userAgent.includes("Mac")) {
+    bindToggle("set-notch-time", NOTCH_TIME_KEY, (on) => {
+      notchTime = on;
+      pushNotch();
+    });
+    bindToggle("set-notch-script", NOTCH_SCRIPT_KEY, (on) => {
+      notchScript = on;
+      if (notchOn) void setNotch(); // re-place: the script row changes the height
+    });
+    bindToggle("set-notch", NOTCH_KEY, (on) => {
+      if (on || notchOn) void setNotch(on); // startup with it off: nothing to close
+    }, false);
+  } else {
+    $("notch-panel")?.remove();
+  }
   bindToggle("set-gesture-readout", "speech.gestureReadout", (on) => document.body.classList.toggle("gesture-readout", (gestureReadout = on)), false);
   $("cam-report-btn")?.addEventListener("click", () => void reportGesture());
 
