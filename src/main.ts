@@ -21,7 +21,7 @@ import { startCamera, stopCamera, recentVision, FRAME_W, FRAME_H, HAND_BONES } f
 import { loadDeck, loadPdf, closeDeck, stepDeck, paintDeck, deckSize, deckAt, deckText, thumbDeck } from "./deck";
 import { type Reading, type Said, type SlideRead, type SlideSpan, frameAt, groupScreens, isRead, reading, READ_FRAC, runsOf, slideRows, slideScore, slideSpans, withoutSpoken } from "./reading";
 import { googleFile, type GoogleKind } from "./google";
-import { notchState, scriptAhead } from "./notch";
+import { notchState, scriptAhead, serial } from "./notch";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
@@ -1719,12 +1719,16 @@ function pushNotch() {
   emitTo("notch", "notch", s).catch(() => {});
 }
 
-// Opens, re-places (Script changes its height) or closes the notch. On failure
-// the switch flips back off and stays off.
-async function setNotch(on = notchOn) {
+// Opens, re-places (Script changes its height) or closes the notch. Calls run
+// one at a time and each sends the latest wanted state, so quick toggles settle
+// on the last one. On failure the switch flips back off and stays off.
+function setNotch(on = notchOn) {
   notchOn = on;
+  return showNotch();
+}
+const showNotch = serial(async () => {
   try {
-    await invoke("notch_show", { on, script: notchScript });
+    await invoke("notch_show", { on: notchOn, script: notchScript });
     lastNotch = "";
     pushNotch();
   } catch (e) {
@@ -1734,7 +1738,7 @@ async function setNotch(on = notchOn) {
     const box = $<HTMLInputElement>("set-notch");
     if (box) box.checked = false;
   }
-}
+});
 
 // Wall-clock session timer on the scope; also counts the timer (drill) down
 // and stops the recording when it runs out. drillMs 0 = no timer.

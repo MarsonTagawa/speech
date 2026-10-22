@@ -17,13 +17,15 @@ pub struct Rect {
 }
 
 /// The overlay's frame in AppKit's global, bottom-left-origin points,
-/// top-aligned on `screen`. `notch` is the gap's x-range (global); None centres
-/// a pill instead. `bar_h` is the menu bar height beside the notch.
+/// top-aligned on `screen`. `notch` is the widths of the menu bar areas left
+/// and right of the camera housing (only widths: they're the same in any
+/// coordinate space); None centres a pill instead. `bar_h` is the menu bar
+/// height beside the notch.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // used by the macOS placement and tests
 pub fn notch_frame(screen: Rect, notch: Option<(f64, f64)>, bar_h: f64, script: bool) -> Rect {
     let row = if script { ROW } else { 0.0 };
     let (x, w, h) = match notch {
-        Some((l, r)) => (l - WING, r - l + 2.0 * WING, bar_h + row),
+        Some((lw, rw)) => (screen.x + lw - WING, screen.w - lw - rw + 2.0 * WING, bar_h + row),
         None => (screen.x + (screen.w - PILL_W) / 2.0, PILL_W, PILL_H + row),
     };
     Rect { x, y: screen.y + screen.h - h, w, h }
@@ -77,10 +79,16 @@ mod mac {
                 .map_err(|e| e.to_string())?,
         };
         win.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
-        let ns = win.ns_window().map_err(|e| e.to_string())? as usize; // raw pointers aren't Send
-        // AppKit only on the main thread. The window outlives this call: Tauri owns it.
-        win.run_on_main_thread(move || unsafe { place(&*(ns as *const NSWindow), script) })
-            .map_err(|e| e.to_string())
+        // AppKit only on the main thread. The NSWindow is looked up there too,
+        // so a close that got in first leaves nothing to place (Err), not a
+        // dangling pointer.
+        let w = win.clone();
+        win.run_on_main_thread(move || {
+            if let Ok(ns) = w.ns_window() {
+                unsafe { place(&*(ns as *const NSWindow), script) }
+            }
+        })
+        .map_err(|e| e.to_string())
     }
 
     // Above the menu bar (Tauri's always-on-top level sits below it, and macOS
@@ -93,10 +101,8 @@ mod mac {
         let Some(screen) = notched.or_else(|| NSScreen::mainScreen(mtm)) else { return };
         let f = screen.frame();
         let bar_h = screen.safeAreaInsets().top;
-        let gap = (bar_h > 0.0).then(|| {
-            let (l, r) = (screen.auxiliaryTopLeftArea(), screen.auxiliaryTopRightArea());
-            (l.origin.x + l.size.width, r.origin.x)
-        });
+        let gap = (bar_h > 0.0)
+            .then(|| (screen.auxiliaryTopLeftArea().size.width, screen.auxiliaryTopRightArea().size.width));
         let screen_rect = Rect { x: f.origin.x, y: f.origin.y, w: f.size.width, h: f.size.height };
         let r = notch_frame(screen_rect, gap, bar_h, script);
         w.setLevel(NSStatusWindowLevel);
@@ -117,14 +123,25 @@ mod tests {
 
     #[test]
     fn wings_straddle_the_notch() {
+        // The side areas are 656 and 656 wide: the gap is 656..856.
         assert_eq!(
-            notch_frame(MBP, Some((656.0, 856.0)), 38.0, false),
+            notch_frame(MBP, Some((656.0, 656.0)), 38.0, false),
             Rect { x: 546.0, y: 944.0, w: 420.0, h: 38.0 }
         );
         // The script row hangs below, so the frame grows downwards (AppKit y is up).
         assert_eq!(
-            notch_frame(MBP, Some((656.0, 856.0)), 38.0, true),
+            notch_frame(MBP, Some((656.0, 656.0)), 38.0, true),
             Rect { x: 546.0, y: 916.0, w: 420.0, h: 66.0 }
+        );
+    }
+
+    #[test]
+    fn notch_on_a_built_in_display_that_isnt_at_the_origin() {
+        // A projector is the main display; the laptop sits to its right.
+        let laptop = Rect { x: 1920.0, y: 0.0, w: 1512.0, h: 982.0 };
+        assert_eq!(
+            notch_frame(laptop, Some((656.0, 656.0)), 38.0, false),
+            Rect { x: 2466.0, y: 944.0, w: 420.0, h: 38.0 }
         );
     }
 

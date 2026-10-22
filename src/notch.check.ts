@@ -1,6 +1,6 @@
 // Run: bun src/notch.check.ts
 import assert from "node:assert";
-import { notchState, scriptAhead } from "./notch";
+import { notchState, scriptAhead, serial } from "./notch";
 
 // scriptAhead: the next n script words from the cursor, original text, whitespace collapsed.
 const text = "Good  morning everyone, thanks\nfor coming today.";
@@ -21,4 +21,22 @@ assert.strictEqual(notchState({ ...base, wpm: 0 }).band, ""); // nothing said ye
 assert.strictEqual(notchState({ ...base, time: null }).time, null);
 assert.strictEqual(notchState({ ...base, script: null }).script, null); // Script off: row gone
 assert.strictEqual(notchState({ ...base, script: "" }).script, ""); // on, nothing ahead: row kept, empty
+// serial: overlapping calls run one at a time, in call order, even when an
+// earlier one is slower (Show on, then quickly off, must end off).
+const log: string[] = [];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const run = serial(async (tag: string, ms: number) => {
+  log.push(`start ${tag}`);
+  await sleep(ms);
+  log.push(`end ${tag}`);
+});
+void run("on", 30);
+await run("off", 0);
+assert.deepStrictEqual(log, ["start on", "end on", "start off", "end off"]);
+// A failed call doesn't wedge the queue.
+const flaky = serial(async (fail: boolean) => {
+  if (fail) throw new Error("boom");
+});
+await assert.rejects(flaky(true));
+await flaky(false);
 console.log("notch ok");

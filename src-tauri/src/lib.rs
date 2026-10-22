@@ -97,12 +97,19 @@ pub fn run() {
 
             Ok(())
         })
-        // Release the camera when the window closes (vision threads otherwise
-        // run until the process exits).
+        // Release the camera when the main window closes (vision threads
+        // otherwise run until the process exits), and take the notch with it
+        // so the app can quit. The notch closing (notch.rs) touches nothing.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
                 window.state::<vision::VisionState>().stop();
                 window.state::<screen::ScreenState>().release();
+                if let Some(notch) = window.app_handle().get_webview_window("notch") {
+                    let _ = notch.destroy();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![

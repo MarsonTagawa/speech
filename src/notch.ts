@@ -30,3 +30,11 @@ export function scriptAhead(text: string, tokens: { start: number; end: number }
   const last = tokens[Math.min(tokens.length, cursor + n) - 1];
   return text.slice(tokens[cursor].start, last.end).replace(/\s+/g, " ");
 }
+
+// Runs `fn` one call at a time, in call order: a quick Show on → off (or a
+// Script toggle mid-build) can't overtake an earlier notch_show. A failed call
+// doesn't block the ones after it.
+export function serial<A extends unknown[]>(fn: (...a: A) => Promise<void>): (...a: A) => Promise<void> {
+  let queue: Promise<void> = Promise.resolve();
+  return (...a: A) => (queue = queue.catch(() => {}).then(() => fn(...a)));
+}
