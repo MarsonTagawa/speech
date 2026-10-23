@@ -38,12 +38,33 @@ pub struct WhisperModel(pub Mutex<WhisperState>);
 /// of GPU (shared system) memory while idle.
 pub struct AccurateModel(pub Mutex<Option<(String, WhisperState)>>);
 
+/// With no usable Vulkan driver (VMs, missing GPU drivers), ggml's backend registry
+/// throws a C++ exception from `vk::createInstance`, which Rust can't catch: the
+/// process aborts. That happens even with `use_gpu(false)`, since the CPU backend is
+/// looked up through the same registry. ggml marks Vulkan initialized before that
+/// call, so taking the first lookup inside a try/catch (ggml_guard.cpp) leaves every
+/// later one with zero Vulkan devices, and whisper falls back to the CPU.
+/// ponytail: relies on ggml_vk_instance_init setting `vk_instance_initialized`
+/// before `createInstance`; recheck it when bumping whisper-rs.
+fn init_backends() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        extern "C" {
+            fn speech_init_ggml_backends() -> bool;
+        }
+        if !unsafe { speech_init_ggml_backends() } {
+            eprintln!("whisper: no usable Vulkan driver, falling back to CPU");
+        }
+    });
+}
+
 /// Loads a bundled ggml model on the GPU and creates its reusable decode state.
 /// The state holds an Arc to the context, so the context stays alive after the
 /// wrapper is dropped; reusing one state avoids reallocating decode buffers per
 /// utterance. Holds [`GPU_LOCK`]: context init allocates on the shared Vulkan
 /// device, so it mustn't overlap a live decode.
 pub fn load_model(app: &tauri::AppHandle, id: &str) -> Result<WhisperState, String> {
+    init_backends();
     let path = crate::models::path(app, id)?;
     let mut params = WhisperContextParameters::default();
     params.use_gpu(true);

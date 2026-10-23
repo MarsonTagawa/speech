@@ -24,6 +24,7 @@ opt-level = 3
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1" # src/ggml_guard.cpp; already in the tree via whisper-rs-sys
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
