@@ -1,6 +1,6 @@
 // Run: bun src/drills.check.ts
 import assert from "node:assert";
-import { drillById, type DrillStats } from "./drills";
+import { DRILLS, drillById, type DrillStats } from "./drills";
 import type { Presence } from "./presence";
 
 const base: DrillStats = { durationMs: 40_000, wpm: 140, fillers: 0, fillersPerMin: 0, pausesPerMin: 5, trailingOff: 0.95, pitchRange: 4.5, uptalk: 0, script: null };
@@ -41,3 +41,7 @@ assert(!pass("eyes-hands", cam({ gestures: { list: 3, palmsup: 2 } }))); // only
 assert(!pass("eyes-hands", cam({ gestures: undefined }))); // session from before gestures
 assert(!drillById("pace-lock")!.video && drillById("eyes-hands")!.video);
 console.log("drills ok");
+
+// Every drill has its own icon.
+const icons = DRILLS.map((d) => d.icon);
+assert(icons.every(Boolean) && new Set(icons).size === icons.length);

@@ -8,7 +8,7 @@ import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
 import { Ribbon, hexToRgb } from "./ribbon";
 import { Halo } from "./halo";
-import { watchVisible } from "./visible";
+import { VisibleLoop, watchVisible } from "./visible";
 import { Shards } from "./shards";
 import { Flappy } from "./flappy";
 import { troubleSpots } from "./passages";
@@ -17,7 +17,8 @@ import { type Crutch, crutch, hedgeCount } from "./crutch";
 import { chunkSpeech, type Chunk } from "./chunks";
 import { showReplay, followClip, stopFollow } from "./replay";
 import { scoreLinear, summarize, liveCue, movingHands, coverMap, type Frame, type Presence, type Pt } from "./presence";
-import { GESTURES, GESTURE_TUNING, counts, detect, gestureInfo, gestureSummary, type GestureId } from "./gestures";
+import { GESTURES, GESTURE_TUNING, counts, detect, gestureInfo, gestureSummary, type GestureEvent, type GestureId } from "./gestures";
+import { drawFigure, type FigureColors } from "./gestureFigures";
 import { startCamera, stopCamera, recentVision, FRAME_W, FRAME_H, HAND_BONES } from "./camera";
 import { loadDeck, loadPdf, deckFilesError, closeDeck, stepDeck, paintDeck, deckSize, deckAt, deckText, thumbDeck } from "./deck";
 import { type Reading, type Said, type SlideRead, type SlideSpan, frameAt, groupScreens, isRead, reading, READ_FRAC, runsOf, slideRows, slideScore, slideSpans, withoutSpoken } from "./reading";
@@ -1646,6 +1647,8 @@ function setRecordingUi(on: boolean) {
   document.body.classList.toggle("recording", on); // memorise masks only while reciting
   const screenBtn = $<HTMLButtonElement>("screen-btn");
   if (screenBtn) screenBtn.disabled = on; // a session's replay has one source
+  const pickBtn = $<HTMLButtonElement>("drill-pick-btn");
+  if (pickBtn) pickBtn.disabled = on; // a recording keeps the drill it started with
 }
 
 // Record screen (screen/ in Rust): while on, each session also saves a replay
@@ -2084,6 +2087,7 @@ let prevHands: Pt[][] = [];
 let prevHandsAt = 0;
 let litHands: Array<{ at: number; hand: Pt[] }> = [];
 let liveFrames: Frame[] = []; // the last 3 s, recording or not
+let liveHands: Pt[][] = []; // the latest frame's hands, for the Gestures page's camera box
 let gestureReadout = false; // Settings → Gesture readout: what readHand sees, per hand
 let handLines = true; // Settings → Hand highlights: the wireframes; off leaves only the labels
 
@@ -2097,7 +2101,10 @@ function drawHands(f: Frame, hands: Pt[][]) {
   const shown = counts(liveFrames)
     .map((c) => ({ t: c.t, text: String(c.ext.filter(Boolean).length), at: c.at }))
     .filter((c) => c.text >= "2" && c.text <= "4");
-  const labels = [...detect(liveFrames).map((e) => ({ t: e.t, text: gestureInfo(e.g).short, at: e.at })), ...shown].filter((l) => f.t - l.t < LABEL_MS);
+  const events = detect(liveFrames);
+  liveHands = hands;
+  noteGestures(events);
+  const labels = [...events.map((e) => ({ t: e.t, text: gestureInfo(e.g).short, at: e.at })), ...shown].filter((l) => f.t - l.t < LABEL_MS);
 
   const cv = $<HTMLCanvasElement>("hand-overlay");
   const cx = cv?.getContext("2d");
@@ -2242,6 +2249,7 @@ async function setCamera(on: boolean) {
     prevHands = [];
     litHands = [];
     liveFrames = [];
+    liveHands = [];
     return;
   }
   try {
@@ -3832,6 +3840,7 @@ function startDrill(id: string) {
   if (!d || recording || (id === MEMORISE && !speechTitle(memoSpeech))) return;
   endDrill();
   activeDrill = id;
+  syncDrillPick();
   drillMs = d.secs * 1000;
   tickClock();
   if (id === MEMORISE) openSpeech(memoSpeech); // lands on the first unpassed step
@@ -3857,6 +3866,7 @@ function endDrill() {
   if (!activeDrill) return;
   const wasMemorise = activeDrill === MEMORISE;
   activeDrill = "";
+  syncDrillPick();
   if (prepEndsAt) {
     prepEndsAt = 0;
     clearInterval(clockTimer);
@@ -3868,6 +3878,34 @@ function endDrill() {
   if (wasMemorise) refreshScript(); // back to the whole script
 }
 
+// The Live tab's drill picker shows the armed drill's icon and name.
+const DRILL_PICK_ICON = '<circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" />';
+function syncDrillPick() {
+  const btn = $("drill-pick-btn");
+  const d = drillById(activeDrill);
+  btn?.setAttribute("aria-pressed", String(!!d));
+  const svg = btn?.querySelector("svg");
+  if (svg) svg.innerHTML = d?.icon ?? DRILL_PICK_ICON;
+  setText("drill-pick-label", d?.name ?? "Drill");
+}
+
+// Fills the picker's menu: None, then every drill. Memorise needs a saved
+// speech; it runs on the one last picked on the Drills tab, else the first.
+function drillMenuHtml(): string {
+  if (!speechTitle(memoSpeech)) memoSpeech = speeches[0]?.id ?? "";
+  const item = (id: string, icon: string, name: string, tip: string, off = false) =>
+    `<button type="button" role="menuitem" data-pick="${id}" aria-current="${id === activeDrill}" data-tip="${escapeHtml(tip)}"${off ? " disabled" : ""}>` +
+    `<svg class="drill-icon" viewBox="0 0 24 24" aria-hidden="true">${icon}</svg>${escapeHtml(name)}</button>`;
+  return (
+    item("", DRILL_PICK_ICON, "None", "No drill — your own timer, no goal") +
+    DRILLS.map((d) =>
+      d.id === MEMORISE && !memoSpeech
+        ? item(d.id, d.icon, d.name, "Save a speech on the Speeches tab to memorise it", true)
+        : item(d.id, d.icon, d.name, d.id === MEMORISE ? `${d.goal} · ${speechTitle(memoSpeech)}` : d.goal),
+    ).join("")
+  );
+}
+
 function applyMemory() {
   const pane = $("script-pane");
   if (activeDrill === MEMORISE) pane?.setAttribute("data-memory", memoMask);
@@ -3877,7 +3915,7 @@ function applyMemory() {
 // The memorise drill's panel: pick a speech and mask, see the ladder.
 function memoriseHtml(): string {
   const d = drillById(MEMORISE)!;
-  const head = `<div class="panel-head"><span class="label">${escapeHtml(d.name)}${drillKindHtml(d)}</span>`;
+  const head = `<div class="panel-head"><span class="label">${drillIconHtml(d)}${escapeHtml(d.name)}${drillKindHtml(d)}</span>`;
   if (!speeches.length)
     return `<div class="panel">${head}</div><div class="empty">Save a speech on the Speeches tab to memorise it.</div></div>`;
   if (!speechTitle(memoSpeech)) memoSpeech = speeches[0].id;
@@ -3899,22 +3937,7 @@ function memoriseHtml(): string {
   );
 }
 
-// The gestures the camera recognises (gestures.ts), with how often each has
-// shown up across camera sessions.
-function gesturesHtml(): string {
-  const used = (id: GestureId) => history.reduce((n, h) => n + (h.presence?.gestures?.[id] ?? 0), 0);
-  const rows = GESTURES.map(
-    (g) =>
-      `<tr><td>${escapeHtml(g.name)}${g.caution ? ` <span class="down" data-tip="Use sparingly">!</span>` : ""}<div class="sub">${escapeHtml(g.how)}</div></td>` +
-      `<td>${used(g.id) || "—"}</td></tr>`,
-  ).join("");
-  return (
-    `<div class="panel"><div class="panel-head"><span class="label">Gestures<span class="drill-kind video">Video</span></span></div>` +
-    `<span class="sub">Recognised from the camera during any session; they show on the camera view as you make them.</span>` +
-    `<table class="prof-table"><tr><th>Gesture</th><th>Used</th></tr>${rows}</table></div>`
-  );
-}
-
+const drillIconHtml = (d: Drill) => `<svg class="drill-icon" viewBox="0 0 24 24" aria-hidden="true">${d.icon}</svg>`;
 const drillKindHtml = (d: Drill) => `<span class="drill-kind${d.video ? " video" : ""}">${d.video ? "Video" : "Speaking"}</span>`;
 
 function renderDrills() {
@@ -3926,19 +3949,218 @@ function renderDrills() {
     const last = tries[tries.length - 1];
     const r = last && drillResult(last);
     return (
-      `<tr data-drill="${d.id}" data-tip="Set it up on the Live tab"><td>${escapeHtml(d.name)}${drillKindHtml(d)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
+      `<tr data-drill="${d.id}" data-tip="Set it up on the Live tab"><td>${drillIconHtml(d)}${escapeHtml(d.name)}${drillKindHtml(d)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
       `<td>${tries.length ? `${passes}/${tries.length}` : "—"}</td>` +
       `<td>${r ? `<span class="${r.pass ? "up" : "down"}">${r.pass ? "✓" : "✗"}</span> ${escapeHtml(r.value)}<div class="sub">${fmtDate(last.ts)}</div>` : "—"}</td></tr>`
     );
   }).join("");
-  el.innerHTML =
+  const tabs = (["drills", "gestures"] as const)
+    .map((p) => `<button type="button" role="radio" data-dpane="${p}" aria-checked="${p === drillsPane}">${p === "drills" ? "Drills" : "Gestures"}</button>`)
+    .join("");
+  el.innerHTML = `<div class="seg drills-tabs" role="radiogroup" aria-label="Drills or gestures">${tabs}</div>`;
+  gestureLoop?.destroy();
+  gestureLoop = null;
+  if (drillsPane === "gestures") return renderGestures(el);
+  el.innerHTML +=
     `<div class="panel"><div class="panel-head"><span class="label">Drills</span></div>` +
     `<table class="prof-table"><tr><th>Drill</th><th>Passed</th><th>Last</th></tr>${rows}</table></div>` +
-    memoriseHtml() +
-    gesturesHtml();
+    memoriseHtml();
   for (const id of ["memo-speech", "memo-mask"]) {
     const sel = $<HTMLSelectElement>(id);
     if (sel) enhanceSelect(sel);
+  }
+}
+
+// --- Gestures (the Drills tab's second pane) --------------------------------------
+// Every gesture as a looping figure (gestureFigures.ts). The picked one plays
+// big beside your camera; when the camera recognises it (drawHands runs
+// detect() on every frame, recording or not) the camera box lights up. Any
+// gesture recognised, on any tab, is ticked off as learned.
+const DRILLS_PANE_KEY = "speech.drillsPane";
+let drillsPane: "drills" | "gestures" = load(DRILLS_PANE_KEY) === "gestures" ? "gestures" : "drills";
+const GESTURE_PICK_KEY = "speech.gesturePick";
+const GESTURES_LEARNED_KEY = "speech.gesturesLearned";
+const HIT_MS = 2200; // how long "Got it" shows
+const OTHER_MS = 1800; // …and "that read as …"
+let gesturePick: GestureId = GESTURES.find((g) => g.id === load(GESTURE_PICK_KEY))?.id ?? "palmsup";
+let gesturesLearned = new Set<GestureId>(
+  (() => {
+    try {
+      return JSON.parse(load(GESTURES_LEARNED_KEY) ?? "[]") as GestureId[];
+    } catch {
+      return [];
+    }
+  })(),
+);
+let gestureHitAt = -Infinity; // when the picked gesture was last recognised
+let gestureOther: { g: GestureId; at: number } | null = null; // the last other one recognised
+let gestureSeen = new Set<string>(); // events already handled: detect() re-reports the last 3 s every frame
+let gestureLoop: VisibleLoop | null = null;
+let gestureCards = new Set<HTMLCanvasElement>(); // card canvases on screen
+const gestureCardsIo = new IntersectionObserver((es) => {
+  for (const e of es) {
+    const cv = e.target as HTMLCanvasElement;
+    if (e.isIntersecting) gestureCards.add(cv);
+    else gestureCards.delete(cv);
+  }
+});
+
+function noteGestures(events: GestureEvent[]) {
+  for (const e of events) {
+    const key = `${e.g}@${e.t}`;
+    if (gestureSeen.has(key)) continue;
+    gestureSeen.add(key);
+    if (gestureSeen.size > 200) gestureSeen = new Set([...gestureSeen].slice(-100));
+    const now = performance.now();
+    if (e.g === gesturePick) gestureHitAt = now;
+    else gestureOther = { g: e.g, at: now };
+    if (gesturesLearned.has(e.g)) continue;
+    gesturesLearned.add(e.g);
+    save(GESTURES_LEARNED_KEY, JSON.stringify([...gesturesLearned]));
+    markLearned(e.g);
+  }
+}
+
+function markLearned(g: GestureId) {
+  const card = document.querySelector<HTMLElement>(`#drills [data-gesture="${g}"]`);
+  if (!card) return;
+  if (!card.querySelector(".learned")) card.insertAdjacentHTML("beforeend", `<span class="learned" aria-label="Learned">✓</span>`);
+  card.classList.add("pop");
+  renderGestureProgress();
+}
+
+function renderGestureProgress() {
+  const n = GESTURES.filter((g) => gesturesLearned.has(g.id)).length;
+  setText("gest-count", `${n} / ${GESTURES.length} learned`);
+  setWidth("gest-bar", n / GESTURES.length);
+}
+
+function pickGesture(id: GestureId) {
+  gesturePick = id;
+  save(GESTURE_PICK_KEY, id);
+  gestureHitAt = -Infinity;
+  gestureOther = null;
+  const g = gestureInfo(id);
+  setText("gest-name", g.name);
+  setText("gest-how", g.how);
+  $("gest-caution")?.toggleAttribute("hidden", !g.caution);
+  document.querySelectorAll<HTMLElement>("#drills [data-gesture]").forEach((c) => c.setAttribute("aria-current", String(c.dataset.gesture === id)));
+}
+
+// How often each gesture has shown up across camera sessions.
+const gestureUses = (id: GestureId) => history.reduce((n, h) => n + (h.presence?.gestures?.[id] ?? 0), 0);
+
+// Fills the Drills tab (below its pane switch) and starts the animations.
+function renderGestures(el: HTMLElement) {
+  const g = gestureInfo(gesturePick);
+  el.innerHTML +=
+    `<div class="panel gest-practice">` +
+    `<div class="gest-stage">` +
+    `<div class="gest-box"><canvas id="gest-demo" aria-label="How it looks"></canvas><span class="tag">Watch</span></div>` +
+    `<div id="gest-cam" class="gest-box gest-cam"><canvas id="gest-you" aria-label="Your camera"></canvas><span class="tag">You</span>` +
+    `<div id="gest-cam-off" class="gest-cam-off"><span>Turn the camera on to practise</span><button type="button" class="ctl" data-cam-on>Turn on camera</button></div>` +
+    `<span class="gest-hit">✓ Got it!</span></div>` +
+    `<div class="gest-info"><h2 id="gest-name">${escapeHtml(g.name)}</h2>` +
+    `<span id="gest-how" class="gest-how">${escapeHtml(g.how)}</span>` +
+    `<span id="gest-caution" class="sub down"${g.caution ? "" : " hidden"}>Use sparingly — it can come across as aggressive.</span>` +
+    `<span id="gest-status" class="gest-status"></span></div>` +
+    `</div></div>` +
+    `<div class="panel"><div class="panel-head"><span class="label">All gestures</span><span id="gest-count" class="sub"></span></div>` +
+    `<div class="gest-progress"><i id="gest-bar"></i></div>` +
+    `<span class="sub">The figure is a mirror: copy it as you would your reflection. Pick one to practise; any you do on camera get ticked off.</span>` +
+    `<div class="gest-grid">` +
+    GESTURES.map(
+      (x) =>
+        `<button type="button" class="gest-card" data-gesture="${x.id}" aria-current="${x.id === gesturePick}">` +
+        `<canvas aria-hidden="true"></canvas><span class="name">${escapeHtml(x.name)}${x.caution ? ` <span class="down" data-tip="Use sparingly">!</span>` : ""}</span>` +
+        `<span class="sub">${escapeHtml(x.how)}</span>` +
+        (gestureUses(x.id) ? `<span class="sub">Used ${gestureUses(x.id)}× in sessions</span>` : "") +
+        (gesturesLearned.has(x.id) ? `<span class="learned" aria-label="Learned">✓</span>` : "") +
+        `</button>`,
+    ).join("") +
+    `</div></div>`;
+  renderGestureProgress();
+
+  gestureCardsIo.disconnect();
+  gestureCards = new Set();
+  el.querySelectorAll<HTMLCanvasElement>(".gest-card canvas").forEach((cv) => gestureCardsIo.observe(cv));
+  gestureLoop = new VisibleLoop(el, (_, now) => drawGesturePage(now));
+}
+
+// Sizes a canvas to its box at the screen's pixel density; returns its CSS size.
+function fitCanvas(cv: HTMLCanvasElement): [CanvasRenderingContext2D, number, number] | null {
+  const cx = cv.getContext("2d");
+  const [w, h] = [cv.clientWidth, cv.clientHeight];
+  if (!cx || !w || !h) return null;
+  const dpr = devicePixelRatio || 1;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) [cv.width, cv.height] = [Math.round(w * dpr), Math.round(h * dpr)];
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx.clearRect(0, 0, w, h);
+  return [cx, w, h];
+}
+
+let gestureColors: FigureColors | null = null;
+let gestureColorsAt = 0;
+
+function drawGesturePage(now: number) {
+  if (!gestureColors || now - gestureColorsAt > 1000) {
+    const css = getComputedStyle(document.documentElement);
+    gestureColors = { body: css.getPropertyValue("--ink").trim(), hand: css.getPropertyValue("--green").trim() };
+    gestureColorsAt = now;
+  }
+  const demo = $<HTMLCanvasElement>("gest-demo");
+  const d = demo && fitCanvas(demo);
+  if (d) drawFigure(d[0], gesturePick, now, d[1], d[2], gestureColors);
+  document.querySelectorAll<HTMLCanvasElement>("#drills .gest-card canvas").forEach((cv) => {
+    if (!gestureCards.has(cv)) return;
+    const c = fitCanvas(cv);
+    const id = cv.closest<HTMLElement>("[data-gesture]")?.dataset.gesture as GestureId;
+    if (c) drawFigure(c[0], id, now, c[1], c[2], gestureColors!);
+  });
+
+  const on = document.body.classList.contains("camera-on");
+  $("gest-cam-off")?.toggleAttribute("hidden", on);
+  const hit = now - gestureHitAt < HIT_MS;
+  $("gest-cam")?.classList.toggle("hit", hit);
+  const you = $<HTMLCanvasElement>("gest-you");
+  const c = you && fitCanvas(you);
+  const src = $<HTMLCanvasElement>("self-view");
+  if (c && on && src?.width) {
+    const [cx, w, h] = c;
+    cx.save();
+    cx.translate(w, 0);
+    cx.scale(-1, 1); // a mirror, as on the Live tab
+    const k = Math.max(w / src.width, h / src.height);
+    cx.drawImage(src, (w - src.width * k) / 2, (h - src.height * k) / 2, src.width * k, src.height * k);
+    const map = coverMap(FRAME_W, FRAME_H, w, h);
+    cx.strokeStyle = cx.fillStyle = "#30d158";
+    cx.lineWidth = 1.5;
+    for (const hand of liveHands) {
+      const pts = hand.map(map);
+      cx.beginPath();
+      for (const { start, end } of HAND_BONES) {
+        cx.moveTo(...pts[start]);
+        cx.lineTo(...pts[end]);
+      }
+      cx.stroke();
+    }
+    cx.restore();
+  }
+
+  const other = gestureOther && now - gestureOther.at < OTHER_MS ? gestureOther.g : null;
+  const status = $("gest-status");
+  const [text, cls] = !on
+    ? ["", ""]
+    : hit
+      ? ["✓ Got it — do it again, or pick another", "up"]
+      : other
+        ? [`That read as ${gestureInfo(other).name} — keep going`, ""]
+        : gesturesLearned.has(gesturePick)
+          ? ["Learned ✓ — copy the figure, then hold it a moment", ""]
+          : ["Copy the figure, then hold it a moment", ""];
+  if (status && status.textContent !== text) {
+    status.textContent = text;
+    status.className = `gest-status${cls ? ` ${cls}` : ""}`;
   }
 }
 
@@ -5473,6 +5695,38 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   syncDrill();
 
+  // The drill picker: same menu pattern as the timer. Disabled while recording.
+  const drillMenu = $("drill-menu");
+  const closeDrillMenu = () => drillMenu?.setAttribute("hidden", "");
+  $("drill-pick-btn")?.addEventListener("click", (e) => {
+    if (!drillMenu) return;
+    if (!drillMenu.hidden) return closeDrillMenu();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    drillMenu.innerHTML = drillMenuHtml();
+    drillMenu.style.top = `${r.bottom + 6}px`;
+    drillMenu.removeAttribute("hidden");
+    drillMenu.style.left = `${Math.max(8, r.right - drillMenu.offsetWidth)}px`; // measured once shown
+    drillMenu.querySelector<HTMLElement>("[aria-current='true']:not(:disabled), [data-pick]:not(:disabled)")?.focus();
+  });
+  drillMenu?.addEventListener("click", (e) => {
+    const b = (e.target as Element).closest<HTMLButtonElement>("[data-pick]");
+    if (!b || b.disabled) return;
+    closeDrillMenu();
+    if (b.dataset.pick) startDrill(b.dataset.pick);
+    else endDrill();
+  });
+  drillMenu?.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeDrillMenu();
+      $("drill-pick-btn")?.focus();
+    }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target as Element;
+    if (drillMenu && !drillMenu.contains(t) && !t.closest("#drill-pick-btn")) closeDrillMenu();
+  });
+  syncDrillPick();
+
   const gainInput = $<HTMLInputElement>("set-gain");
   const savedGain = Number(load(GAIN_KEY));
   if (savedGain > 0) levelGain = savedGain;
@@ -5773,7 +6027,17 @@ window.addEventListener("DOMContentLoaded", () => {
   $("history-btn")?.addEventListener("click", () => showView("history"));
   $("drills-btn")?.addEventListener("click", () => showView("drills"));
   $("drills")?.addEventListener("click", (e) => {
-    const id = (e.target as Element).closest<HTMLElement>("[data-drill]")?.dataset.drill;
+    const t = e.target as Element;
+    const pane = t.closest<HTMLElement>("[data-dpane]")?.dataset.dpane;
+    if (pane === "drills" || pane === "gestures") {
+      drillsPane = pane;
+      save(DRILLS_PANE_KEY, pane);
+      return renderDrills();
+    }
+    if (t.closest("[data-cam-on]")) return void setCamera(true);
+    const g = t.closest<HTMLElement>("[data-gesture]")?.dataset.gesture as GestureId | undefined;
+    if (g) return pickGesture(g);
+    const id = t.closest<HTMLElement>("[data-drill]")?.dataset.drill;
     if (id) startDrill(id);
   });
   const histEl = $("history");

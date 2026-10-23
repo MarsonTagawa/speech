@@ -19,6 +19,7 @@ export interface Drill {
   id: string;
   name: string;
   goal: string;
+  icon: string; // inner markup of a 24×24 stroked SVG, unique per drill
   secs: number;
   script?: string; // read-along text; otherwise a random topic is shown
   prep?: number; // secs of silent thinking time before recording starts on its own
@@ -39,6 +40,7 @@ export const DRILLS: Drill[] = [
     id: "filler-free",
     name: "Filler-free minute",
     goal: "Talk for 60 s without a single filler",
+    icon: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" /><path d="m2 2 20 20" />',
     secs: 60,
     judge: (s) => ({ pass: spokeEnough(s, 60) && s.fillers === 0, value: `${s.fillers} fillers` }),
   },
@@ -46,6 +48,7 @@ export const DRILLS: Drill[] = [
     id: "pace-lock",
     name: "Pace lock",
     goal: "Hold your target pace for 45 s",
+    icon: '<path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" />',
     secs: 45,
     judge: (s, [lo, hi]) => ({ pass: spokeEnough(s, 45) && s.wpm >= lo && s.wpm <= hi, value: `${s.wpm} wpm` }),
   },
@@ -53,6 +56,7 @@ export const DRILLS: Drill[] = [
     id: "pause-not-um",
     name: "Pause, don't um",
     goal: "Swap fillers for silence: under 1 filler/min, at least 4 pauses/min",
+    icon: '<circle cx="12" cy="12" r="10" /><line x1="10" x2="10" y1="15" y2="9" /><line x1="14" x2="14" y1="15" y2="9" />',
     secs: 60,
     judge: (s) => ({
       pass: spokeEnough(s, 60) && s.fillersPerMin < 1 && s.pausesPerMin >= 4,
@@ -63,6 +67,7 @@ export const DRILLS: Drill[] = [
     id: "twisters",
     name: "Tongue twisters",
     goal: "Read the twisters with at least 90% accuracy",
+    icon: '<path d="M21 4H3" /><path d="M18 8H6" /><path d="M19 12H9" /><path d="M16 16h-6" /><path d="M11 20H9" />',
     secs: 45,
     script:
       "She sells seashells by the seashore.\n" +
@@ -79,6 +84,7 @@ export const DRILLS: Drill[] = [
     id: MEMORISE,
     name: "Memorise a speech",
     goal: "Study the chunk, then record and say it from memory — 90% to pass",
+    icon: '<path d="M7 2v20" /><path d="M17 2v20" /><path d="M7 7h10" /><path d="M7 12h10" /><path d="M7 17h10" />',
     secs: 0, // untimed; you stop when you reach the end
     judge: (s) => {
       const acc = s.script?.accuracy ?? 0;
@@ -89,6 +95,7 @@ export const DRILLS: Drill[] = [
     id: "finish-strong",
     name: "Finish strong",
     goal: "Keep your volume up to the end of every sentence for 45 s",
+    icon: '<path d="M11 5 6 9H2v6h4l5 4V5z" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" />',
     secs: 45,
     judge: (s) => ({
       pass: spokeEnough(s, 45) && s.trailingOff >= 0.9,
@@ -99,6 +106,7 @@ export const DRILLS: Drill[] = [
     id: "vary-pitch",
     name: "Vary your pitch",
     goal: "Talk for 45 s with at least 4 semitones of inflection per sentence — stress the key word",
+    icon: '<path d="M22 12h-4l-3 9L9 3l-3 9H2" />',
     secs: 45,
     judge: (s) => ({ pass: spokeEnough(s, 45) && s.pitchRange >= 4, value: `${s.pitchRange.toFixed(1)} semitones` }),
   },
@@ -106,6 +114,7 @@ export const DRILLS: Drill[] = [
     id: "land-it",
     name: "Land your statements",
     goal: "Talk for 45 s ending every sentence on a falling tone — at most 1 rising end",
+    icon: '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7" /><polyline points="16 17 22 17 22 11" />',
     secs: 45,
     // ponytail: allows one rise to absorb a misread pitch contour; tighten if detection proves clean.
     judge: (s) => ({ pass: spokeEnough(s, 45) && s.uptalk <= 1, value: `${s.uptalk} rising end${s.uptalk === 1 ? "" : "s"}` }),
@@ -114,6 +123,7 @@ export const DRILLS: Drill[] = [
     id: "impromptu",
     name: "Impromptu",
     goal: "30 s to think, then 90 s on the topic — on pace, under 2 fillers/min",
+    icon: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />',
     secs: 90,
     prep: 30,
     judge: (s, [lo, hi]) => ({
@@ -124,7 +134,8 @@ export const DRILLS: Drill[] = [
   {
     id: "eyes-hands",
     name: "Eyes and hands",
-    goal: "60 s on camera: eye contact 70%+, hands moving 20–60% of the time, and at least 3 different gestures (see Gestures below)",
+    goal: "60 s on camera: eye contact 70%+, hands moving 20–60% of the time, and at least 3 different gestures (see Drills → Gestures)",
+    icon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" />',
     secs: 60,
     video: true,
     judge: (s) => {

@@ -104,6 +104,9 @@
             <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M12 17v4" /><path d="M8 21h8" /></svg>
           </button>
           <input id="deck-file" type="file" accept=".pdf,application/pdf,image/*" multiple hidden />
+          <button id="drill-pick-btn" class="tool-btn timer" type="button" aria-pressed="false" aria-haspopup="menu" data-tip="Drill — pick a short exercise targeting one skill; it sets the timer and goal for your next recording">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" /></svg><span id="drill-pick-label">Drill</span><i class="chev"></i>
+          </button>
           <button id="drill-btn" class="tool-btn timer" type="button" data-tip="Timer — recordings stop automatically after this long">
             <svg viewBox="0 0 24 24"><line x1="10" x2="14" y1="2" y2="2" /><line x1="12" x2="15" y1="14" y2="11" /><circle cx="12" cy="14" r="8" /></svg><span id="drill-label">Off</span><i class="chev"></i>
           </button>
@@ -472,5 +475,6 @@
       <button type="button" role="menuitem" data-s="300">5 min</button>
       <input id="timer-custom" class="ctl" type="number" min="5" max="3600" placeholder="Custom (s)" aria-label="Custom timer length in seconds" />
     </div>
+    <div id="drill-menu" class="dd-list timer-menu drill-menu" role="menu" aria-label="Drill" hidden></div>
   </body>
 </html>

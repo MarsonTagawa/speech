@@ -324,8 +324,14 @@ body[data-view="settings"] #settings-btn {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-#drill-btn {
+#drill-pick-btn {
   margin-left: auto;
+}
+#drill-pick-label {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 #ribbon-btn:not(:hover) {
   background: transparent;
@@ -1920,6 +1926,21 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   height: 20px;
   overflow: visible;
 }
+.drill-icon {
+  width: 13px;
+  height: 13px;
+  margin-right: 6px;
+  vertical-align: -2px;
+  fill: none;
+  stroke: var(--ink-2);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Line the goal up under the name, past the icon. */
+.prof-table td > .drill-icon ~ .sub {
+  padding-left: 19px;
+}
 /* Drill type: speaking (audio only) or video (judged on the camera). */
 .drill-kind {
   margin-left: 6px;
@@ -2240,6 +2261,17 @@ kbd {
 .timer-menu button[aria-current="true"] {
   color: var(--blue-2);
   font-weight: 600;
+}
+.drill-menu button {
+  display: flex;
+  align-items: center;
+}
+.drill-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.drill-menu button[aria-current="true"] .drill-icon {
+  stroke: currentColor;
 }
 .timer-menu input {
   margin-top: 4px;
@@ -2987,3 +3019,210 @@ body.presenting .scope-resize {
 
 /* Screen replay above the report transcript (replay.ts draws it at 1280×720). */
 .rep-video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; margin: 8px 0 12px; }
+
+/* --- Gestures (a pane of the Drills tab) ---------------------------------- */
+
+.drills-tabs {
+  align-self: flex-start;
+}
+
+/* The practice panel stays in view while you scroll the cards. */
+.gest-practice {
+  position: sticky;
+  top: -14px; /* the view's top padding */
+  z-index: 1;
+  box-shadow: 0 8px 18px -10px var(--shadow-edge);
+}
+/* Watch | You | name and how; the text drops below on a narrow window. The
+   boxes are capped so the sticky panel stays short on a wide one. */
+.gest-stage {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 300px)) minmax(180px, 1fr);
+  gap: 10px 14px;
+}
+@media (max-width: 860px) {
+  .gest-stage {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .gest-info {
+    grid-column: 1 / -1;
+  }
+}
+.gest-box {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: 6px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border: 0.5px solid var(--edge);
+}
+.gest-box canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.gest-box .tag {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.gest-cam {
+  background: #000;
+}
+.gest-cam .tag {
+  color: rgba(255, 255, 255, 0.6);
+}
+.gest-cam-off {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 12px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 11px;
+}
+.gest-cam-off[hidden] {
+  display: none;
+}
+/* "Got it": the camera box rings green and a badge pops in. */
+.gest-cam.hit {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+.gest-hit {
+  position: absolute;
+  inset: auto 0 12px;
+  margin: auto;
+  width: max-content;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--green);
+  color: #000;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0;
+  transform: translateY(6px) scale(0.9);
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(0.3, 1.6, 0.5, 1);
+  pointer-events: none;
+}
+.gest-cam.hit .gest-hit {
+  opacity: 1;
+  transform: none;
+}
+.gest-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.gest-info h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.gest-how {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.gest-status {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.gest-status.up {
+  color: var(--green);
+  font-weight: 600;
+}
+.gest-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.gest-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 6px 8px;
+  border-radius: 8px;
+  border: 0.5px solid var(--edge);
+  background: var(--card);
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+}
+.gest-card:hover {
+  background: var(--btn-hover);
+}
+.gest-card[aria-current="true"] {
+  border-color: color-mix(in srgb, var(--blue) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--blue) 40%, transparent);
+}
+.gest-card canvas {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: block;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+.gest-card .name {
+  padding: 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.gest-card .sub {
+  padding: 0 2px;
+}
+.gest-card .learned {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--green);
+  color: #000;
+  font-size: 11px;
+  font-weight: 700;
+}
+.gest-card.pop .learned {
+  animation: gest-pop 500ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+@keyframes gest-pop {
+  from {
+    transform: scale(0.2);
+  }
+}
+.gest-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  overflow: hidden;
+}
+.gest-progress i {
+  display: block;
+  height: 100%;
+  background: var(--green);
+  transition: width 300ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .gest-card.pop .learned,
+  .gest-hit {
+    animation: none;
+    transition: none;
+  }
+}
