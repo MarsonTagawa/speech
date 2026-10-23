@@ -2,7 +2,7 @@
 // (a bundled DCLogic/React component) and stripped of that framework so it runs
 // as a plain canvas driver. Call setMode() to cross-fade between states.
 
-import { VisibleLoop } from "./visible";
+import { VisibleLoop, perf } from "./visible";
 
 export type RibbonMode = "idle" | "listening" | "thinking" | "speaking";
 
@@ -140,7 +140,7 @@ export class Ribbon {
     // The source component pinned dpr to 1 (fine in its editor preview); on a
     // HiDPI display that renders at 1x and the browser upscales it → pixelated.
     // Match the device so the strands/meniscus render crisp.
-    const dpr = this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = this.dpr = Math.min(window.devicePixelRatio || 1, perf.maxDpr);
     if (this.w !== w || this.h !== h || cv.width !== Math.round(w * dpr)) {
       this.w = w;
       this.h = h;

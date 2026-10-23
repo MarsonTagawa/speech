@@ -7,6 +7,7 @@ mod notch;
 mod pitch;
 mod screen;
 mod screenshot;
+mod tray;
 mod vad;
 mod vision;
 
@@ -99,6 +100,7 @@ pub fn run() {
             if let Some(main) = app.get_webview_window("main") {
                 corners::apply(&main);
             }
+            tray::build(app.handle())?;
 
             Ok(())
         })
@@ -144,12 +146,14 @@ pub fn run() {
             history::clear_sessions,
             screenshot::screenshot,
             notch::notch_show,
+            tray::tray_recording,
             screen::screen_prepare,
             screen::screen_release,
             screen::screen_displays,
             screen::session_frame,
             screen::session_has_frames,
             screen::screen_text,
+            screen::export::export_session,
             vision::start_vision,
             vision::stop_vision,
             vision::list_cameras,

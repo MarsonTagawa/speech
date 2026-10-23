@@ -3,6 +3,7 @@
 // `host` spawns wobbly rings of ice-shard pixels that ripple out and fade.
 // Pressing on `host` does something different: a wave of random symbols spreads
 // out from the point, each cell scrambling through glyphs before it fades.
+import { perf } from "./visible";
 
 const CELL = 14; // px per sparkle cell
 const DECAY = 0.9; // per-frame persistence of lit cells
@@ -66,7 +67,7 @@ export class Shards {
 
   private setup() {
     const r = this.canvas.getBoundingClientRect();
-    this.dpr = window.devicePixelRatio || 1;
+    this.dpr = Math.min(window.devicePixelRatio || 1, perf.maxDpr);
     this.canvas.width = r.width * this.dpr;
     this.canvas.height = r.height * this.dpr;
     this.cols = Math.ceil(r.width / CELL);

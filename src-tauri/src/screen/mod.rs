@@ -7,6 +7,7 @@
 //! opens it once, so later sessions don't re-prompt). During a session it
 //! samples every SAMPLE and saves frames that changed. The camera thread hands
 //! frames to a writer thread through a small queue, so it never waits on disk.
+pub mod export;
 mod frames;
 pub(crate) mod ocr;
 pub mod stream;

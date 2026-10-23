@@ -6,7 +6,7 @@
 // the avatar svg; setMode() eases between the ribbon's modes.
 import { RADIUS } from "@bible-strong/avatar-core";
 import { MODES, PROPS, hexToRgb, hueShift, lerp, prism, rgba, type RibbonMode } from "./ribbon";
-import { VisibleLoop } from "./visible";
+import { VisibleLoop, perf } from "./visible";
 
 const deep = hexToRgb(PROPS.blueColor);
 const cool = hexToRgb(PROPS.greenColor);
@@ -197,7 +197,7 @@ export class Halo {
     const cv = this.canvas, ctx = this.ctx;
     const w = cv.clientWidth, h = cv.clientHeight;
     if (!ctx || w < 8 || h < 8) return; // hidden view: skip the draw
-    const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
+    const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr, perf.maxDpr);
     if (cv.width !== Math.round(w * dpr)) {
       cv.width = Math.round(w * dpr);
       cv.height = Math.round(h * dpr);

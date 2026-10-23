@@ -25,12 +25,8 @@ opt-level = 3
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-[dev-dependencies]
-# Golden tests decode MediaPipe's test images (src/vision/*_golden tests).
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
-
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 
@@ -52,6 +48,10 @@ url = "2"
 # rustc 1.98.1 (AVX-512 VNNI intrinsic vs nixpkgs LLVM); move up once it does.
 ocrs = "=0.11.0"
 rten = "=0.22.1" # the version ocrs 0.11.0 depends on
+nnnoiseless = { version = "0.5", default-features = false } # Settings → Voice isolation (RNNoise)
+# Session video export (export.rs) decodes replay JPEGs to composite them, as do the
+# vision golden tests (src/vision/*_golden). nokhwa already builds it.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 
 # Report screenshot (screenshot.rs): each platform's webview snapshot and

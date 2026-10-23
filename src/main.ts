@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, Effect, EffectState } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/400-italic.css";
 import "@fontsource/ibm-plex-mono/500.css";
@@ -8,7 +9,7 @@ import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
 import { Ribbon, hexToRgb } from "./ribbon";
 import { Halo } from "./halo";
-import { VisibleLoop, watchVisible } from "./visible";
+import { VisibleLoop, perf, watchVisible } from "./visible";
 import { Shards } from "./shards";
 import { Flappy } from "./flappy";
 import { troubleSpots } from "./passages";
@@ -1649,6 +1650,7 @@ function setRecordingUi(on: boolean) {
   if (screenBtn) screenBtn.disabled = on; // a session's replay has one source
   const pickBtn = $<HTMLButtonElement>("drill-pick-btn");
   if (pickBtn) pickBtn.disabled = on; // a recording keeps the drill it started with
+  void invoke("tray_recording", { on }); // menu bar item (tray.rs)
 }
 
 // Record screen (screen/ in Rust): while on, each session also saves a replay
@@ -1887,7 +1889,7 @@ let micClip: Float32Array | null = null; // the last test's audio, for Replay
 async function startMicTest() {
   const btn = $<HTMLButtonElement>("mic-test-btn");
   try {
-    await invoke("start_mic_test", { mic: load(MIC_KEY) || null });
+    await invoke("start_mic_test", { mic: load(MIC_KEY) || null, isolate: voiceIsolation });
   } catch (e) {
     setText("mic-status", String(e));
     return;
@@ -1991,7 +1993,7 @@ async function toggleRecording() {
       await stopMicTest(false);
       ghostTimes = scriptUsed ? bestAttemptTimes() : null;
       sessionStartTs = Date.now();
-      await invoke("start_recording", { correct: accurateCorrection, correctionModel, ts: sessionStartTs, mic: load(MIC_KEY) || null });
+      await invoke("start_recording", { correct: accurateCorrection, correctionModel, ts: sessionStartTs, mic: load(MIC_KEY) || null, isolate: voiceIsolation });
       recording = true;
       void setNotch();
       currentSaved = false;
@@ -3143,7 +3145,12 @@ function renderReport() {
   }
   // The coach stands in for the hero's static top tip (re-inserted each render).
   if (coachEl) body.querySelector(".rep-tip")?.replaceWith(coachEl);
-  body.querySelector(".rep-title h2")?.insertAdjacentHTML("beforeend", SHOT_BTN);
+  const h2 = body.querySelector(".rep-title h2");
+  h2?.insertAdjacentHTML("beforeend", SHOT_BTN + exportBtn(false));
+  void invoke<unknown>("session_has_frames", { ts: d.ts }).then((f) => {
+    if (f && h2?.isConnected) h2.insertAdjacentHTML("beforeend", exportBtn(true));
+    syncExportBtns();
+  });
   coachSay(generateTips(s));
   const rt = $("report-transcript");
   if (rt) rt.innerHTML = transcriptCopyHtml(d.lines);
@@ -3169,11 +3176,16 @@ function playReportEntrance() {
 // clipboard, or saved to Downloads on Shift-click. Any platform.
 const SHOT_TIP = "Copy screenshot · Shift-click to save it to Downloads";
 const SHOT_BTN = `<button type="button" class="ctl shot-btn" data-shot aria-label="Copy screenshot" data-tip="${SHOT_TIP}"><svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" /><circle cx="12" cy="13" r="3" /></svg></button>`;
+// A session's start as a file-name stamp in local time: 2026-10-22-14-05.
+function fileStamp(ts: number): string {
+  const at = new Date(ts);
+  return new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16).replace(/[T:]/g, "-");
+}
+
 async function shootReport(btn: HTMLElement, save: boolean) {
   const r = $("report")?.getBoundingClientRect();
   if (!r || !reportSnap) return;
-  const at = new Date(reportSnap.s.ts);
-  const name = `speech-report-${new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16).replace(/[T:]/g, "-")}.png`;
+  const name = `speech-report-${fileStamp(reportSnap.s.ts)}.png`;
   document.body.classList.add("snapping"); // hides the tooltip and this button
   await new Promise(requestAnimationFrame);
   await new Promise(requestAnimationFrame);
@@ -3194,6 +3206,53 @@ async function shootReport(btn: HTMLElement, save: boolean) {
     btn.dataset.tip = SHOT_TIP;
     btn.classList.remove("done");
   }, 2500);
+}
+
+// Report downloads (screen/export.rs): the session's audio as a WAV, or its
+// screen/camera replay with that audio as a QuickTime movie, into Downloads.
+// The video button only shows for sessions with a replay.
+const EXPORT_TIP = {
+  audio: "Download the audio (.wav) to Downloads",
+  video: "Download the video with audio (.mov) to Downloads",
+};
+const exportBtn = (video: boolean) =>
+  `<button type="button" class="ctl shot-btn" data-export="${video ? "video" : "audio"}" aria-label="${video ? EXPORT_TIP.video : EXPORT_TIP.audio}" data-tip="${video ? EXPORT_TIP.video : EXPORT_TIP.audio}"><svg viewBox="0 0 24 24">` +
+  (video
+    ? `<path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 10.5" /><rect x="2" y="6" width="14" height="12" rx="2" />`
+    : `<path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />`) +
+  `</svg></button>`;
+
+let exporting: { video: boolean; pct: number } | null = null;
+
+// Puts the report's download buttons in step with `exporting`; `done` flashes
+// a result on the one that ran.
+function syncExportBtns(done?: { video: boolean; msg: string }) {
+  document.querySelectorAll<HTMLButtonElement>("#report [data-export]").forEach((btn) => {
+    const video = btn.dataset.export === "video";
+    const mine = exporting?.video === video || done?.video === video;
+    btn.disabled = !!exporting;
+    const tip = exporting && mine ? (video ? `Exporting video… ${exporting.pct}%` : "Saving audio…") : done && mine ? done.msg : EXPORT_TIP[video ? "video" : "audio"];
+    btn.dataset.tip = tip;
+    if (mine && (exporting || done)) setText("tip", tip);
+    btn.classList.toggle("done", !!done && mine);
+  });
+}
+
+async function exportSession(video: boolean) {
+  if (!reportSnap || exporting) return;
+  const { ts } = reportSnap.d;
+  exporting = { video, pct: 0 };
+  syncExportBtns();
+  let msg: string;
+  try {
+    const file = await invoke<string>("export_session", { ts, video, name: `speech-session-${fileStamp(ts)}` });
+    msg = `Saved to Downloads as ${file}`;
+  } catch (e) {
+    msg = `Download failed: ${e}`;
+  }
+  exporting = null;
+  syncExportBtns({ video, msg });
+  setTimeout(() => !exporting && syncExportBtns(), 2500);
 }
 
 // Every live transcript line's markup (fillers, waveform), in order.
@@ -3796,7 +3855,10 @@ const TAB_VIEWS: Array<[string, string]> = [
 function showView(view: "live" | "report" | "profile" | "speeches" | "drills" | "history" | "settings") {
   const changed = document.body.dataset.view !== view; // Start re-shows Live; that mustn't replay its entrance
   document.body.dataset.view = view;
-  if (view !== "settings") void stopMicTest(false);
+  if (view !== "settings") {
+    void stopMicTest(false);
+    stopCamTest();
+  }
   if (view === "settings") void refreshDevices();
   if (view === "profile") renderProfile(changed);
   if (view === "report") playReportEntrance();
@@ -4622,8 +4684,16 @@ const GHOST_KEY = "speech.ghost";
 const RIBBON_KEY = "speech.ribbon";
 const CORRECT_KEY = "speech.accurateCorrection";
 const MIC_KEY = "speech.mic"; // input device name; unset = system default
+const ISOLATE_KEY = "speech.voiceIsolation";
+const CUSTOM_THEME_KEY = "speech.customTheme";
+const UI_SIZE_KEY = "speech.uiSize";
+const SATURATION_KEY = "speech.saturation";
+const CONTRAST_KEY = "speech.highContrast";
+const MOTION_KEY = "speech.reducedMotion";
+const PERF_KEY = "speech.perfMode";
 const CAMERA_DEVICE_KEY = "speech.cameraDevice"; // camera name; unset = the first
 let accurateCorrection = true;
+let voiceIsolation = false;
 
 // Whisper models (see models.rs). tiny.en and medium.en are bundled, so they're
 // the fallbacks when a chosen model is deleted; the rest download on demand.
@@ -4712,6 +4782,138 @@ function fillDevices(id: string, names: string[], saved: string, def: string) {
   sel.innerHTML = opts.map(([v, t]) => `<option value="${escapeHtml(v)}">${escapeHtml(t)}</option>`).join("");
   sel.value = saved;
   syncSelect(sel);
+}
+
+// --- Display & performance settings --------------------------------------------
+
+// Custom colorscheme: four picks; the other surfaces are mixed from them in
+// the proportions Graphite's are (styles.css :root). Set inline on <html>, as
+// plain hex, since canvases read some of them back (shards, gesture figures).
+interface CustomTheme {
+  chassis: string;
+  card: string;
+  ink: string;
+  blue: string;
+}
+const GRAPHITE: CustomTheme = { chassis: "#121214", card: "#212126", ink: "#f2f2f7", blue: "#0a84ff" };
+const CUSTOM_VARS = ["chassis", "main", "pane", "dock", "card", "btn", "btn-hover", "fg", "edge", "edge-2", "shadow-edge", "ink", "blue", "blue-2"];
+let customTheme: CustomTheme = (() => {
+  try {
+    return { ...GRAPHITE, ...JSON.parse(load(CUSTOM_THEME_KEY) ?? "{}") };
+  } catch {
+    return GRAPHITE;
+  }
+})();
+
+// `a` moved fraction `t` of the way to `b`.
+function mixHex(a: string, b: string, t: number): string {
+  const [x, y] = [hexToRgb(a), hexToRgb(b)];
+  return "#" + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join("");
+}
+
+function customThemeVars(c: CustomTheme): Record<string, string> {
+  const [r, g, b] = hexToRgb(c.chassis);
+  const light = 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
+  return {
+    chassis: c.chassis,
+    main: mixHex(c.chassis, c.card, 0.27),
+    pane: mixHex(c.chassis, c.card, 0.53),
+    dock: mixHex(c.chassis, c.card, 0.6),
+    card: c.card,
+    btn: mixHex(c.card, c.ink, 0.015),
+    "btn-hover": mixHex(c.card, c.ink, 0.05),
+    fg: light ? "#000000" : "#ffffff",
+    edge: light ? "rgba(0, 0, 0, 0.08)" : "rgba(255, 255, 255, 0.07)",
+    "edge-2": light ? "rgba(0, 0, 0, 0.13)" : "rgba(255, 255, 255, 0.1)",
+    "shadow-edge": light ? "rgba(0, 0, 0, 0.16)" : "rgba(0, 0, 0, 0.6)",
+    ink: c.ink,
+    blue: c.blue,
+    "blue-2": mixHex(c.blue, light ? "#000000" : "#ffffff", 0.25),
+  };
+}
+
+let windowEffects = false;
+function applyTheme(t: string) {
+  const root = document.documentElement;
+  root.dataset.theme = t;
+  const vars = t === "custom" ? customThemeVars(customTheme) : null;
+  for (const v of CUSTOM_VARS) {
+    if (vars) root.style.setProperty(`--${v}`, vars[v]);
+    else root.style.removeProperty(`--${v}`);
+  }
+  root.style.colorScheme = vars ? (vars.fg === "#000000" ? "light" : "dark") : "";
+  // Transparent: frosted vibrancy behind the see-through surfaces (HUD on
+  // macOS, acrylic on Windows; Linux shows the desktop through unblurred).
+  const clear = t !== "transparent";
+  if (clear === !windowEffects) return;
+  windowEffects = !clear;
+  const win = getCurrentWindow();
+  void (clear ? win.clearEffects() : win.setEffects({ effects: [Effect.HudWindow, Effect.Acrylic], state: EffectState.Active })).catch(() => {});
+}
+
+function syncCustomPicks() {
+  document.querySelectorAll<HTMLInputElement>("#custom-theme input[type=color]").forEach((inp) => {
+    inp.value = customTheme[inp.dataset.var as keyof CustomTheme];
+  });
+}
+
+// Performance mode: the animation frame-rate cap, canvas sharpness and (battery
+// saver) blur. Takes effect on each canvas's next resize for its sharpness.
+const PERF_MODES: Record<string, { fps: number; maxDpr: number }> = {
+  quality: { fps: 0, maxDpr: 2 },
+  balanced: { fps: 30, maxDpr: 2 },
+  saver: { fps: 20, maxDpr: 1 },
+};
+function applyPerf(mode: string) {
+  Object.assign(perf, PERF_MODES[mode] ?? PERF_MODES.quality);
+  document.documentElement.classList.toggle("perf-saver", mode === "saver");
+}
+applyPerf(load(PERF_KEY) ?? "quality"); // before the canvases size themselves
+
+function applySaturation(pct: number) {
+  const root = document.documentElement;
+  root.classList.toggle("saturated", pct !== 100);
+  root.style.setProperty("--sat", String(pct / 100));
+  setText("sat-value", `${pct}%${pct === 100 ? " · drag left for muted colors, right for vivid" : ""}`);
+}
+
+// Settings → Camera test: the camera's picture in Settings, plus what it can
+// see. Shares start_vision with the live camera, so that is paused meanwhile
+// and resumed after.
+let camTesting = false;
+async function startCamTest() {
+  const view = $<HTMLCanvasElement>("cam-test-view");
+  const btn = $<HTMLButtonElement>("cam-test-btn");
+  if (!view || camTesting) return;
+  if (recording) {
+    setText("cam-status", "Stop recording before testing the camera");
+    return;
+  }
+  camTesting = true;
+  if (btn) btn.textContent = "Stop";
+  view.hidden = false;
+  setText("cam-status", "Starting the camera…");
+  let last = 0;
+  try {
+    await startCamera(view, load(CAMERA_DEVICE_KEY) || null, (f) => {
+      if (f.t - last < 250) return; // a readable update rate
+      last = f.t;
+      const hands = f.hands.length ? ` · ${f.hands.length} hand${f.hands.length > 1 ? "s" : ""}` : "";
+      setText("cam-status", f.face ? `Face found${f.looking ? ", looking at the camera" : ""}${hands}` : `No face in view — move into the frame or add light${hands}`);
+    }, () => stopCamTest("The camera stopped"));
+  } catch (e) {
+    stopCamTest(`Camera unavailable — ${e instanceof Error ? e.message : e}`);
+  }
+}
+function stopCamTest(status = "Check your framing and lighting before you record") {
+  if (!camTesting) return;
+  camTesting = false;
+  const btn = $<HTMLButtonElement>("cam-test-btn");
+  if (btn) btn.textContent = "Test";
+  $("cam-test-view")?.setAttribute("hidden", "");
+  setText("cam-status", status);
+  if (document.body.classList.contains("camera-on")) void setCamera(true); // back to the live view
+  else stopCamera();
 }
 
 // Settings search: hides rows that don't mention the query, unless their
@@ -4978,7 +5180,8 @@ async function openHistorySession(ts: number, row?: HTMLElement) {
   if (histPage === ts) renderHistory(true);
 }
 
-const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const reducedMotion = () =>
+  document.documentElement.classList.contains("reduce-motion") || matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // Entrance for Live, Drills, Profile and Settings (styles.css .enter): restart
 // the animations, then drop the class once they're done (`ms`), so a card or
@@ -5233,6 +5436,10 @@ window.addEventListener("DOMContentLoaded", () => {
   initTooltips();
 
   recordBtn?.addEventListener("click", toggleRecording);
+  // The menu bar item's Start/Stop Recording; disabled the same as the button.
+  void listen("tray-record", () => {
+    if (!recordBtn?.disabled) void toggleRecording();
+  });
   $("reset-btn")?.addEventListener("click", resetSession);
   $("script-btn")?.addEventListener("click", () => toggleScript());
   // With no deck loaded the Slides button opens a menu: a file, or a Google link.
@@ -5681,18 +5888,73 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll<HTMLSelectElement>(".view-settings select").forEach(enhanceSelect);
 
   const themeSel = $<HTMLSelectElement>("set-theme");
-  const applyTheme = (t: string) => {
-    document.documentElement.dataset.theme = t;
-    if (themeSel) {
-      themeSel.value = t;
-      syncSelect(themeSel);
-    }
-  };
-  applyTheme(load(THEME_KEY) ?? "graphite");
+  const theme = load(THEME_KEY) ?? "graphite";
+  applyTheme(theme);
+  if (themeSel) {
+    themeSel.value = theme;
+    syncSelect(themeSel);
+  }
   themeSel?.addEventListener("change", () => {
+    // A first switch to Custom starts from the colorscheme being left.
+    if (themeSel.value === "custom" && !load(CUSTOM_THEME_KEY)) {
+      const css = getComputedStyle(document.documentElement);
+      const pick = (v: keyof CustomTheme) => css.getPropertyValue(`--${v}`).trim();
+      const from = { chassis: pick("chassis"), card: pick("card"), ink: pick("ink"), blue: pick("blue") };
+      if (Object.values(from).every((c) => /^#[0-9a-f]{6}$/i.test(c))) customTheme = from;
+    }
     save(THEME_KEY, themeSel.value);
     applyTheme(themeSel.value);
+    syncCustomPicks();
   });
+  syncCustomPicks();
+  $("custom-theme")?.addEventListener("input", (e) => {
+    const inp = e.target as HTMLInputElement;
+    if (!inp.dataset.var) return;
+    customTheme = { ...customTheme, [inp.dataset.var]: inp.value };
+    save(CUSTOM_THEME_KEY, JSON.stringify(customTheme));
+    applyTheme("custom");
+  });
+  $("custom-reset")?.addEventListener("click", () => {
+    customTheme = GRAPHITE;
+    save(CUSTOM_THEME_KEY, JSON.stringify(customTheme));
+    applyTheme("custom");
+    syncCustomPicks();
+  });
+
+  // UI size: the webview's zoom, so every px in the stylesheet scales together.
+  const sizeSel = $<HTMLSelectElement>("set-ui-size");
+  const applySize = (z: string) => void getCurrentWebview().setZoom(Number(z) || 1).catch(() => {});
+  const size = load(UI_SIZE_KEY) ?? "1";
+  if (size !== "1") applySize(size);
+  if (sizeSel) {
+    sizeSel.value = size;
+    syncSelect(sizeSel);
+    sizeSel.addEventListener("change", () => {
+      save(UI_SIZE_KEY, sizeSel.value);
+      applySize(sizeSel.value);
+    });
+  }
+
+  const satInput = $<HTMLInputElement>("set-saturation");
+  const sat = Number(load(SATURATION_KEY) ?? 100);
+  applySaturation(sat);
+  if (satInput) {
+    satInput.value = String(sat);
+    satInput.addEventListener("input", () => {
+      save(SATURATION_KEY, satInput.value);
+      applySaturation(Number(satInput.value));
+    });
+  }
+
+  const perfSel = $<HTMLSelectElement>("set-perf");
+  if (perfSel) {
+    perfSel.value = load(PERF_KEY) ?? "quality";
+    syncSelect(perfSel);
+    perfSel.addEventListener("change", () => {
+      save(PERF_KEY, perfSel.value);
+      applyPerf(perfSel.value);
+    });
+  }
 
   drillMs = (Number(load(DRILL_KEY)) || 0) * 1000;
   const syncDrill = tickClock;
@@ -5838,6 +6100,18 @@ window.addEventListener("DOMContentLoaded", () => {
     accurateCorrection = on;
     renderModelChain();
   });
+  bindToggle("set-contrast", CONTRAST_KEY, (on) => document.documentElement.classList.toggle("high-contrast", on), false);
+  bindToggle("set-motion", MOTION_KEY, (on) => document.documentElement.classList.toggle("reduce-motion", on), false);
+  // Voice isolation applies from the next recording; a running mic test restarts with it.
+  bindToggle("set-isolate", ISOLATE_KEY, async (on) => {
+    voiceIsolation = on;
+    if (micTesting) {
+      await stopMicTest(false);
+      await startMicTest();
+    }
+  }, false);
+  const camTestBtn = $<HTMLButtonElement>("cam-test-btn");
+  camTestBtn?.addEventListener("click", () => (camTesting ? stopCamTest() : void startCamTest()));
 
   // The backend always starts on tiny.en; swap in the saved pick if different.
   correctionModel = load(CORRECT_MODEL_KEY) ?? correctionModel;
@@ -5857,7 +6131,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const camSel = $<HTMLSelectElement>("set-camera");
   camSel?.addEventListener("change", () => {
     save(CAMERA_DEVICE_KEY, camSel.value);
-    if (document.body.classList.contains("camera-on")) void setCamera(true); // start_vision swaps cameras
+    if (camTesting) {
+      camTesting = false; // restart on the new camera; start_vision swaps it in
+      void startCamTest();
+    } else if (document.body.classList.contains("camera-on")) void setCamera(true); // start_vision swaps cameras
   });
 
   const liveSel = $<HTMLSelectElement>("set-live-model");
@@ -5997,6 +6274,13 @@ window.addEventListener("DOMContentLoaded", () => {
     if (open) void openSessionPop(Number(open.dataset.open));
     const shot = (e.target as Element).closest<HTMLElement>("[data-shot]");
     if (shot) void shootReport(shot, (e as MouseEvent).shiftKey);
+    const exp = (e.target as Element).closest<HTMLElement>("[data-export]");
+    if (exp) void exportSession(exp.dataset.export === "video");
+  });
+  void listen<number>("export_progress", ({ payload }) => {
+    if (!exporting?.video || payload === exporting.pct) return;
+    exporting.pct = payload;
+    syncExportBtns();
   });
   document.addEventListener(
     "toggle",

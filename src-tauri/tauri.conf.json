@@ -17,7 +17,8 @@
         "title": "Speech",
         "width": 1120,
         "height": 740,
-        "decorations": false
+        "decorations": false,
+        "transparent": true
       }
     ],
     "security": {

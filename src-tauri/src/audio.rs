@@ -147,8 +147,9 @@ pub struct RecordingState(pub Mutex<Option<RecordingHandle>>);
 /// `ts` is the session's id (its start time); the session's audio is kept as
 /// `sessions/<ts>.pcm` for line playback (see `history::session_clip`).
 /// `mic` is the input device's name (Settings → Microphone); None = system default.
+/// `isolate` runs voice isolation (see `Isolator`) on the input first.
 #[tauri::command]
-pub fn start_recording(app: AppHandle, correct: bool, correction_model: String, ts: i64, mic: Option<String>) -> Result<(), String> {
+pub fn start_recording(app: AppHandle, correct: bool, correction_model: String, ts: i64, mic: Option<String>, isolate: bool) -> Result<(), String> {
     let recording_state = app.state::<RecordingState>();
     let mut guard = recording_state.0.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
@@ -195,7 +196,7 @@ pub fn start_recording(app: AppHandle, correct: bool, correction_model: String, 
     let pcm_path = crate::history::detail_dir(&app).map(|d| d.join(format!("{ts}.pcm")));
     let app_handle = app.clone();
     let processing_thread = std::thread::spawn(move || {
-        let pcm = run_processing_loop(app_handle, audio_rx, sample_rate, correction_tx);
+        let pcm = run_processing_loop(app_handle, audio_rx, sample_rate, isolate, correction_tx);
         if let Err(e) = pcm_path.and_then(|p| std::fs::write(p, pcm).map_err(|e| e.to_string())) {
             eprintln!("session audio: {e}");
         }
@@ -252,7 +253,7 @@ pub struct MicTestState(pub Mutex<Option<MicTestHandle>>);
 const MIC_TEST_KEEP_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 10;
 
 #[tauri::command]
-pub fn start_mic_test(app: AppHandle, mic: Option<String>) -> Result<(), String> {
+pub fn start_mic_test(app: AppHandle, mic: Option<String>, isolate: bool) -> Result<(), String> {
     if app.state::<RecordingState>().0.lock().map_err(|e| e.to_string())?.is_some() {
         return Err("stop recording before testing the mic".into());
     }
@@ -270,7 +271,7 @@ pub fn start_mic_test(app: AppHandle, mic: Option<String>) -> Result<(), String>
         }
     });
     let app_handle = app.clone();
-    let processing_thread = std::thread::spawn(move || run_mic_test_loop(app_handle, audio_rx, sample_rate));
+    let processing_thread = std::thread::spawn(move || run_mic_test_loop(app_handle, audio_rx, sample_rate, isolate));
     *guard = Some(MicTestHandle { stop_tx, capture_thread, processing_thread });
     Ok(())
 }
@@ -289,8 +290,8 @@ pub fn stop_mic_test(app: AppHandle) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(clip.iter().flat_map(|s| s.to_le_bytes()).collect::<Vec<u8>>()))
 }
 
-fn run_mic_test_loop(app: AppHandle, audio_rx: Receiver<Vec<f32>>, native_sample_rate: u32) -> Vec<f32> {
-    let mut resampler = Resampler::new(native_sample_rate, TARGET_SAMPLE_RATE);
+fn run_mic_test_loop(app: AppHandle, audio_rx: Receiver<Vec<f32>>, native_sample_rate: u32, isolate: bool) -> Vec<f32> {
+    let (mut isolator, mut resampler) = input_stages(native_sample_rate, isolate);
     let mut dc_blocker = DcBlocker::new();
     let mut pending: Vec<f32> = Vec::new();
     let mut clip: VecDeque<f32> = VecDeque::with_capacity(MIC_TEST_KEEP_SAMPLES);
@@ -299,6 +300,10 @@ fn run_mic_test_loop(app: AppHandle, audio_rx: Receiver<Vec<f32>>, native_sample
         vad.reset();
     }
     while let Ok(chunk) = audio_rx.recv() {
+        let chunk = match isolator.as_mut() {
+            Some(i) => i.process(&chunk),
+            None => chunk,
+        };
         let mut resampled = resampler.process(&chunk);
         dc_blocker.process(&mut resampled);
         pending.extend(resampled);
@@ -441,6 +446,48 @@ impl Resampler {
     }
 }
 
+/// The capture → 16 kHz stages: with voice isolation on, the native-rate input
+/// is denoised at 48 kHz first, so the downsample starts from 48 kHz.
+fn input_stages(native_rate: u32, isolate: bool) -> (Option<Isolator>, Resampler) {
+    if isolate {
+        (Some(Isolator::new(native_rate)), Resampler::new(Isolator::RATE, TARGET_SAMPLE_RATE))
+    } else {
+        (None, Resampler::new(native_rate, TARGET_SAMPLE_RATE))
+    }
+}
+
+/// Settings → Voice isolation: RNNoise (nnnoiseless) strips background noise —
+/// fans, keyboards, room hum — leaving the voice. It runs at 48 kHz in 10 ms
+/// frames on i16-scaled samples, so input is resampled up to it and buffered
+/// into whole frames (10 ms of added latency).
+struct Isolator {
+    up: Resampler,
+    state: Box<nnnoiseless::DenoiseState<'static>>,
+    pending: Vec<f32>,
+}
+
+impl Isolator {
+    const RATE: u32 = 48_000;
+    const FRAME: usize = nnnoiseless::DenoiseState::FRAME_SIZE;
+
+    fn new(native_rate: u32) -> Self {
+        Self { up: Resampler::new(native_rate, Self::RATE), state: nnnoiseless::DenoiseState::new(), pending: Vec::new() }
+    }
+
+    /// Native-rate samples in, denoised 48 kHz samples out.
+    fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        self.pending.extend(self.up.process(input).iter().map(|s| s * 32767.0));
+        let whole = self.pending.len() / Self::FRAME * Self::FRAME;
+        let mut out = vec![0.0; whole];
+        for (src, dst) in self.pending[..whole].chunks_exact(Self::FRAME).zip(out.chunks_exact_mut(Self::FRAME)) {
+            self.state.process_frame(dst, src);
+        }
+        self.pending.drain(..whole);
+        out.iter_mut().for_each(|s| *s /= 32767.0);
+        out
+    }
+}
+
 /// One-pole DC-blocking high-pass filter. Some capture devices (e.g. the
 /// laptop's digital mic array) deliver samples with a large constant DC
 /// offset; left in, that bias dominates the waveform and makes the VAD
@@ -568,10 +615,11 @@ fn run_processing_loop(
     app: AppHandle,
     audio_rx: Receiver<Vec<f32>>,
     native_sample_rate: u32,
+    isolate: bool,
     correction_tx: Sender<CorrectionJob>,
 ) -> Vec<u8> {
     let mut pcm: Vec<u8> = Vec::new();
-    let mut resampler = Resampler::new(native_sample_rate, TARGET_SAMPLE_RATE);
+    let (mut isolator, mut resampler) = input_stages(native_sample_rate, isolate);
     let mut dc_blocker = DcBlocker::new();
     let mut pending: Vec<f32> = Vec::new();
     let mut pre_roll: VecDeque<f32> = VecDeque::with_capacity(PRE_ROLL_SAMPLES);
@@ -606,6 +654,10 @@ fn run_processing_loop(
         if pcm.is_empty() {
             crate::screen::mark_clock(); // the replay's ms 0 is the .pcm's
         }
+        let chunk = match isolator.as_mut() {
+            Some(i) => i.process(&chunk),
+            None => chunk,
+        };
         let mut resampled = resampler.process(&chunk);
         dc_blocker.process(&mut resampled);
         pending.extend(resampled);
@@ -904,6 +956,28 @@ mod tests {
         assert_eq!(pauses.len(), 1);
         assert_eq!(pauses[0].start_ms, 5 * FRAME_MS);
         assert_eq!(pauses[0].end_ms, 15 * FRAME_MS);
+    }
+
+    // Voice isolation keeps whole 10 ms frames at 48 kHz and quiets steady
+    // (fan-like, low-passed) noise.
+    #[test]
+    fn isolator_suppresses_noise() {
+        let mut seed = 1u32;
+        let mut lp = 0.0f32;
+        let noise: Vec<f32> = (0..TARGET_SAMPLE_RATE * 3)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                lp = lp * 0.7 + ((seed >> 8) as f32 / (1 << 24) as f32 * 2.0 - 1.0) * 0.3;
+                lp * 0.06
+            })
+            .collect();
+        let mut iso = Isolator::new(TARGET_SAMPLE_RATE);
+        let out: Vec<f32> = noise.chunks(512).flat_map(|c| iso.process(c)).collect();
+        assert_eq!(out.len() % Isolator::FRAME, 0);
+        assert!(noise.len() * 3 - out.len() < Isolator::FRAME * 2);
+        let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
+        // The second half, past RNNoise's warm-up.
+        assert!(rms(&out[out.len() / 2..]) < rms(&noise[noise.len() / 2..]) * 0.1);
     }
 
     // A gap shorter than MIN_PAUSE_MS is a natural inter-word gap, not a pause.

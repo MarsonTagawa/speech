@@ -342,13 +342,61 @@
               <option value="midnight">Midnight</option>
               <option value="nord">Nord</option>
               <option value="rose">Rosé</option>
+              <option value="catppuccin">Catppuccin</option>
+              <option value="gruvbox">Gruvbox</option>
+              <option value="tokyo">Tokyo Night</option>
+              <option value="dracula">Dracula</option>
               <option value="light">Light</option>
+              <option value="transparent">Transparent</option>
+              <option value="custom">Custom</option>
             </select>
           </div>
+          <div id="custom-theme" class="set-row">
+            <span>Custom colors<span class="sub">Background, surfaces, text and accent; the rest is mixed from these</span></span>
+            <div class="theme-picks">
+              <input type="color" data-var="chassis" aria-label="Background color" data-tip="Background" />
+              <input type="color" data-var="card" aria-label="Surface color" data-tip="Surfaces" />
+              <input type="color" data-var="ink" aria-label="Text color" data-tip="Text" />
+              <input type="color" data-var="blue" aria-label="Accent color" data-tip="Accent" />
+              <button id="custom-reset" class="ctl" type="button" data-tip="Start over from the colorscheme you had before">Reset</button>
+            </div>
+          </div>
+          <div class="set-row">
+            <span>UI size<span class="sub">Scales text and controls across the whole app</span></span>
+            <select id="set-ui-size">
+              <option value="0.85">Small · 85%</option>
+              <option value="1">Default · 100%</option>
+              <option value="1.15">Large · 115%</option>
+              <option value="1.3">Extra large · 130%</option>
+            </select>
+          </div>
+          <label class="set-row">
+            <span>Saturation<span id="sat-value" class="sub">100% · drag left for muted colors, right for vivid</span></span>
+            <input id="set-saturation" type="range" min="0" max="200" step="10" />
+          </label>
+          <label class="set-row">
+            <span>High contrast<span class="sub">Stronger borders and brighter secondary text</span></span>
+            <input id="set-contrast" type="checkbox" role="switch" />
+          </label>
+          <label class="set-row">
+            <span>Reduced motion<span class="sub">Skip page transitions and animated counters, even if the system allows them</span></span>
+            <input id="set-motion" type="checkbox" role="switch" />
+          </label>
           <label class="set-row">
             <span>Hover effect<span class="sub">Animated glyphs that follow the cursor</span></span>
             <input id="set-hover" type="checkbox" role="switch" />
           </label>
+        </div>
+        <div class="panel">
+          <span class="label">Performance</span>
+          <div class="set-row">
+            <span>Performance mode<span class="sub">Frame rate and sharpness of the live animations. Lower saves battery</span></span>
+            <select id="set-perf">
+              <option value="quality">Quality · full frame rate</option>
+              <option value="balanced">Balanced · 30 fps</option>
+              <option value="saver">Battery saver · 20 fps, no blur</option>
+            </select>
+          </div>
         </div>
         <div class="panel">
           <span class="label">Input</span>
@@ -356,9 +404,18 @@
             <span>Microphone<span class="sub">What recordings and the mic test listen to</span></span>
             <select id="set-mic"></select>
           </div>
+          <label class="set-row">
+            <span>Voice isolation<span class="sub">Filter out background noise (fans, typing, room hum) before transcription</span></span>
+            <input id="set-isolate" type="checkbox" role="switch" />
+          </label>
           <div class="set-row">
             <span>Camera<span class="sub">What Video watches for eye contact, expression and gestures</span></span>
             <select id="set-camera"></select>
+          </div>
+          <div class="set-row cam-test">
+            <span>Camera test<span id="cam-status" class="sub">Check your framing and lighting before you record</span></span>
+            <button id="cam-test-btn" class="ctl" type="button">Test</button>
+            <canvas id="cam-test-view" class="cam-test-view" hidden aria-label="Camera preview"></canvas>
           </div>
           <label class="set-row">
             <span>Mic sensitivity<span class="sub">Raise if the level meter barely moves when you speak</span></span>

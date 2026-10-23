@@ -73,6 +73,58 @@
   --blue: #ebbcba;
   --blue-2: #f3d3d1;
 }
+/* Catppuccin Mocha: crust → base, surface0 hover, mauve accent. */
+:root[data-theme="catppuccin"] {
+  --chassis: #11111b;
+  --main: #161622;
+  --pane: #181825;
+  --dock: #1b1b2a;
+  --card: #1e1e2e;
+  --btn: #26263a;
+  --btn-hover: #313244;
+  --ink: #cdd6f4;
+  --blue: #cba6f7;
+  --blue-2: #dcc6fa;
+}
+/* Gruvbox dark (hard): bg0_h → bg0_s, bg1/bg2 buttons, yellow accent. */
+:root[data-theme="gruvbox"] {
+  --chassis: #1d2021;
+  --main: #222526;
+  --pane: #282828;
+  --dock: #2a2a2a;
+  --card: #32302f;
+  --btn: #3c3836;
+  --btn-hover: #504945;
+  --ink: #ebdbb2;
+  --blue: #fabd2f;
+  --blue-2: #fcd36b;
+}
+/* Tokyo Night: bg_dark → storm, bg_highlight hover, blue accent. */
+:root[data-theme="tokyo"] {
+  --chassis: #16161e;
+  --main: #181922;
+  --pane: #1a1b26;
+  --dock: #1c1d29;
+  --card: #1f2335;
+  --btn: #24283b;
+  --btn-hover: #292e42;
+  --ink: #c0caf5;
+  --blue: #7aa2f7;
+  --blue-2: #a3bffa;
+}
+/* Dracula: darker bg → background, current-line hover, purple accent. */
+:root[data-theme="dracula"] {
+  --chassis: #191a21;
+  --main: #1e1f29;
+  --pane: #21222c;
+  --dock: #232530;
+  --card: #282a36;
+  --btn: #2f3242;
+  --btn-hover: #44475a;
+  --ink: #f8f8f2;
+  --blue: #bd93f9;
+  --blue-2: #d6bcfa;
+}
 
 :root[data-theme="light"] {
   color-scheme: light;
@@ -96,6 +148,66 @@
   --orange: #f08300;
   --purple: #af52de;
 }
+/* Translucent surfaces over the window's vibrancy (main.ts applyTheme sets the
+   effect; the window is created transparent in tauri.conf.json). */
+:root[data-theme="transparent"] {
+  --chassis: rgba(14, 14, 17, 0.42);
+  --main: rgba(22, 22, 26, 0.32);
+  --pane: rgba(30, 30, 35, 0.4);
+  --dock: rgba(30, 30, 35, 0.45);
+  --card: rgba(38, 38, 44, 0.55);
+  --btn: rgba(255, 255, 255, 0.08);
+  --btn-hover: rgba(255, 255, 255, 0.14);
+  --edge: rgba(255, 255, 255, 0.1);
+  --edge-2: rgba(255, 255, 255, 0.14);
+}
+:root[data-theme="transparent"],
+:root[data-theme="transparent"] body {
+  background: transparent;
+}
+/* Custom: main.ts sets every surface variable inline from the four picks. */
+
+/* Settings → High contrast: after the themes, so it wins over their edges
+   (and !important over Custom's inline ones). */
+:root.high-contrast {
+  --edge: color-mix(in srgb, var(--fg) 32%, transparent) !important;
+  --edge-2: color-mix(in srgb, var(--fg) 42%, transparent) !important;
+  --ink-2: color-mix(in srgb, var(--ink) 92%, transparent);
+  --ink-3: color-mix(in srgb, var(--ink) 84%, transparent);
+}
+:root.high-contrast :is(.panel, .card, .tile, .ctl) {
+  border-width: 1px;
+}
+:root.high-contrast :focus-visible {
+  outline: 2px solid var(--blue-2) !important;
+  outline-offset: 2px;
+}
+
+/* Settings → Saturation (--sat set by main.ts). Dialogs sit in the top layer,
+   outside the root's filter, so they take it too. */
+:root.saturated,
+:root.saturated dialog[open] {
+  filter: saturate(var(--sat));
+}
+
+/* Settings → Reduced motion: as if the system asked for it. JS-driven
+   entrances check it in reducedMotion(). */
+:root.reduce-motion *,
+:root.reduce-motion *::before,
+:root.reduce-motion *::after {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+  scroll-behavior: auto !important;
+}
+
+/* Settings → Performance → Battery saver: blur is the costliest effect to composite. */
+:root.perf-saver * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 /* The report hero stays black in every theme, so it keeps dark-theme ink. */
 :root[data-theme="light"] .rep-hero {
   --fg: #fff;
@@ -2168,6 +2280,46 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
   display: block;
   margin-top: 2px;
 }
+/* Divider between consecutive shown rows of a settings panel. */
+.view-settings .set-row:not([hidden]) ~ .set-row:not([hidden]) {
+  border-top: 0.5px solid var(--edge);
+  padding-top: 10px;
+}
+:root:not([data-theme="custom"]) #custom-theme {
+  display: none;
+}
+.theme-picks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.theme-picks input[type="color"] {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 0.5px solid var(--edge-2);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+.theme-picks input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+.theme-picks input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+.set-row.cam-test {
+  flex-wrap: wrap;
+}
+.cam-test-view {
+  flex-basis: 100%;
+  max-width: 420px;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  background: #000;
+  object-fit: cover;
+}
 #model-list {
   display: contents; /* rows join the panel's flex column and its gap */
 }
@@ -2640,8 +2792,8 @@ body.snapping .shot-btn { visibility: hidden; }
   :is(.enter .rep-title, .enter .rep-tip, .enter .tiles ~ .panel, .enter .rep-transcript, .enter .hist-col > span:first-child,
     #speeches.enter .prof-head > .sub) { opacity: var(--t); }
   :is(.enter tr[data-open], #report.enter .rep-hero, .enter .rep-delta, .enter .pace-panel, .enter .tile, .enter .rep-bottom > .panel,
-    #speeches.enter > .prof-head, #speeches.enter > .panel:nth-child(4), #speeches.enter > .panel:nth-child(5) tr) { opacity: var(--t); translate: 0 calc((1 - var(--t)) * var(--y)); }
-  :is(#history.enter > .panel:first-child:has([data-back]), .enter .overview li, .enter .moment, #speeches.enter .speech-name) { opacity: var(--t); translate: calc((1 - var(--t)) * var(--x)) 0; }
+    #speeches.enter > .prof-head, #speeches.enter > .panel:nth-child(4), #speeches.enter > .panel:nth-child(5) tr) { opacity: var(--t); translate: 0 round(calc((1 - var(--t)) * var(--y)), 1px); }
+  :is(#history.enter > .panel:first-child:has([data-back]), .enter .overview li, .enter .moment, #speeches.enter .speech-name) { opacity: var(--t); translate: round(calc((1 - var(--t)) * var(--x)), 1px) 0; }
   #history.enter .rep-hero { opacity: var(--t); scale: calc(0.97 + 0.03 * var(--t)); }
   :is(.enter .rep-hero .ring-grade, .enter .pace-plot .dot, .enter .coach-avatar, #speeches.enter .speech-dot, #speeches.enter .pt) { scale: var(--t); }
   :is(.enter .pace-plot .tick, .enter .rep-vr, .enter .hist-col .bar, .enter .moment .bar) { scale: 1 var(--t); }
@@ -2698,7 +2850,7 @@ body.snapping .shot-btn { visibility: hidden; }
   .enter .moment .bar { animation: histIn 400ms var(--e) backwards; animation-delay: calc(1450ms + min(var(--i), 6) * 90ms); transform-origin: top; }
 
   /* Speeches: list slides away, the speech page builds top-down. */
-  #speeches.leave > .panel { scale: none; translate: calc((1 - var(--t)) * -12px) 0; transition-duration: 320ms; }
+  #speeches.leave > .panel { scale: none; translate: round(calc((1 - var(--t)) * -12px), 1px) 0; transition-duration: 320ms; }
   #speeches.leave tr[data-open]:not(.hit) { --t: 0; transition-delay: calc(min(var(--i), 12) * 30ms); }
   #speeches.enter > .prof-head { animation: histIn 450ms var(--e) backwards; --y: -6px; }
   #speeches.enter .speech-name { animation: histIn 450ms var(--e) 150ms backwards; --x: -8px; }
@@ -2730,8 +2882,8 @@ body.snapping .shot-btn { visibility: hidden; }
   :is(.view-live.enter > .scope, .view-live.enter > .tpane) { opacity: var(--t); }
   :is(.view-live.enter > .strip, .view-live.enter .dock > .card, .view-settings.enter > .set-search, .view-settings.enter > .panel,
     #drills.enter:not(.swap) > .drills-tabs, #drills.enter > .panel, #drills.enter tr[data-drill], #drills.enter .gest-card,
-    .view-profile.enter > .prof-head, .view-profile.enter #prof-body > .panel, .view-profile.enter .prof-table tr[style]) { opacity: var(--t); translate: 0 calc((1 - var(--t)) * var(--y)); }
-  #drills.enter .gest-info { opacity: var(--t); translate: calc((1 - var(--t)) * var(--x)) 0; }
+    .view-profile.enter > .prof-head, .view-profile.enter #prof-body > .panel, .view-profile.enter .prof-table tr[style]) { opacity: var(--t); translate: 0 round(calc((1 - var(--t)) * var(--y)), 1px); }
+  #drills.enter .gest-info { opacity: var(--t); translate: round(calc((1 - var(--t)) * var(--x)), 1px) 0; }
   #drills.enter .gest-box { opacity: var(--t); scale: calc(0.94 + 0.06 * var(--t)); }
   .view-profile.enter .pt { scale: var(--t); }
   #drills.enter .gest-progress i { scale: var(--t) 1; }
@@ -2794,12 +2946,15 @@ body.snapping .shot-btn { visibility: hidden; }
 
   /* History and Speeches lists (on tab switch and Back): the panel rises, the
      filters fade in, the rows stagger (tr[data-open] above), each sparkline draws. */
-  :is(#history.enter > .panel:only-child, #speeches.enter > .panel:only-child) { opacity: var(--t); translate: 0 calc((1 - var(--t)) * var(--y)); }
+  :is(#history.enter > .panel:only-child, #speeches.enter > .panel:only-child) { opacity: var(--t); translate: 0 round(calc((1 - var(--t)) * var(--y)), 1px); }
   :is(#history.enter > .panel:only-child .speech-filters, #speeches.enter > .panel:only-child .speech-filters) { opacity: var(--t); }
   :is(#history.enter > .panel:only-child, #speeches.enter > .panel:only-child) { animation: histIn 400ms var(--e) backwards; --y: 10px; }
   :is(#history.enter > .panel:only-child .speech-filters, #speeches.enter > .panel:only-child .speech-filters) { animation: histIn 350ms ease 100ms backwards; }
   #speeches.enter .speech-spark { animation: histWipe 600ms cubic-bezier(.45, 0, .25, 1) backwards; animation-delay: calc(200ms + min(var(--i), 12) * 45ms); }
 }
+/* Every entrance/exit slide (translate) is rounded to whole pixels: at a fractional offset the 0.5px
+   hairlines (panel edges, settings dividers) smear across two device pixels
+   and look thick until the element settles. */
 @keyframes histIn { from { --t: 0; } }
 @keyframes histRing { from { --rp: 0; } }
 @keyframes histWipe { from { clip-path: inset(-4px 100% -4px 0); } to { clip-path: inset(-4px 0 -4px 0); } }
