@@ -76,6 +76,11 @@ The installer lands in `src-tauri/target/release/bundle/`: a `.dmg` on macOS,
 an `.msi` or setup `.exe` on Windows, and an AppImage, `.deb` and `.rpm` on
 Linux.
 
+A Linux build links against the host's libraries, and one made on NixOS only
+runs on NixOS. For packages that run on other distros, build inside Ubuntu
+24.04 with Docker: `scripts/build-linux.sh` (output in
+`src-tauri/target/docker/release/bundle/`).
+
 ## Models (required, not in git)
 
 The whisper + VAD weights are large binaries, so they're gitignored. Fetch them
@@ -90,13 +95,15 @@ curl -L -O https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium
 ```
 
 tiny.en and the VAD are required. Models downloaded from Settings go to the app
-data dir (`<app data>/models/`). All whisper models run on the GPU (Vulkan); the
+data dir (`<app data>/models/`). All whisper models run on the GPU (Metal on
+macOS, Vulkan elsewhere); the
 live model is warmed up at launch, the correction model is loaded per pass and
 freed when it's done.
 
 The camera's presence grading (optional) runs MediaPipe's face, pose and hand
 models in Rust as ONNX. Convert them once (downloads ~250 MB of TensorFlow into
-`src-tauri/target/vision-convert/` the first time):
+`src-tauri/target/vision-convert/` the first time). The script needs Nix, which
+it uses to run `uv`:
 
 ```sh
 scripts/convert-vision-models.sh            # models → src-tauri/resources/vision/
@@ -113,7 +120,8 @@ bun install
 bun run tauri dev
 ```
 
-A Nix flake (`flake.nix`) provides the toolchain; `nix develop` for a shell.
+A Nix flake (`flake.nix`) provides the native build tools and libraries, but
+not Rust or Bun; `nix develop` for a shell.
 
 ## Build
 
