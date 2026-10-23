@@ -333,6 +333,10 @@ body[data-view="settings"] #settings-btn {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Click toggles the ribbon; drag resizes the scope above (main.ts). */
+#ribbon-btn {
+  touch-action: none;
+}
 #ribbon-btn:not(:hover) {
   background: transparent;
   border-color: transparent;
@@ -2950,22 +2954,6 @@ body.no-ribbon.script-open.camera-on .cam-grip {
   background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.6) 50%);
 }
 
-/* Bottom-edge grip for resizing the scope. */
-.scope-resize {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 6px;
-  z-index: 3;
-  cursor: ns-resize;
-  touch-action: none;
-}
-.scope-resize:hover,
-.scope-resize:active {
-  background: color-mix(in srgb, var(--fg) 25%, transparent);
-}
-
 /* Analytics shrink with the room under the scope (fitDock): full cards, then
    one row of bare numbers, then gone. */
 body.dock-small .dock {
@@ -3006,9 +2994,6 @@ body.presenting .dock {
 body.presenting .scope,
 body.tpane-none .scope {
   flex: 1 1 0;
-}
-body.presenting .scope-resize {
-  display: none;
 }
 
 /* Record screen: badge by the clock while the toggle is on. */

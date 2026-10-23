@@ -5423,33 +5423,52 @@ window.addEventListener("DOMContentLoaded", () => {
     const r = (e.target as HTMLElement).getBoundingClientRect();
     moveDeck(e.clientX - r.left < r.width / 2 ? -1 : 1);
   });
-  // Drag the scope's bottom edge to resize it; the height sticks (inline, so it
-  // beats the stylesheet's per-layout heights) until a double-click resets it.
-  const grip = $("scope-resize");
+  // Drag the toolbar's ^ to resize the scope (a click still toggles the
+  // ribbon); the height sticks (inline, so it beats the stylesheet's per-layout
+  // heights) until a right-click resets it. Dragging it up past the minimum
+  // hides the ribbon, and dragging down from hidden brings it back.
+  const grip = $("ribbon-btn");
   const liveView = document.querySelector<HTMLElement>(".view-live");
   const strip = document.querySelector<HTMLElement>(".strip");
   const TPANE_MIN = 120; // .tpane's min-height
+  const SCOPE_MIN = 100;
   const setScopeH = (px: number | null) => {
     if (!scope) return;
-    scope.style.height = px === null ? "" : `${Math.round(Math.max(100, Math.min((liveView?.clientHeight ?? innerHeight) - (strip?.offsetHeight ?? 0), px)))}px`;
+    scope.style.height = px === null ? "" : `${Math.round(Math.max(SCOPE_MIN, Math.min((liveView?.clientHeight ?? innerHeight) - (strip?.offsetHeight ?? 0), px)))}px`;
     save(SCOPE_H_KEY, scope.style.height);
     fitDock(); // with no transcript the scope fills regardless, so no resize fires to do this
   };
   if (scope) scope.style.height = load(SCOPE_H_KEY) ?? "";
+  let dragged = false; // swallows the click that ends a drag
   grip?.addEventListener("pointerdown", (e) => {
-    if (!scope) return;
-    e.preventDefault();
+    if (!scope || e.button !== 0) return;
     grip.setPointerCapture(e.pointerId);
+    dragged = false;
     // With no transcript, start from the height that brings it back, so the
     // first pixel up shows it instead of dragging through dead space.
-    const hidden = document.body.classList.contains("tpane-none") && liveView && strip;
-    const h0 = hidden ? liveView.clientHeight - strip.offsetHeight - TPANE_MIN + 1 : scope.offsetHeight;
+    const body = document.body.classList;
+    const hidden = body.contains("tpane-none") && liveView && strip;
+    const h0 = body.contains("no-ribbon") ? 0 : hidden ? liveView.clientHeight - strip.offsetHeight - TPANE_MIN + 1 : scope.offsetHeight;
     const y0 = e.clientY;
-    const move = (m: PointerEvent) => setScopeH(h0 + m.clientY - y0);
+    const move = (m: PointerEvent) => {
+      if (!dragged && Math.abs(m.clientY - y0) < 4) return;
+      dragged = true;
+      const h = h0 + m.clientY - y0;
+      const off = h < SCOPE_MIN / 2;
+      if (off !== body.contains("no-ribbon")) setRibbon(!off);
+      if (!off) setScopeH(h);
+    };
     grip.addEventListener("pointermove", move);
     grip.addEventListener("lostpointercapture", () => grip.removeEventListener("pointermove", move), { once: true });
   });
-  grip?.addEventListener("dblclick", () => setScopeH(null));
+  grip?.addEventListener("click", (e) => {
+    if (dragged) e.stopImmediatePropagation();
+    dragged = false;
+  });
+  grip?.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    setScopeH(null);
+  });
   // The less room under the scope, the less below it: full analytics, then one
   // row of numbers, then none, then no transcript either (the scope then fills
   // down to the toolbar). Measured with the classes off, so the scope is at the
@@ -5853,7 +5872,7 @@ window.addEventListener("DOMContentLoaded", () => {
     document.body.classList.toggle("no-ribbon", !on);
     const btn = $("ribbon-btn");
     btn?.setAttribute("aria-label", on ? "Hide ribbon" : "Show ribbon");
-    if (btn) btn.dataset.tip = on ? "Hide the ribbon" : "Show the ribbon";
+    if (btn) btn.dataset.tip = `${on ? "Hide" : "Show"} the ribbon · drag to resize · right-click to reset`;
     save(RIBBON_KEY, on ? "1" : "0");
   };
   setRibbon(load(RIBBON_KEY) !== "0");
