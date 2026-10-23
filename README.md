@@ -62,19 +62,19 @@ There's no prebuilt package for macOS or Windows yet, so build it yourself
   (headers, loader and `glslc`) for whisper.cpp's GPU backend; macOS uses
   Metal and needs nothing extra
 
-On Linux, `nix develop` provides everything except Rust and Bun.
+On Linux, `nix develop` provides everything except Rust and Bun. Then one
+command fetches the models, builds the app and installs it:
 
 ```sh
-git clone https://github.com/MarsonTagawa/speech
-cd speech
-bun install
-# fetch the models into src-tauri/resources/ — see Models below
-bun run tauri build
+git clone https://github.com/MarsonTagawa/speech && cd speech && scripts/install.sh
 ```
 
-The installer lands in `src-tauri/target/release/bundle/`: a `.dmg` on macOS,
-an `.msi` or setup `.exe` on Windows, and an AppImage, `.deb` and `.rpm` on
-Linux.
+On macOS that puts `Speech.app` in `/Applications`. On Linux and Windows it
+prints where the AppImage or setup `.exe` landed. Pass `--no-medium` to skip
+the 539 MB correction model (you can download it from Settings later). Re-run
+it to rebuild; models you already have aren't fetched again. For every bundle
+format (`.dmg`, `.msi`, `.deb`, `.rpm`, …), run `bun run tauri build`; they land
+in `src-tauri/target/release/bundle/`.
 
 A Linux build links against the host's libraries, and one made on NixOS only
 runs on NixOS. For packages that run on other distros, build inside Ubuntu
@@ -84,7 +84,9 @@ runs on NixOS. For packages that run on other distros, build inside Ubuntu
 ## Models (required, not in git)
 
 The whisper + VAD weights are large binaries, so they're gitignored. Fetch them
-into `src-tauri/resources/` before building (anything in there is bundled):
+into `src-tauri/resources/` before building (anything in there is bundled).
+`scripts/install.sh --models-only` fetches all of them, including the camera
+models below if you have Nix. To fetch them by hand:
 
 ```sh
 cd src-tauri/resources
@@ -116,6 +118,7 @@ works audio-only.
 ## Develop
 
 ```sh
+scripts/install.sh --models-only
 bun install
 bun run tauri dev
 ```
