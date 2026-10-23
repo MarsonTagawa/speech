@@ -28,6 +28,54 @@ VAD for voice detection.
 - **Model choice** — pick the live and correction models in Settings (tiny.en
   up to large-v3-turbo); non-bundled ones download on demand from Hugging Face.
 
+## Install
+
+### Linux
+
+Download the AppImage from the [latest release](https://github.com/MarsonTagawa/speech/releases/latest)
+and run it:
+
+```sh
+chmod +x Speech_*_amd64.AppImage
+./Speech_*_amd64.AppImage
+```
+
+On NixOS: `nix run nixpkgs#appimage-run -- Speech_*_amd64.AppImage`. If it
+won't start with a FUSE error, install `libfuse2` (`libfuse2t64` on Ubuntu
+24.04) or run it with `--appimage-extract-and-run`.
+
+Needs x86_64 with glibc 2.38 or newer (Ubuntu 24.04+, Fedora 39+, Debian 13+).
+The speech models are bundled. A Vulkan GPU driver makes transcription fast;
+without one it falls back to the CPU, which is slower.
+
+### macOS, Windows, or from source
+
+There's no prebuilt package for macOS or Windows yet, so build it yourself
+(macOS needs 13.4 or newer). You'll need:
+
+- [Rust](https://rustup.rs) and [Bun](https://bun.sh)
+- Tauri's [platform prerequisites](https://v2.tauri.app/start/prerequisites/)
+  (Xcode Command Line Tools on macOS; MSVC build tools and WebView2 on Windows;
+  WebKitGTK and friends on Linux)
+- CMake and Clang, which build whisper.cpp
+- On Linux and Windows, the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)
+  (headers, loader and `glslc`) for whisper.cpp's GPU backend; macOS uses
+  Metal and needs nothing extra
+
+On Linux, `nix develop` provides everything except Rust and Bun.
+
+```sh
+git clone https://github.com/MarsonTagawa/speech
+cd speech
+bun install
+# fetch the models into src-tauri/resources/ — see Models below
+bun run tauri build
+```
+
+The installer lands in `src-tauri/target/release/bundle/`: a `.dmg` on macOS,
+an `.msi` or setup `.exe` on Windows, and an AppImage, `.deb` and `.rpm` on
+Linux.
+
 ## Models (required, not in git)
 
 The whisper + VAD weights are large binaries, so they're gitignored. Fetch them
