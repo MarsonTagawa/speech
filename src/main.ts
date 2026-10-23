@@ -3794,14 +3794,17 @@ const TAB_VIEWS: Array<[string, string]> = [
 ];
 
 function showView(view: "live" | "report" | "profile" | "speeches" | "drills" | "history" | "settings") {
+  const changed = document.body.dataset.view !== view; // Start re-shows Live; that mustn't replay its entrance
   document.body.dataset.view = view;
   if (view !== "settings") void stopMicTest(false);
   if (view === "settings") void refreshDevices();
-  if (view === "profile") renderProfile();
+  if (view === "profile") renderProfile(changed);
   if (view === "report") playReportEntrance();
-  if (view === "speeches") renderSpeeches();
-  if (view === "history") renderHistory();
-  if (view === "drills") renderDrills();
+  if (view === "speeches") renderSpeeches(changed);
+  if (view === "history") renderHistory(changed);
+  if (view === "drills") renderDrills(changed && "open");
+  if (changed && view === "live") playEnter(document.querySelector(".view-live"), 900);
+  if (changed && view === "settings") playEnter(document.querySelector(".view-settings"), 1000);
 }
 
 // --- Drills --------------------------------------------------------------------
@@ -3940,16 +3943,20 @@ function memoriseHtml(): string {
 const drillIconHtml = (d: Drill) => `<svg class="drill-icon" viewBox="0 0 24 24" aria-hidden="true">${d.icon}</svg>`;
 const drillKindHtml = (d: Drill) => `<span class="drill-kind${d.video ? " video" : ""}">${d.video ? "Video" : "Speaking"}</span>`;
 
-function renderDrills() {
+// `anim`: "open" plays the page entrance (styles.css .enter), "pane" the same
+// minus the tabs; plain re-renders (a saved session, the memorise pickers) don't.
+function renderDrills(anim: "open" | "pane" | false = false) {
   const el = $("drills");
   if (!el) return;
-  const rows = DRILLS.filter((d) => d.id !== MEMORISE).map((d) => {
+  el.classList.remove("enter");
+  el.classList.toggle("swap", anim === "pane");
+  const rows = DRILLS.filter((d) => d.id !== MEMORISE).map((d, i) => {
     const tries = history.filter((h) => h.drill === d.id);
     const passes = tries.filter((h) => drillResult(h)?.pass).length;
     const last = tries[tries.length - 1];
     const r = last && drillResult(last);
     return (
-      `<tr data-drill="${d.id}" data-tip="Set it up on the Live tab"><td>${drillIconHtml(d)}${escapeHtml(d.name)}${drillKindHtml(d)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
+      `<tr data-drill="${d.id}" style="--i:${i}" data-tip="Set it up on the Live tab"><td>${drillIconHtml(d)}${escapeHtml(d.name)}${drillKindHtml(d)}<div class="sub">${escapeHtml(d.goal)} · ${d.secs} s</div></td>` +
       `<td>${tries.length ? `${passes}/${tries.length}` : "—"}</td>` +
       `<td>${r ? `<span class="${r.pass ? "up" : "down"}">${r.pass ? "✓" : "✗"}</span> ${escapeHtml(r.value)}<div class="sub">${fmtDate(last.ts)}</div>` : "—"}</td></tr>`
     );
@@ -3960,6 +3967,7 @@ function renderDrills() {
   el.innerHTML = `<div class="seg drills-tabs" role="radiogroup" aria-label="Drills or gestures">${tabs}</div>`;
   gestureLoop?.destroy();
   gestureLoop = null;
+  if (anim) playEnter(el, 1300);
   if (drillsPane === "gestures") return renderGestures(el);
   el.innerHTML +=
     `<div class="panel"><div class="panel-head"><span class="label">Drills</span></div>` +
@@ -4070,8 +4078,8 @@ function renderGestures(el: HTMLElement) {
     `<span class="sub">The figure is a mirror: copy it as you would your reflection. Pick one to practise; any you do on camera get ticked off.</span>` +
     `<div class="gest-grid">` +
     GESTURES.map(
-      (x) =>
-        `<button type="button" class="gest-card" data-gesture="${x.id}" aria-current="${x.id === gesturePick}">` +
+      (x, i) =>
+        `<button type="button" class="gest-card" style="--i:${i}" data-gesture="${x.id}" aria-current="${x.id === gesturePick}">` +
         `<canvas aria-hidden="true"></canvas><span class="name">${escapeHtml(x.name)}${x.caution ? ` <span class="down" data-tip="Use sparingly">!</span>` : ""}</span>` +
         `<span class="sub">${escapeHtml(x.how)}</span>` +
         (gestureUses(x.id) ? `<span class="sub">Used ${gestureUses(x.id)}× in sessions</span>` : "") +
@@ -4885,9 +4893,14 @@ function practisedCell(h: SessionSummary): string {
   return h.script ? `Script${acc}` : `<span class="sub">Free</span>`;
 }
 
-function renderProfile() {
+// `anim`: play the page entrance (styles.css .enter); plain re-renders
+// (range, metric, speech filters) don't.
+function renderProfile(anim = false) {
   const body = $("prof-body");
   if (!body) return;
+  const view = body.closest<HTMLElement>(".view-profile");
+  view?.classList.remove("enter");
+  if (anim && view) playEnter(view, 2000);
   const n = history.length;
   setText("prof-since", n ? `Practising since ${fmtDate(history[0].ts)} · ${n} session${n === 1 ? "" : "s"}` : "");
   if (!n) {
@@ -4919,8 +4932,8 @@ function renderProfile() {
     .slice(-10)
     .reverse()
     .map(
-      (h) =>
-        `<tr><td>${fmtDate(h.ts)}</td><td>${practisedCell(h)}</td><td>${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))}</td><td>${formatTimestamp(h.durationMs)}</td>` +
+      (h, i) =>
+        `<tr style="--i:${i}"><td>${fmtDate(h.ts)}</td><td>${practisedCell(h)}</td><td>${escapeHtml(PRESETS[h.preset]?.name ?? String(h.preset))}</td><td>${formatTimestamp(h.durationMs)}</td>` +
         `<td>${Math.round(h.wpm)}</td><td>${h.fillersPerMin.toFixed(1)}</td><td>${h.scores.overall} ${grade(h.scores.overall)}</td></tr>`,
     )
     .join("");
@@ -4966,6 +4979,19 @@ async function openHistorySession(ts: number, row?: HTMLElement) {
 }
 
 const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Entrance for Live, Drills, Profile and Settings (styles.css .enter): restart
+// the animations, then drop the class once they're done (`ms`), so a card or
+// panel un-hidden later doesn't replay its part.
+const enterTimers = new WeakMap<Element, number>();
+function playEnter(el: Element | null, ms: number) {
+  if (!el || reducedMotion()) return;
+  el.classList.remove("enter");
+  void (el as HTMLElement).offsetWidth; // restyle, so re-adding restarts them
+  el.classList.add("enter");
+  clearTimeout(enterTimers.get(el));
+  enterTimers.set(el, window.setTimeout(() => el.classList.remove("enter"), ms));
+}
 
 // Count each element's number up from 0 (ease-out cubic), keeping its sign,
 // unit and decimals, as [selector, delay ms, duration ms] triples.
@@ -6051,7 +6077,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (pane === "drills" || pane === "gestures") {
       drillsPane = pane;
       save(DRILLS_PANE_KEY, pane);
-      return renderDrills();
+      return renderDrills("pane");
     }
     if (t.closest("[data-cam-on]")) return void setCamera(true);
     const g = t.closest<HTMLElement>("[data-gesture]")?.dataset.gesture as GestureId | undefined;
@@ -6140,6 +6166,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (t.id === "speech-q") {
       speechQuery = t.value;
       const table = $("speech-table");
+      $("speeches")?.classList.remove("enter"); // filtered rows mustn't replay the entrance
       if (table) table.innerHTML = speechRowsHtml();
     }
   });

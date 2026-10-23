@@ -2721,6 +2721,84 @@ body.snapping .shot-btn { visibility: hidden; }
   #speeches.enter > .panel:nth-child(5) tr { animation: histIn 400ms var(--e) backwards; animation-delay: calc(860ms + min(var(--i, 0), 12) * 45ms); --y: 6px; }
   #speeches.enter > .panel:nth-child(6) { animation: histIn 400ms ease 1000ms backwards; }
   #speeches.enter .skipped { animation: histUnshade 500ms ease 1200ms backwards; }
+
+  /* Live, Drills, Profile, Settings (playEnter / renderDrills / renderProfile):
+     a quick top-down build each time the page is switched to. Same --t
+     technique; their own selectors, since the History ones above would match
+     tiles and plots here with History's delays. The scope only fades: a
+     transform there would re-anchor the floating camera mid-animation. */
+  :is(.view-live.enter > .scope, .view-live.enter > .tpane) { opacity: var(--t); }
+  :is(.view-live.enter > .strip, .view-live.enter .dock > .card, .view-settings.enter > .set-search, .view-settings.enter > .panel,
+    #drills.enter:not(.swap) > .drills-tabs, #drills.enter > .panel, #drills.enter tr[data-drill], #drills.enter .gest-card,
+    .view-profile.enter > .prof-head, .view-profile.enter #prof-body > .panel, .view-profile.enter .prof-table tr[style]) { opacity: var(--t); translate: 0 calc((1 - var(--t)) * var(--y)); }
+  #drills.enter .gest-info { opacity: var(--t); translate: calc((1 - var(--t)) * var(--x)) 0; }
+  #drills.enter .gest-box { opacity: var(--t); scale: calc(0.94 + 0.06 * var(--t)); }
+  .view-profile.enter .pt { scale: var(--t); }
+  #drills.enter .gest-progress i { scale: var(--t) 1; }
+
+  .view-live.enter, .view-settings.enter, #drills.enter, .view-profile.enter { --e: cubic-bezier(.2, .8, .2, 1); --pop: cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+  /* Live: ribbon fades up, toolbar drops in, transcript, then the dock cards rise left to right. */
+  .view-live.enter > .scope { animation: histIn 420ms ease backwards; }
+  .view-live.enter > .strip { animation: histIn 380ms var(--e) 60ms backwards; --y: -6px; }
+  .view-live.enter > .tpane { animation: histIn 400ms ease 120ms backwards; }
+  .view-live.enter .dock > .card { animation: histIn 450ms var(--e) 160ms backwards; --y: 10px; }
+  .view-live.enter .dock > .card:nth-child(2) { animation-delay: 200ms; }
+  .view-live.enter .dock > .card:nth-child(3) { animation-delay: 240ms; }
+  .view-live.enter .dock > .card:nth-child(4) { animation-delay: 280ms; }
+  .view-live.enter .dock > .card:nth-child(5) { animation-delay: 320ms; }
+  .view-live.enter .dock > .card:nth-child(6) { animation-delay: 360ms; }
+  .view-live.enter .dock > .card:nth-child(n + 7) { animation-delay: 400ms; }
+
+  /* Settings: search, then the panels in a cascade. */
+  .view-settings.enter > .set-search { animation: histIn 380ms var(--e) backwards; --y: -6px; }
+  .view-settings.enter > .panel { animation: histIn 450ms var(--e) 60ms backwards; --y: 10px; }
+  .view-settings.enter > .panel:nth-child(4) { animation-delay: 110ms; }
+  .view-settings.enter > .panel:nth-child(5) { animation-delay: 160ms; }
+  .view-settings.enter > .panel:nth-child(6) { animation-delay: 210ms; }
+  .view-settings.enter > .panel:nth-child(7) { animation-delay: 260ms; }
+  .view-settings.enter > .panel:nth-child(8) { animation-delay: 310ms; }
+  .view-settings.enter > .panel:nth-child(n + 9) { animation-delay: 360ms; }
+
+  /* Drills: tabs (not on a pane switch), then the table rows / memorise panel,
+     or the gesture stage and a wave through the cards. */
+  #drills.enter:not(.swap) > .drills-tabs { animation: histIn 350ms var(--e) backwards; --y: -6px; }
+  #drills.enter > .panel { animation: histIn 450ms var(--e) 60ms backwards; --y: 10px; }
+  #drills.enter > .panel + .panel { animation-delay: 380ms; }
+  #drills.enter tr[data-drill] { animation: histIn 400ms var(--e) backwards; animation-delay: calc(140ms + min(var(--i), 10) * 40ms); --y: 6px; }
+  #drills.enter .gest-box { animation: histIn 500ms var(--pop) 120ms backwards; }
+  #drills.enter .gest-box + .gest-box { animation-delay: 190ms; }
+  #drills.enter .gest-info { animation: histIn 450ms var(--e) 240ms backwards; --x: -8px; }
+  #drills.enter .gest-progress i { animation: histIn 700ms var(--e) 420ms backwards; transform-origin: left; }
+  #drills.enter .gest-card { animation: histIn 420ms var(--e) backwards; animation-delay: calc(300ms + min(var(--i), 16) * 30ms); --y: 10px; }
+
+  /* Profile: header, stat tiles, then each panel; the activity grid and trend line wipe in. */
+  .view-profile.enter > .prof-head { animation: histIn 420ms var(--e) backwards; --y: -6px; }
+  .view-profile.enter .tile { animation: histIn 500ms var(--e) backwards; --y: 12px; }
+  .view-profile.enter .tiles > .tile:nth-child(1) { animation-delay: 100ms; }
+  .view-profile.enter .tiles > .tile:nth-child(2) { animation-delay: 150ms; }
+  .view-profile.enter .tiles > .tile:nth-child(3) { animation-delay: 200ms; }
+  .view-profile.enter .tiles > .tile:nth-child(4) { animation-delay: 250ms; }
+  .view-profile.enter .tiles > .tile:nth-child(5) { animation-delay: 300ms; }
+  .view-profile.enter #prof-body > .panel { animation: histIn 450ms var(--e) 300ms backwards; --y: 10px; }
+  .view-profile.enter #prof-body > .panel:nth-child(3) { animation-delay: 380ms; }
+  .view-profile.enter #prof-body > .panel:nth-child(4) { animation-delay: 460ms; }
+  .view-profile.enter #prof-body > .panel:nth-child(5) { animation-delay: 540ms; }
+  .view-profile.enter .prof-tiles > .tile:nth-child(1) { animation-delay: 360ms; }
+  .view-profile.enter .prof-tiles > .tile:nth-child(2) { animation-delay: 410ms; }
+  .view-profile.enter .prof-tiles > .tile:nth-child(n + 3) { animation-delay: 460ms; }
+  .view-profile.enter .act-grid { animation: histWipe 800ms cubic-bezier(.45, 0, .25, 1) 480ms backwards; }
+  .view-profile.enter .pace-plot svg { animation: histWipe 900ms cubic-bezier(.45, 0, .25, 1) 580ms backwards; }
+  .view-profile.enter .pt { animation: histIn 400ms var(--pop) backwards; animation-delay: calc(580ms + var(--x) * 900ms); }
+  .view-profile.enter .prof-table tr[style] { animation: histIn 380ms var(--e) backwards; animation-delay: calc(640ms + min(var(--i), 10) * 35ms); --y: 6px; }
+
+  /* History and Speeches lists (on tab switch and Back): the panel rises, the
+     filters fade in, the rows stagger (tr[data-open] above), each sparkline draws. */
+  :is(#history.enter > .panel:only-child, #speeches.enter > .panel:only-child) { opacity: var(--t); translate: 0 calc((1 - var(--t)) * var(--y)); }
+  :is(#history.enter > .panel:only-child .speech-filters, #speeches.enter > .panel:only-child .speech-filters) { opacity: var(--t); }
+  :is(#history.enter > .panel:only-child, #speeches.enter > .panel:only-child) { animation: histIn 400ms var(--e) backwards; --y: 10px; }
+  :is(#history.enter > .panel:only-child .speech-filters, #speeches.enter > .panel:only-child .speech-filters) { animation: histIn 350ms ease 100ms backwards; }
+  #speeches.enter .speech-spark { animation: histWipe 600ms cubic-bezier(.45, 0, .25, 1) backwards; animation-delay: calc(200ms + min(var(--i), 12) * 45ms); }
 }
 @keyframes histIn { from { --t: 0; } }
 @keyframes histRing { from { --rp: 0; } }
