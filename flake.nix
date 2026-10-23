@@ -16,6 +16,14 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
+        # tauri's AppImage bundler reads `pkg-config --libs-only-L ayatana-appindicator3-0.1`
+        # as a single dir; the real .pc also emits every dependency's -L. Shadow it with one -L.
+        trayPc = pkgs.writeTextDir "lib/pkgconfig/ayatana-appindicator3-0.1.pc" ''
+          Name: ayatana-appindicator3-0.1
+          Description: libayatana-appindicator path for tauri's AppImage bundler
+          Version: ${pkgs.libayatana-appindicator.version}
+          Libs: -L${pkgs.libayatana-appindicator}/lib -layatana-appindicator3
+        '';
       in
       {
         devShells.default = pkgs.mkShell {
@@ -47,6 +55,7 @@
             gdk-pixbuf
             librsvg
             dbus
+            libayatana-appindicator # tray icon (dlopen'd at runtime; AppImage bundler looks it up via pkg-config)
 
             # Screen replay (screen/stream.rs): PipeWire screencast via xdg-desktop-portal
             pipewire
@@ -58,7 +67,8 @@
           # The RADV driver ICD itself is picked up from the host's
           # /run/opengl-driver, which nixpkgs' loader searches by default.
           shellHook = ''
-            export LD_LIBRARY_PATH="${pkgs.vulkan-loader}/lib:$LD_LIBRARY_PATH"
+            export PKG_CONFIG_PATH="${trayPc}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            export LD_LIBRARY_PATH="${pkgs.vulkan-loader}/lib:${pkgs.libayatana-appindicator}/lib:$LD_LIBRARY_PATH"
             # GTK's file chooser (<input type="file">) aborts without its GSettings schemas.
             export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:$XDG_DATA_DIRS"
           '';
