@@ -675,16 +675,15 @@ body.correcting .view-live .scope {
   width: 0;
   height: 0;
 }
-/* The prompt floats over the ribbon, centred between the scope's corner
-   readouts; a halo in the scope's own colour keeps it legible over the wave.
-   Clicks fall through, so the scope still drags the window. A big timer
-   countdown takes the middle, so the prompt moves up out of its way; over
+/* The prompt floats at the top of the scope, above the ribbon, centred
+   between the corner readouts; a halo in the scope's own colour keeps it
+   legible. Clicks fall through, so the scope still drags the window. Over
    the camera it sits low, like a caption, off your face. */
 .practice-prompt {
   position: absolute;
-  top: 50%;
+  top: 14px;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translateX(-50%);
   z-index: 1;
   width: max-content;
   max-width: min(60%, 640px);
@@ -699,23 +698,9 @@ body.correcting .view-live .scope {
 :root[data-theme="light"] .practice-prompt {
   text-shadow: 0 0 8px #fff, 0 0 3px #fff;
 }
-body.timer-countdown.has-timer .practice-prompt {
-  top: 14px;
-  transform: translateX(-50%);
-}
 body.camera-on .practice-prompt {
   top: auto;
   bottom: 14px;
-  transform: translateX(-50%);
-}
-.practice-prompt::before {
-  content: "PROMPT";
-  display: block;
-  margin-bottom: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  color: var(--blue-2);
 }
 
 .placeholder {

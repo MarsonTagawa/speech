@@ -2,6 +2,8 @@
 // (a bundled DCLogic/React component) and stripped of that framework so it runs
 // as a plain canvas driver. Call setMode() to cross-fade between states.
 
+import { VisibleLoop } from "./visible";
+
 export type RibbonMode = "idle" | "listening" | "thinking" | "speaking";
 
 export const MODES: Record<RibbonMode, any> = {
@@ -87,9 +89,8 @@ export class Ribbon {
   // motion continuous instead of snapping dir·phase when split animates.
   private sphase = [0, 0, 0];
 
-  private raf = 0;
+  private loop: VisibleLoop;
   private t0 = 0;
-  private last = 0;
   private ctx: CanvasRenderingContext2D | null = null;
   private w = 0;
   private h = 0;
@@ -111,14 +112,7 @@ export class Ribbon {
     this.base = Object.assign({}, MODES[mode]);
     this.p = Object.assign({}, this.base);
     this.t0 = performance.now();
-    this.last = this.t0;
-    const loop = (now: number) => {
-      const dt = Math.min(0.05, (now - this.last) / 1000);
-      this.last = now;
-      this.step(dt, (now - this.t0) / 1000);
-      this.raf = requestAnimationFrame(loop);
-    };
-    this.raf = requestAnimationFrame(loop);
+    this.loop = new VisibleLoop(canvas, (dt, now) => this.step(dt, (now - this.t0) / 1000));
   }
 
   setMode(mode: RibbonMode) {
@@ -131,7 +125,7 @@ export class Ribbon {
   }
 
   destroy() {
-    cancelAnimationFrame(this.raf);
+    this.loop.destroy();
   }
 
   // keeps the backing store in sync with layout, every frame

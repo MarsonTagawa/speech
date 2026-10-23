@@ -52,8 +52,16 @@ export class Shards {
     // pointerdown, not click: a press that moves turns into a window drag
     // (see main.ts) and never produces a click.
     host.addEventListener("pointerdown", (e) => { if (e.button === 0) this.press(e); });
-    const loop = () => { this.tick(); requestAnimationFrame(loop); };
-    requestAnimationFrame(loop);
+  }
+
+  // The loop only runs while something is lit: an idle grid would otherwise
+  // clear and walk every cell at display rate forever. Input wakes it.
+  private raf = 0;
+  private loop = () => { this.raf = this.tick() ? requestAnimationFrame(this.loop) : 0; };
+  private wake() {
+    if (this.raf) return;
+    this.lastTick = performance.now();
+    this.raf = requestAnimationFrame(this.loop);
   }
 
   private setup() {
@@ -123,8 +131,10 @@ export class Shards {
     this.newGroup(); this.gdir = null;
     this.lastRing = { x, y };
     this.lastMove = performance.now();
+    this.wake();
   }
 
+  // true while any symbol is still lit
   private drawGlyphs(now: number) {
     const { cols, rows, gl, gc, gt, hash, ctx } = this, cs = CELL, n = GLYPHS.length, end = SCR_REACH + cs;
     this.waves = this.waves.filter((w) => (now - w.t0) / 1000 * SCR_SPEED < end);
@@ -140,8 +150,10 @@ export class Shards {
       }
     }
     const { atlas } = this, ds = cs * this.dpr;
+    let lit = this.waves.length > 0;
     for (let k = 0; k < gl.length; k++) {
       const h = gl[k]; if (h < .03) { gl[k] = 0; continue; }
+      lit = true;
       if (now >= gt[k]) { gc[k] = (Math.random() * n) | 0; gt[k] = now + SWAP_MIN + Math.random() * (SWAP_MAX - SWAP_MIN); }
       ctx.globalAlpha = Math.min(1, h * 1.2);
       // fresh front white (row 0), tail cools to the accent (row 1)
@@ -149,6 +161,7 @@ export class Shards {
       gl[k] = h * SCR_DECAY;
     }
     ctx.globalAlpha = 1;
+    return lit;
   }
 
   private move(e: MouseEvent) {
@@ -179,11 +192,14 @@ export class Shards {
       }
     }
     this.lastMove = now;
+    this.wake();
   }
 
+  // Advances and draws one frame; false once nothing was drawn (the canvas is
+  // clear and stays clear until the next input).
   private tick() {
     const { cols, rows, hash, f, ctx } = this;
-    if (!f.length) return;
+    if (!f.length) return false;
     const cs = CELL, maxR = Math.hypot(cols * cs, rows * cs), band = cs * 2.2;
     const alive = new Set<number>();
     for (const r of this.rings) if (r.r < maxR + 40) alive.add(r.g);
@@ -221,8 +237,10 @@ export class Shards {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.fillStyle = "#ffffff30";
+    let lit = rings.length > 0;
     for (let k = 0; k < f.length; k++) {
       const h = f[k]; if (h < .002) continue;
+      lit = true;
       const v = Math.sqrt(h); if (v < .9 && hash[k] > v * 2.2) continue;
       const x = (k % cols) * cs + cs / 2, y = ((k / cols) | 0) * cs + cs / 2;
       ctx.globalAlpha = Math.min(1, v * 1.3);
@@ -230,6 +248,6 @@ export class Shards {
       else { const s = 1 + Math.min(1, v) * 1.4; ctx.fillRect(x - s / 2, y - s / 2, s, s); }
     }
     ctx.globalAlpha = 1;
-    this.drawGlyphs(now);
+    return this.drawGlyphs(now) || lit;
   }
 }

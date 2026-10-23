@@ -6,6 +6,7 @@
 // the avatar svg; setMode() eases between the ribbon's modes.
 import { RADIUS } from "@bible-strong/avatar-core";
 import { MODES, PROPS, hexToRgb, hueShift, lerp, prism, rgba, type RibbonMode } from "./ribbon";
+import { VisibleLoop } from "./visible";
 
 const deep = hexToRgb(PROPS.blueColor);
 const cool = hexToRgb(PROPS.greenColor);
@@ -94,8 +95,7 @@ export class Halo {
   private boost = 0; // pulse(): 1 → 0, swells and spins up the wisps and glow on top of the mode
   // pulse() sparks: angle, distance from centre and speed in body radii, life 1 → 0
   private sparks: { a: number; d: number; v: number; life: number; c: number[] }[] = [];
-  private last = performance.now();
-  private raf = 0;
+  private loop: VisibleLoop;
   private ctx: CanvasRenderingContext2D | null;
   private shape = new Float32Array(S).fill(1); // round until the avatar svg appears
   private shapeKey = "";
@@ -103,7 +103,13 @@ export class Halo {
   // Knobs for small halos (the flappy coach): extra glow and a lower resolution cap.
   gain = 1;
   maxDpr = 2;
-  paused = false;
+  // Paused or off screen, the frame loop stops outright.
+  get paused() {
+    return this.loop.held;
+  }
+  set paused(v: boolean) {
+    this.loop.held = v;
+  }
   // The bloom and aberration are the same blurred outline every frame; only
   // their alpha and (aberration) offset move. Shadow blurs are the costly part,
   // so they're baked at alpha 1 once per outline/size and blitted: bloom ×2,
@@ -115,13 +121,7 @@ export class Halo {
   // avatar svg beside the canvas (fast-flapping arms trailed as ghost arms).
   constructor(private canvas: HTMLCanvasElement, follow = true) {
     this.ctx = canvas.getContext("2d");
-    const loop = (now: number) => {
-      const dt = Math.min(0.05, (now - this.last) / 1000);
-      this.last = now;
-      if (!this.paused) this.step(dt);
-      this.raf = requestAnimationFrame(loop);
-    };
-    this.raf = requestAnimationFrame(loop);
+    this.loop = new VisibleLoop(canvas, (dt) => this.step(dt));
     // The avatar redraws in its own rAF, which can run after ours in the same
     // frame; redraw (without advancing time) the moment its paths change, so
     // the outline never trails his arms by a frame.
@@ -160,7 +160,7 @@ export class Halo {
   }
 
   destroy() {
-    cancelAnimationFrame(this.raf);
+    this.loop.destroy();
     this.watch.disconnect();
   }
 

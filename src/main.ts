@@ -8,6 +8,7 @@ import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
 import { Ribbon, hexToRgb } from "./ribbon";
 import { Halo } from "./halo";
+import { watchVisible } from "./visible";
 import { Shards } from "./shards";
 import { Flappy } from "./flappy";
 import { troubleSpots } from "./passages";
@@ -699,6 +700,7 @@ function showCorrectBar(on: boolean) {
     // The halo skips drawing while the overlay is hidden, so it lives for the session.
     correctHalo = new Halo(mount.querySelector("canvas")!);
     loadingCoach = createAvatar(mount, { definition: strobi, defaultAnimation: "thinking", size: "100%", ariaLabel: "Coach thinking" });
+    pauseWhileHidden(loadingCoach, mount);
   } else if (on) {
     loadingCoach?.play("thinking"); // last pass left him celebrating
   }
@@ -3165,6 +3167,20 @@ let coachTips: Tip[] = [];
 let coachIdx = 0;
 let coachTimer = 0;
 
+// The avatar runs its own rAF while an animation plays, and the idle one loops
+// forever: left alone it redraws (and drives the halo's outline) behind a
+// hidden view. Its pause() keeps the animation's place; play() with the same
+// key resumes from there.
+function pauseWhileHidden(avatar: ReturnType<typeof createAvatar>, mount: Element) {
+  // Only resume what this hid: a stopped avatar was parked on purpose (the
+  // follower drawing his face, an animation that ran out) and stays as it is.
+  watchVisible(mount, (visible) => {
+    const { status, activeAnimation } = avatar.getState();
+    if (!visible && status === "playing") avatar.pause();
+    else if (visible && status === "paused" && activeAnimation) avatar.play(activeAnimation);
+  });
+}
+
 const tipsKey = (tips: Tip[]) => tips.map((t) => t.text).join("\n");
 
 // A tip's "practise this" button, opening its drill on the Live tab.
@@ -3181,7 +3197,10 @@ function coachSay(tips: Tip[]) {
   if (!mount) return;
   const haloCanvas = mount.querySelector("canvas");
   if (haloCanvas) halo ??= new Halo(haloCanvas);
-  coach ??= createAvatar(mount, { definition: strobi, defaultAnimation: "idle", size: "100%", ariaLabel: "Coach" });
+  if (!coach) {
+    coach = createAvatar(mount, { definition: strobi, defaultAnimation: "idle", size: "100%", ariaLabel: "Coach" });
+    pauseWhileHidden(coach, mount);
+  }
   coachSpeak();
 }
 
