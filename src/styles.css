@@ -2876,6 +2876,13 @@ body.deck-on .scope {
 .deck-menu:not([hidden]) {
   width: 280px;
 }
+.sps-error {
+  margin: 4px 8px 0;
+  color: var(--amber);
+}
+.sps-error[hidden] {
+  display: none;
+}
 
 /* Video with slides, or with a script while the scope is hidden: the camera floats over the app. Drag to move, drag the
    corner to resize; clamp() keeps it on screen when the window shrinks. */

@@ -19,9 +19,10 @@ import { showReplay, followClip, stopFollow } from "./replay";
 import { scoreLinear, summarize, liveCue, movingHands, coverMap, type Frame, type Presence, type Pt } from "./presence";
 import { GESTURES, GESTURE_TUNING, counts, detect, gestureInfo, gestureSummary, type GestureId } from "./gestures";
 import { startCamera, stopCamera, recentVision, FRAME_W, FRAME_H, HAND_BONES } from "./camera";
-import { loadDeck, loadPdf, closeDeck, stepDeck, paintDeck, deckSize, deckAt, deckText, thumbDeck } from "./deck";
+import { loadDeck, loadPdf, deckFilesError, closeDeck, stepDeck, paintDeck, deckSize, deckAt, deckText, thumbDeck } from "./deck";
 import { type Reading, type Said, type SlideRead, type SlideSpan, frameAt, groupScreens, isRead, reading, READ_FRAC, runsOf, slideRows, slideScore, slideSpans, withoutSpoken } from "./reading";
 import { googleFile, type GoogleKind } from "./google";
+import { putDeckFiles, getDeckFiles, deleteDeckFiles } from "./speechDecks";
 import { notchState, scriptAhead, serial } from "./notch";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
@@ -1327,6 +1328,9 @@ interface Speech {
   title: string;
   text: string;
   color?: string; // one of SPEECH_COLORS; older speeches have none
+  // Attached slides, opened with the speech. A Google file is re-downloaded
+  // each time; otherwise the files are in speechDecks.ts under this speech's id.
+  slides?: { name: string; google?: { kind: GoogleKind; id: string } };
 }
 // Tag colors, fixed across themes so a speech keeps its color.
 const SPEECH_COLORS: Array<[string, string]> = [
@@ -1392,6 +1396,7 @@ function confirmClick(btn: HTMLElement): boolean {
 
 // Past sessions keep the id, so re-saving the text starts a fresh progress line.
 function deleteSpeech(id: string) {
+  void deleteDeckFiles(id).catch(() => {});
   speeches = speeches.filter((s) => s.id !== id);
   if (currentSpeech === id) currentSpeech = "";
   saveSpeeches();
@@ -1415,7 +1420,16 @@ function openSpeech(id: string) {
   showScriptBox(!id);
   saveSpeeches();
   renderSpeechPicker();
-  loadScript(speeches.find((s) => s.id === id)?.text ?? "");
+  const sp = speeches.find((s) => s.id === id);
+  loadScript(sp?.text ?? "");
+  // Its slides come up with it; another speech's go away. A deck opened
+  // by hand that isn't attached to anything stays.
+  if (sp?.slides) void openSpeechSlides(sp);
+  else if (deckOwner) {
+    closeDeck();
+    showDeck(false);
+    deckOwner = "";
+  }
 }
 
 function setScript(text: string) {
@@ -2318,6 +2332,113 @@ async function fetchGooglePdf(file: { kind: GoogleKind; id: string }): Promise<U
         throw new Error("it's private: sign in to Google, or use File → Download → PDF and open that");
     }
   }
+}
+
+// A deck to open: files from the picker, or a Google file (downloaded as PDF).
+// `name` labels it on the speech it gets attached to.
+type DeckSource = { name: string; files?: File[]; google?: { kind: GoogleKind; id: string } };
+
+// Opens a speech page's slides menu under `btn` (set up at startup).
+let openSpsMenu: (btn: HTMLElement, id: string) => void = () => {};
+let deckOwner = ""; // speech whose attached slides are loaded; "" = none, or a deck not attached
+
+const KIND_LABEL: Record<string, string> = { presentation: "Slides", document: "Doc", spreadsheets: "Sheet", file: "PDF" };
+
+const filesSource = (files: File[]): DeckSource => ({
+  name: files.length > 1 ? `${files[0].name} +${files.length - 1}` : files[0].name,
+  files,
+});
+// A pasted Google link, or null if it isn't one.
+function linkSource(link: string): DeckSource | null {
+  const file = googleFile(link);
+  return file && { name: `Google ${KIND_LABEL[file.kind] ?? "file"}`, google: file };
+}
+
+async function loadSource(src: DeckSource): Promise<number> {
+  if (src.files) return loadDeck(src.files);
+  if (!recording) setStatus("Downloading slides…");
+  try {
+    return await loadPdf(await fetchGooglePdf(src.google!));
+  } finally {
+    if (!recording) setStatus("Idle");
+  }
+}
+
+// Opens a deck over the scope, with a spinner while it loads or downloads.
+// `owner`: the speech it was attached to, when opening that speech's slides;
+// without one it's a newly picked deck, which may get attached to the open speech.
+async function openDeck(src: DeckSource, owner = "") {
+  $("deck-menu")?.setAttribute("hidden", "");
+  const view = $("deck-view");
+  const wasOn = document.body.classList.contains("deck-on");
+  showDeck(true);
+  view?.classList.add("loading");
+  try {
+    await loadSource(src);
+    view?.classList.remove("loading"); // before the paint, which brings back its own if slow
+    if (owner && owner !== currentSpeech) {
+      // switched speech while these downloaded
+      closeDeck();
+      return showDeck(false);
+    }
+    showDeck(true);
+  } catch (e) {
+    view?.classList.remove("loading");
+    if (!wasOn || !deckSize()) showDeck(false);
+    appendError(`Couldn't open slides — ${e instanceof Error ? e.message : e}`);
+    return;
+  }
+  deckOwner = owner;
+  if (owner) return; // a speech's own slides
+  const sp = speeches.find((x) => x.id === currentSpeech);
+  if (sp && shouldAttach(sp, src)) {
+    deckOwner = sp.id;
+    attachSlides(sp, src).catch((e) => appendError(`Couldn't save the slides with “${sp.title}” — ${e}`));
+  }
+}
+
+// A deck was just opened by hand while the saved speech `sp` is in the
+// read-along: should it become that speech's slides? Only if it has none yet,
+// or this is the same Google file again (picks up a new name from Drive), so a
+// deck opened to check something never replaces them; the speech page's
+// Replace slides does that.
+function shouldAttach(sp: Speech, src: DeckSource): boolean {
+  const had = sp.slides;
+  return !had || (!!had.google && had.google.id === src.google?.id);
+}
+
+// Files are stored first, so a failed write leaves the speech as it was.
+async function attachSlides(sp: Speech, src: DeckSource) {
+  if (src.files) await putDeckFiles(sp.id, src.files);
+  else await deleteDeckFiles(sp.id).catch(() => {});
+  sp.slides = src.google ? { name: src.name, google: src.google } : { name: src.name };
+  saveSpeeches();
+  renderSpeeches();
+}
+
+// From the speech page's slides menu: attaches without opening them, except
+// that this speech's old slides, if they're up in Live, are swapped for these.
+async function setSpeechSlides(sp: Speech, src: DeckSource) {
+  await attachSlides(sp, src);
+  if (deckOwner === sp.id) void openDeck(src, sp.id);
+}
+
+function detachSlides(sp: Speech) {
+  delete sp.slides;
+  if (deckOwner === sp.id) deckOwner = "";
+  saveSpeeches();
+  void deleteDeckFiles(sp.id).catch(() => {});
+}
+
+// Shows `sp`'s attached slides, loading them unless they already are.
+async function openSpeechSlides(sp: Speech) {
+  const s = sp.slides;
+  if (!s) return;
+  if (deckOwner === sp.id && deckSize()) return showDeck(true);
+  if (s.google) return openDeck({ name: s.name, google: s.google }, sp.id);
+  const files = await getDeckFiles(sp.id).catch(() => undefined);
+  if (files?.length) return openDeck({ name: s.name, files }, sp.id);
+  appendError(`The slides saved with “${sp.title}” are missing — open them again to reattach`);
 }
 
 // Fullscreen presenting: the window goes fullscreen and the slides take
@@ -4050,9 +4171,12 @@ function speechPageHtml(sp: Speech): string {
     `<div class="panel prof-head"><div class="panel-head">` +
     `<button type="button" class="ctl" data-back>← Speeches</button><div class="speech-actions">` +
     `<button type="button" class="ctl" data-practice="${sp.id}" data-tip="Load it into the read-along on the Live tab">Practice</button>` +
+    `<button type="button" class="ctl" data-slides="${sp.id}" aria-haspopup="menu" data-tip="${sp.slides ? "Change or remove this speech's slides" : "Attach slides or a document — they open whenever you practise this speech"}">${sp.slides ? "Change slides" : "Add slides"}</button>` +
     `<button type="button" class="ctl" data-delete="${sp.id}" data-tip="Delete this speech — its sessions stay in your history">Delete</button></div></div>` +
     `<button type="button" class="prof-name speech-name" data-rename data-tip="Rename or change color"><span class="speech-dot" style="--c:${speechColor(sp)}"></span>${escapeHtml(sp.title)}</button>` +
-    `<span class="sub">${countWords(sp.text)} words · ${n} attempt${n === 1 ? "" : "s"} · added ${fmtDate(Number(sp.id))}</span></div>`;
+    `<span class="sub">${countWords(sp.text)} words · ${n} attempt${n === 1 ? "" : "s"} · added ${fmtDate(Number(sp.id))}` +
+    (sp.slides ? ` · slides: ${escapeHtml(sp.slides.name)}` : "") +
+    `</span></div>`;
   const skips = skipCounts(sp, tries);
   const steps = ladder(sp.text);
   const climbed = steps.filter((w) => stepPassed(sp.id, w)).length;
@@ -4864,27 +4988,11 @@ window.addEventListener("DOMContentLoaded", () => {
   $("reset-btn")?.addEventListener("click", resetSession);
   $("script-btn")?.addEventListener("click", () => toggleScript());
   // With no deck loaded the Slides button opens a menu: a file, or a Google link.
+  // (A saved speech with slides attached opens those instead.)
   const deckFile = $<HTMLInputElement>("deck-file");
   const deckMenu = $("deck-menu");
   const deckLink = $<HTMLInputElement>("deck-link");
   const closeDeckMenu = () => deckMenu?.setAttribute("hidden", "");
-  // The slides area shows a spinner while a file loads or downloads.
-  const openDeck = async (load: () => Promise<number>) => {
-    closeDeckMenu();
-    const view = $("deck-view");
-    const wasOn = document.body.classList.contains("deck-on");
-    showDeck(true);
-    view?.classList.add("loading");
-    try {
-      await load();
-      view?.classList.remove("loading"); // before the paint, which brings back its own if slow
-      showDeck(true);
-    } catch (e) {
-      view?.classList.remove("loading");
-      if (!wasOn || !deckSize()) showDeck(false);
-      appendError(`Couldn't open slides — ${e instanceof Error ? e.message : e}`);
-    }
-  };
   const openDeckMenu = (e: MouseEvent) => {
     if (!deckMenu) return;
     if (!deckMenu.hidden) return closeDeckMenu();
@@ -4899,7 +5007,9 @@ window.addEventListener("DOMContentLoaded", () => {
   // always opens the menu, to switch to another file or link.
   $("deck-btn")?.addEventListener("click", (e) => {
     const body = document.body.classList;
+    const sp = speeches.find((x) => x.id === currentSpeech);
     if (deckSize()) showDeck(body.contains("no-ribbon") || !body.contains("deck-on"));
+    else if (sp?.slides) void openSpeechSlides(sp);
     else openDeckMenu(e);
   });
   $("deck-btn")?.addEventListener("contextmenu", (e) => {
@@ -4913,21 +5023,14 @@ window.addEventListener("DOMContentLoaded", () => {
   deckFile?.addEventListener("change", () => {
     const files = [...(deckFile.files ?? [])];
     deckFile.value = "";
-    if (files.length) void openDeck(() => loadDeck(files));
+    if (files.length) void openDeck(filesSource(files));
   });
   deckLink?.addEventListener("keydown", (e) => {
     if (e.key === "Escape") return closeDeckMenu();
     if (e.key !== "Enter" || !deckLink.value.trim()) return;
-    const file = googleFile(deckLink.value);
-    if (!file) return appendError("Couldn't open slides — paste a Google Slides, Docs, Sheets or Drive file link");
-    if (!recording) setStatus("Downloading slides…");
-    void openDeck(async () => {
-      try {
-        return await loadPdf(await fetchGooglePdf(file));
-      } finally {
-        if (!recording) setStatus("Idle");
-      }
-    });
+    const src = linkSource(deckLink.value);
+    if (!src) return appendError("Couldn't open slides — paste a Google Slides, Docs, Sheets or Drive file link");
+    void openDeck(src);
   });
   document.addEventListener("pointerdown", (e) => {
     const t = e.target as Element;
@@ -4939,17 +5042,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const driveList = $("drive-list");
   const driveSearch = $<HTMLInputElement>("drive-search");
   type DriveFile = { id: string; name: string; kind: GoogleKind; modified: string };
-  const openGoogle = (f: { kind: GoogleKind; id: string }) => {
-    if (!recording) setStatus("Downloading slides…");
-    void openDeck(async () => {
-      try {
-        return await loadPdf(await fetchGooglePdf(f));
-      } finally {
-        if (!recording) setStatus("Idle");
-      }
-    });
-  };
-  const KIND_LABEL: Record<string, string> = { presentation: "Slides", document: "Doc", file: "PDF" };
+  const driveSource = (f: DriveFile): DeckSource => ({ name: f.name, google: { kind: f.kind, id: f.id } });
+  let drivePick: (f: DriveFile) => void = (f) => void openDeck(driveSource(f)); // what picking a file does: set by openDrive
   let driveAsk = 0;
   const listDrive = async () => {
     if (!driveList) return;
@@ -4962,7 +5056,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (my !== driveAsk) return;
       if (e === SIGN_IN_NEEDED) {
         driveDlg?.close();
-        return void openDrive();
+        return void openDrive(drivePick);
       }
       driveList.innerHTML = "";
       driveList.append(Object.assign(document.createElement("p"), { className: "empty", textContent: `Couldn't list Drive — ${e}` }));
@@ -4983,13 +5077,14 @@ window.addEventListener("DOMContentLoaded", () => {
       b.append(kind, name, when);
       b.addEventListener("click", () => {
         driveDlg?.close();
-        openGoogle(f);
+        drivePick(f);
       });
       driveList.append(b);
     }
   };
-  const openDrive = async () => {
+  const openDrive = async (onPick: (f: DriveFile) => void) => {
     closeDeckMenu();
+    drivePick = onPick;
     const { signedIn } = await invoke<{ signedIn: boolean }>("google_status");
     if (!signedIn && !(await googleSignIn("Sign in to pick slides from your Google Drive."))) return;
     if (driveSearch) driveSearch.value = "";
@@ -5001,8 +5096,69 @@ window.addEventListener("DOMContentLoaded", () => {
     clearTimeout(driveTyping);
     driveTyping = window.setTimeout(listDrive, 300);
   });
-  $("deck-drive")?.addEventListener("click", () => void openDrive());
+  $("deck-drive")?.addEventListener("click", () => void openDrive((f) => void openDeck(driveSource(f))));
   $("drive-close")?.addEventListener("click", () => driveDlg?.close());
+
+  // A speech page's own slides menu (its Add/Change slides button): whatever's
+  // picked is attached to that speech, staying on the page; errors show in the menu.
+  const spsMenu = $("sp-slides-menu");
+  const spsLink = $<HTMLInputElement>("sps-link");
+  const spsFile = $<HTMLInputElement>("sps-file");
+  let spsFor = ""; // id of the speech the menu is open for
+  const closeSpsMenu = () => spsMenu?.setAttribute("hidden", "");
+  const spsError = (msg: string) => {
+    const el = $("sps-error");
+    if (el) [el.textContent, el.hidden] = [msg, !msg];
+    if (msg) spsMenu?.removeAttribute("hidden"); // back up after the Drive dialog
+  };
+  openSpsMenu = (btn: HTMLElement, id: string) => {
+    if (!spsMenu) return;
+    if (!spsMenu.hidden && spsFor === id) return closeSpsMenu();
+    spsFor = id;
+    const r = btn.getBoundingClientRect();
+    spsMenu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 288))}px`;
+    spsMenu.style.top = `${r.bottom + 6}px`;
+    if (spsLink) spsLink.value = "";
+    spsError("");
+    $("sps-remove")?.toggleAttribute("hidden", !speeches.find((x) => x.id === id)?.slides);
+    spsMenu.removeAttribute("hidden");
+    spsLink?.focus();
+  };
+  const pickForSpeech = (src: DeckSource) => {
+    const sp = speeches.find((x) => x.id === spsFor);
+    if (!sp) return closeSpsMenu();
+    setSpeechSlides(sp, src).then(closeSpsMenu, (e) => spsError(`Couldn't save them — ${e instanceof Error ? e.message : e}`));
+  };
+  $("sps-pick")?.addEventListener("click", () => spsFile?.click());
+  spsFile?.addEventListener("change", () => {
+    const files = [...(spsFile.files ?? [])];
+    spsFile.value = "";
+    if (!files.length) return;
+    const bad = deckFilesError(files);
+    if (bad) return spsError(bad);
+    pickForSpeech(filesSource(files));
+  });
+  spsLink?.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") return closeSpsMenu();
+    if (e.key !== "Enter" || !spsLink.value.trim()) return;
+    const src = linkSource(spsLink.value);
+    if (!src) return spsError("That isn't a Google Slides, Docs, Sheets or Drive file link");
+    pickForSpeech(src);
+  });
+  $("sps-drive")?.addEventListener("click", () => {
+    closeSpsMenu();
+    void openDrive((f) => pickForSpeech(driveSource(f)));
+  });
+  $("sps-remove")?.addEventListener("click", () => {
+    const sp = speeches.find((x) => x.id === spsFor);
+    if (sp) detachSlides(sp);
+    closeSpsMenu();
+    renderSpeeches();
+  });
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target as Element;
+    if (spsMenu && !spsMenu.contains(t) && !t.closest("[data-slides]")) closeSpsMenu();
+  });
 
   // Sign-in dialog buttons. Esc or Cancel stops the wait for the browser.
   const gdGo = $<HTMLButtonElement>("gd-go");
@@ -5038,6 +5194,7 @@ window.addEventListener("DOMContentLoaded", () => {
   $("deck-full")?.addEventListener("click", () => setPresenting(!document.body.classList.contains("presenting")));
   $("deck-close")?.addEventListener("click", () => {
     closeDeck();
+    deckOwner = "";
     showDeck(false);
   });
   $("deck-canvas")?.addEventListener("click", (e) => {
@@ -5655,11 +5812,12 @@ window.addEventListener("DOMContentLoaded", () => {
   const speechesEl = $("speeches");
   speechesEl?.addEventListener("click", (e) => {
     const b = (e.target as Element).closest<HTMLElement>(
-      "[data-new], [data-rename], [data-practice], [data-open], [data-back], [data-delete], [data-smetric], [data-cfilter]",
+      "[data-new], [data-rename], [data-practice], [data-slides], [data-open], [data-back], [data-delete], [data-smetric], [data-cfilter]",
     );
     const d = b?.dataset;
     if (!b || !d) return;
     if (d.practice) return practiceSpeech(d.practice);
+    if (d.slides) return openSpsMenu(b, d.slides);
     if (d.new !== undefined) return openSpeechDialog("", false);
     if (d.rename !== undefined) {
       const sp = speeches.find((x) => x.id === speechPage);

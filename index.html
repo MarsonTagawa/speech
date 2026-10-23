@@ -100,7 +100,7 @@
           <button id="script-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Script read-along" data-tip="Script read-along — paste a script and track your words against it">
             <svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M16 13H8" /><path d="M16 17H8" /><path d="M10 9H8" /></svg>
           </button>
-          <button id="deck-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Slides" data-tip="Slides — present from a PDF, images or a Google Slides/Docs link. ← → or click to change slide · right-click to change the source">
+          <button id="deck-btn" class="tool-btn icon" type="button" aria-pressed="false" aria-label="Slides" data-tip="Slides — present from a PDF, images or a Google Slides/Docs link; with a saved speech open they’re saved with it. ← → or click to change slide · right-click to change the source">
             <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M12 17v4" /><path d="M8 21h8" /></svg>
           </button>
           <input id="deck-file" type="file" accept=".pdf,application/pdf,image/*" multiple hidden />
@@ -454,6 +454,14 @@
       <button id="deck-pick" type="button" role="menuitem">Choose PDF or images…</button>
       <button id="deck-drive" type="button" role="menuitem">From Google Drive…</button>
       <input id="deck-link" class="ctl" type="url" spellcheck="false" placeholder="Paste a Google Slides, Docs or Drive link ⏎" aria-label="Google Slides, Docs or Drive link" />
+    </div>
+    <div id="sp-slides-menu" class="dd-list timer-menu deck-menu" role="menu" aria-label="This speech's slides" hidden>
+      <button id="sps-pick" type="button" role="menuitem">Choose PDF or images…</button>
+      <button id="sps-drive" type="button" role="menuitem">From Google Drive…</button>
+      <input id="sps-link" class="ctl" type="url" spellcheck="false" placeholder="Paste a Google Slides, Docs or Drive link ⏎" aria-label="Google Slides, Docs or Drive link" />
+      <p id="sps-error" class="sps-error" hidden></p>
+      <button id="sps-remove" type="button" role="menuitem" hidden>Remove slides</button>
+      <input id="sps-file" type="file" accept=".pdf,application/pdf,image/*" multiple hidden />
     </div>
     <div id="timer-menu" class="dd-list timer-menu" role="menu" aria-label="Timer length" hidden>
       <button type="button" role="menuitem" data-s="0">Off</button>

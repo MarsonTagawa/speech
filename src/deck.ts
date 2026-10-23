@@ -46,14 +46,20 @@ async function imageSlide(file: File): Promise<Slide> {
   return { w: img.width, h: img.height, text: "", draw: async (cx, s) => cx.drawImage(img, 0, 0, img.width * s, img.height * s) };
 }
 
+const isPdf = (f: File) => f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+
+// Why `files` can't be a deck, or "" if they can.
+export function deckFilesError(files: File[]): string {
+  const bad = files.find((f) => !isPdf(f) && !f.type.startsWith("image/"));
+  return bad ? `${bad.name}: export it as PDF first (PowerPoint, Keynote, Google Slides and Docs all can)` : "";
+}
+
 // Files in picker order; a PDF adds all its pages. Throws on anything else.
 export async function loadDeck(files: File[]): Promise<number> {
+  const bad = deckFilesError(files);
+  if (bad) throw new Error(bad);
   const out: Slide[] = [];
-  for (const f of files) {
-    if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) out.push(...(await pdfSlides(new Uint8Array(await f.arrayBuffer()))));
-    else if (f.type.startsWith("image/")) out.push(await imageSlide(f));
-    else throw new Error(`${f.name}: export it as PDF first (PowerPoint, Keynote, Google Slides and Docs all can)`);
-  }
+  for (const f of files) out.push(...(isPdf(f) ? await pdfSlides(new Uint8Array(await f.arrayBuffer())) : [await imageSlide(f)]));
   return use(out);
 }
 

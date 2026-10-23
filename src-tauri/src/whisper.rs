@@ -127,7 +127,12 @@ pub fn run(state: &mut WhisperState, audio: &[f32], accurate: bool) -> Result<St
     // audio context to the actual audio (1 encoder frame = 20ms → 50/sec) plus
     // a margin so trailing speech isn't clipped. Clamped to the full 1500-frame
     // context. This is the largest per-decode saving for short utterances.
-    let audio_ctx = (((audio.len() as f32 / 16_000.0) * 50.0).ceil() as i32 + 64)
+    //
+    // Rounded up to a multiple of 4: on Metal, any audio_ctx above 256 that
+    // isn't one aborts the process in ggml-metal.m's F16 mat-mat path
+    // (GGML_ASSERT(nb01 % 8 == 0)), found by sweeping every value 128..1500
+    // with flash attention off. 1500 is itself a multiple of 4.
+    let audio_ctx = ((((audio.len() as f32 / 16_000.0) * 50.0).ceil() as i32 + 64 + 3) / 4 * 4)
         .clamp(128, 1500);
     params.set_audio_ctx(audio_ctx);
 
