@@ -281,7 +281,7 @@ mod tests {
     #[test]
     #[ignore]
     fn reads_a_rendered_slide() {
-        let img = image::open(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/ocr-test/slide.jpg")).unwrap().to_rgb8();
+        let img = image::open(concat!(env!("CARGO_MANIFEST_DIR"), "/test-data/ocr-slide.jpg")).unwrap().to_rgb8();
         let (w, h) = (img.width() as usize, img.height() as usize);
         let t0 = std::time::Instant::now();
         let engine = Engine::load(&models()).unwrap();

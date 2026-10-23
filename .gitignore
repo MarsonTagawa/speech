@@ -20,6 +20,7 @@ src-tauri/resources/*.bin
 src-tauri/resources/*.onnx
 # ONNX vision models + golden test data — produced by scripts/convert-vision-models.sh
 src-tauri/resources/vision/
+src-tauri/test-data/vision-golden/
 # MediaPipe wasm + models for camera presence grading — fetched on setup (see README)
 public/mediapipe/
 

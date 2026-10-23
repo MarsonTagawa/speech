@@ -13,7 +13,7 @@ const H = 360;
 // with handedness 0.99. The curled fingers sit nearer the camera than the
 // knuckles, so the palm faces the camera — which is what fixes the sign
 // convention: a score over 0.5 is the speaker's right hand.
-const golden = JSON.parse(readFileSync(new URL("../src-tauri/resources/vision/golden/goldens.json", import.meta.url), "utf8"))["thumb_up.jpg"];
+const golden = JSON.parse(readFileSync(new URL("../src-tauri/test-data/vision-golden/goldens.json", import.meta.url), "utf8"))["thumb_up.jpg"];
 const gz = [0, -11, -14, -16, -16, -7, -16, -18, -18, -4, -13, -14, -14, -3, -13, -10, -7, -3, -8, -6, -3];
 const thumbUp = readHand(golden.hands[0].map(([x, y]: number[], i: number) => ({ x, y, z: gz[i] / golden.w })), true, golden.w, golden.h);
 assert.equal(thumbUp.shape, "1");

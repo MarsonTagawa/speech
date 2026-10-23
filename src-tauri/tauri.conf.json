@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "speech",
+  "productName": "Speech",
   "version": "0.1.0",
   "identifier": "com.marsont.speech",
   "build": {
@@ -37,6 +37,10 @@
     ],
     "resources": [
       "resources/"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.4",
+      "entitlements": "Entitlements.plist"
+    }
   }
 }

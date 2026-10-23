@@ -27,8 +27,10 @@ fetch $M/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task "$WORK/h
 "$PY" "$ROOT/scripts/vision/convert.py" "$WORK" "$OUT"
 if [ "${1:-}" = "--goldens" ]; then
   A=https://storage.googleapis.com/mediapipe-assets
-  mkdir -p "$OUT/golden"
-  for f in portrait.jpg pose.jpg thumb_up.jpg; do fetch "$A/$f" "$OUT/golden/$f"; done
-  "$PY" "$ROOT/scripts/vision/goldens.py" "$WORK" "$OUT/golden"
+  # Outside resources/, which is bundled into the app.
+  GOLD=$ROOT/src-tauri/test-data/vision-golden
+  mkdir -p "$GOLD"
+  for f in portrait.jpg pose.jpg thumb_up.jpg; do fetch "$A/$f" "$GOLD/$f"; done
+  "$PY" "$ROOT/scripts/vision/goldens.py" "$WORK" "$GOLD"
 fi
 echo "vision models ready in $OUT"

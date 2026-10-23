@@ -6,14 +6,19 @@ pub fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/vision")
 }
 
+/// Outside resources/ so the bundle doesn't ship them.
+fn golden_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test-data/vision-golden")
+}
+
 pub fn image(name: &str) -> (Vec<u8>, usize, usize) {
-    let img = image::open(dir().join("golden").join(name)).expect("run scripts/convert-vision-models.sh --goldens").to_rgb8();
+    let img = image::open(golden_dir().join(name)).expect("run scripts/convert-vision-models.sh --goldens").to_rgb8();
     let (w, h) = (img.width() as usize, img.height() as usize);
     (img.into_raw(), w, h)
 }
 
 pub fn goldens() -> serde_json::Value {
-    serde_json::from_str(&std::fs::read_to_string(dir().join("golden/goldens.json")).unwrap()).unwrap()
+    serde_json::from_str(&std::fs::read_to_string(golden_dir().join("goldens.json")).unwrap()).unwrap()
 }
 
 /// Mean distance between our pixel points and the expected normalised points,

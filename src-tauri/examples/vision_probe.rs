@@ -16,7 +16,7 @@ fn main() {
     while start.elapsed().as_secs() < 5 {
         let rgb = cam.frame().unwrap().decode_image::<RgbFormat>().unwrap().into_raw();
         let t = Instant::now();
-        let msg = serde_json::to_string(&pipes.frame(0, &rgb).unwrap()).unwrap();
+        let msg = serde_json::to_string(&pipes.frame(0, &rgb, true).unwrap()).unwrap();
         ms.push(t.elapsed().as_secs_f64() * 1000.0);
         n += 1;
         if n % 10 == 0 {
