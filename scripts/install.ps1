@@ -4,12 +4,59 @@
 #   scripts\install.ps1              # models + build + install
 #   scripts\install.ps1 -ModelsOnly  # just the models, for `bun run tauri dev`
 #   scripts\install.ps1 -NoMedium    # skip medium.en (539 MB); download it from Settings later
+#   scripts\install.ps1 -InstallDeps # first install the build tools with winget
 # If PowerShell says running scripts is disabled:
 #   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-param([switch]$ModelsOnly, [switch]$NoMedium)
+param([switch]$ModelsOnly, [switch]$NoMedium, [switch]$InstallDeps)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Res = Join-Path $Root 'src-tauri\resources'
+
+# Installers write PATH and VULKAN_SDK to the registry; this session only sees
+# them after re-reading it.
+function Sync-Env {
+  $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+    [Environment]::GetEnvironmentVariable('Path', 'User')
+  foreach ($scope in 'Machine', 'User') {
+    $v = [Environment]::GetEnvironmentVariable('VULKAN_SDK', $scope)
+    if ($v) { $env:VULKAN_SDK = $v }
+  }
+}
+
+function Test-VCTools {
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+  (Test-Path $vswhere) -and
+    (& $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
+}
+
+# Skips whatever is already there. A failed install only warns: the checks
+# before the build report anything still missing.
+function Install-Dep($Id, [scriptblock]$Have, $Override) {
+  if (& $Have) { Write-Host "have $Id"; return $false }
+  Write-Host "installing $Id"
+  $wargs = @('install', '-e', '--id', $Id, '--accept-package-agreements', '--accept-source-agreements')
+  if ($Override) { $wargs += @('--override', $Override) }
+  winget @wargs | Out-Host
+  if ($LASTEXITCODE -ne 0) { Write-Warning "winget exited with $LASTEXITCODE for $Id" }
+  Sync-Env
+  return $true
+}
+
+if ($InstallDeps) {
+  if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    throw 'winget not found; install "App Installer" from the Microsoft Store'
+  }
+  # MSVC first: rustup's MSVC toolchain links with it.
+  Install-Dep 'Microsoft.VisualStudio.2022.BuildTools' { Test-VCTools } `
+    '--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended' | Out-Null
+  if (Install-Dep 'Rustlang.Rustup' { Get-Command cargo -ErrorAction SilentlyContinue }) {
+    rustup default stable
+  }
+  Install-Dep 'Oven-sh.Bun' { Get-Command bun -ErrorAction SilentlyContinue } | Out-Null
+  Install-Dep 'Kitware.CMake' { Get-Command cmake -ErrorAction SilentlyContinue } | Out-Null
+  Install-Dep 'LLVM.LLVM' { Test-Path "$env:ProgramFiles\LLVM\bin\libclang.dll" } | Out-Null
+  Install-Dep 'KhronosGroup.VulkanSDK' { $env:VULKAN_SDK } | Out-Null
+}
 
 # Downloads to a .part file first so an interrupted download isn't mistaken
 # for a finished one on the next run. curl.exe ships with Windows 10 and up,
@@ -36,12 +83,19 @@ if ($ModelsOnly) { exit 0 }
 
 foreach ($tool in 'bun', 'cargo', 'cmake') {
   if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-    throw "$tool not found; see Install in README.md"
+    throw "$tool not found; run with -InstallDeps, or see Install in README.md"
   }
+}
+if (-not (Test-VCTools)) {
+  throw 'MSVC build tools not found; run with -InstallDeps, or see Install in README.md'
+}
+# bindgen needs libclang; LLVM's installer doesn't put it on PATH.
+if (-not $env:LIBCLANG_PATH -and (Test-Path "$env:ProgramFiles\LLVM\bin\libclang.dll")) {
+  $env:LIBCLANG_PATH = "$env:ProgramFiles\LLVM\bin"
 }
 # whisper.cpp's Vulkan backend builds against the SDK; its installer sets this.
 if (-not $env:VULKAN_SDK) {
-  throw 'VULKAN_SDK is not set; install the Vulkan SDK (https://vulkan.lunarg.com/sdk/home) and open a new terminal'
+  throw 'VULKAN_SDK is not set; run with -InstallDeps, or install the Vulkan SDK (https://vulkan.lunarg.com/sdk/home) and open a new terminal'
 }
 
 Set-Location $Root

@@ -70,10 +70,11 @@ git clone https://github.com/MarsonTagawa/speech && cd speech && scripts/install
 ```
 
 On Windows, use the PowerShell version, which builds the setup `.exe` and runs
-it:
+it. `-InstallDeps` first installs everything above with winget (skipping what
+you already have):
 
 ```powershell
-git clone https://github.com/MarsonTagawa/speech; cd speech; powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+git clone https://github.com/MarsonTagawa/speech; cd speech; powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallDeps
 ```
 
 On macOS that puts `Speech.app` in `/Applications`. On Linux it prints where
