@@ -2856,8 +2856,24 @@ body.no-hover-fx #shards {
 .rep-transcript .seg-ts {
   cursor: pointer;
 }
+/* Play/stop icons are drawn, not ▶/■ glyphs: WebView2 on Windows shows those
+   as color emoji even with U+FE0E. */
+.rep-transcript .seg-ts::before,
+.replay-btn::before {
+  content: "";
+  display: inline-block;
+  width: 0.6em;
+  height: 0.7em;
+  margin-right: 0.6em;
+  background: currentColor;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+.rep-transcript .seg-ts.playing::before,
+.replay-btn.playing::before {
+  height: 0.6em;
+  clip-path: none;
+}
 .rep-transcript .seg-ts::before {
-  content: "\25B6\FE0E  "; /* U+FE0E: text glyph, not Windows' color emoji */
   opacity: 0.5;
 }
 .rep-transcript .seg-ts:hover,
@@ -2865,14 +2881,13 @@ body.no-hover-fx #shards {
   color: var(--ink);
 }
 .rep-transcript .seg-ts.playing::before {
-  content: "■ ";
   opacity: 1;
 }
 
 /* Report: whole-session replay in the transcript's header; label swaps while playing. */
 .replay-btn { font-size: 11px; }
-.replay-btn::before { content: "\25B6\FE0E  Replay"; }
-.replay-btn.playing::before { content: "■ Stop"; }
+.replay-btn::after { content: "Replay"; }
+.replay-btn.playing::after { content: "Stop"; }
 
 /* Pace plot: the filler dot the pointer has snapped to (plotPoint). */
 .dot { transition: transform 120ms ease; }
