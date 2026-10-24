@@ -75,9 +75,28 @@ Fetch "$HF/ggml-tiny.en-q5_1.bin" 'ggml-tiny.en-q5_1.bin'
 Fetch 'https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx' 'silero_vad.onnx'
 if (-not $NoMedium) { Fetch "$HF/ggml-medium.en-q5_0.bin" 'ggml-medium.en-q5_0.bin' }
 
-# The camera models' converter needs Nix, which doesn't run on Windows.
-if (Test-Path (Join-Path $Res 'vision')) { Write-Host 'have vision\' }
-else { Write-Host 'skipping camera models: scripts/convert-vision-models.sh needs Nix (the app works audio-only without them)' }
+# Camera models are optional and come pre-converted from a GitHub release (their
+# converter needs Nix, which doesn't run on Windows).
+$VisionZip = 'https://github.com/MarsonTagawa/speech/releases/download/vision-models-1/vision-models.zip'
+$VisionSha = '207c1f73308fc50f841b1bef0f5c8c3f5c080f45e227deb2c6e60960783d3887'
+$vision = Join-Path $Res 'vision'
+if (Test-Path $vision) { Write-Host 'have vision\' }
+else {
+  Write-Host 'fetching vision\'
+  # Expand-Archive on Windows PowerShell 5 only accepts a .zip extension.
+  $zip = Join-Path $Res 'vision-models.zip'
+  curl.exe -fL --progress-bar -o $zip $VisionZip
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning 'camera model download failed; the app works audio-only without them'
+  } elseif ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $VisionSha) {
+    Write-Warning 'vision-models.zip has the wrong checksum; skipping camera models'
+  } else {
+    if (Test-Path "$vision.part") { Remove-Item -Recurse -Force "$vision.part" }
+    Expand-Archive $zip "$vision.part"
+    Rename-Item "$vision.part" 'vision'
+  }
+  if (Test-Path $zip) { Remove-Item $zip }
+}
 
 if ($ModelsOnly) { exit 0 }
 

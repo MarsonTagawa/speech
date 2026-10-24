@@ -95,9 +95,26 @@ fetch $HF/ggml-tiny.en-q5_1.bin ggml-tiny.en-q5_1.bin
 fetch https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx silero_vad.onnx
 [ $MEDIUM = 1 ] && fetch $HF/ggml-medium.en-q5_0.bin ggml-medium.en-q5_0.bin
 
-# Camera models are optional and their converter needs Nix.
+# Camera models are optional. They come pre-converted from a GitHub release;
+# converting them locally needs Nix, so that's only the fallback. errexit is off
+# inside an `if` condition, hence the explicit returns.
+VISION_ZIP=https://github.com/MarsonTagawa/speech/releases/download/vision-models-1/vision-models.zip
+VISION_SHA=207c1f73308fc50f841b1bef0f5c8c3f5c080f45e227deb2c6e60960783d3887
+fetch_vision() {
+  command -v unzip >/dev/null || { echo "unzip not found" >&2; return 1; }
+  echo "fetching vision/"
+  curl -fL --progress-bar -o "$RES/vision-models.zip" "$VISION_ZIP" || return 1
+  sum=$( (sha256sum "$RES/vision-models.zip" 2>/dev/null || shasum -a 256 "$RES/vision-models.zip") | cut -d' ' -f1)
+  [ "$sum" = "$VISION_SHA" ] || { echo "vision-models.zip has the wrong checksum" >&2; return 1; }
+  rm -rf "$RES/vision.part"
+  unzip -q "$RES/vision-models.zip" -d "$RES/vision.part" || return 1
+  mv "$RES/vision.part" "$RES/vision"
+  rm "$RES/vision-models.zip"
+}
 if [ -d "$RES/vision" ]; then
   echo "have vision/"
+elif fetch_vision; then
+  :
 elif command -v nix >/dev/null; then
   "$ROOT/scripts/convert-vision-models.sh"
 else

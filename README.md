@@ -103,7 +103,7 @@ runs on NixOS. For packages that run on other distros, build inside Ubuntu
 The whisper + VAD weights are large binaries, so they're gitignored. Fetch them
 into `src-tauri/resources/` before building (anything in there is bundled).
 `scripts/install.sh --models-only` fetches all of them, including the camera
-models below if you have Nix. To fetch them by hand:
+models below. To fetch them by hand:
 
 ```sh
 cd src-tauri/resources
@@ -120,9 +120,19 @@ live model is warmed up at launch, the correction model is loaded per pass and
 freed when it's done.
 
 The camera's presence grading (optional) runs MediaPipe's face, pose and hand
-models in Rust as ONNX. Convert them once (downloads ~250 MB of TensorFlow into
-`src-tauri/target/vision-convert/` the first time). The script needs Nix, which
-it uses to run `uv`:
+models in Rust as ONNX. The install scripts download them already converted
+from the [vision-models-1](https://github.com/MarsonTagawa/speech/releases/tag/vision-models-1)
+release, or by hand:
+
+```sh
+cd src-tauri/resources
+curl -L -O https://github.com/MarsonTagawa/speech/releases/download/vision-models-1/vision-models.zip
+unzip vision-models.zip -d vision && rm vision-models.zip
+```
+
+To convert them yourself (downloads ~250 MB of TensorFlow into
+`src-tauri/target/vision-convert/` the first time; needs Nix, which it uses to
+run `uv`):
 
 ```sh
 scripts/convert-vision-models.sh            # models → src-tauri/resources/vision/
