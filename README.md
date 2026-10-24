@@ -62,12 +62,18 @@ There's no prebuilt package for macOS or Windows yet, so build it yourself
   (headers, loader and `glslc`) for whisper.cpp's GPU backend; macOS uses
   Metal and needs nothing extra
 
-On Linux, `nix develop` provides everything except Rust and Bun. Then one
-command fetches the models, builds the app and installs it:
+Or let the install script get them: one command installs the build tools,
+fetches the models, builds the app and installs it:
 
 ```sh
-git clone https://github.com/MarsonTagawa/speech && cd speech && scripts/install.sh
+git clone https://github.com/MarsonTagawa/speech && cd speech && scripts/install.sh --install-deps
 ```
+
+`--install-deps` uses Homebrew on macOS (installing it and the Xcode Command
+Line Tools if needed) and apt, dnf or pacman on Linux, which asks for sudo;
+Rust comes from rustup either way. It skips what you already have. Leave it
+off to only build. On NixOS, `nix develop` provides everything except Rust and
+Bun.
 
 On Windows, use the PowerShell version, which builds the setup `.exe` and runs
 it. `-InstallDeps` first installs everything above with winget (skipping what
