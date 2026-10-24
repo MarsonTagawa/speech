@@ -71,7 +71,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] } # ashpd
 
 # Screen replay on macOS/Windows: ScreenCaptureKit / Windows Graphics Capture.
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-xcap = "0.9.8"
+# wgc: Windows Graphics Capture. xcap's default Windows recorder (DXGI duplication)
+# never releases its duplication on stop, so the next start fails with
+# E_INVALIDARG (0x80070057, "already duplicating this output").
+xcap = { version = "0.9.8", features = ["wgc"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] } # Macs have no Vulkan
