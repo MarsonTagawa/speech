@@ -76,9 +76,10 @@ off to only build. On NixOS, `nix develop` provides everything except Rust and
 Bun.
 
 On Windows, use the PowerShell version, which builds the setup `.exe` and runs
-it. It builds in `C:\speech-build`, because whisper.cpp's Vulkan build
-overflows Windows' 260-character path limit under a normal checkout; for
-`bun run tauri dev`, set `$env:CARGO_TARGET_DIR = "C:\speech-build"` first. `-InstallDeps` first installs everything above with winget (skipping what
+it. whisper.cpp's Vulkan build overflows Windows' 260-character path limit,
+so the script turns on Windows long-path support (one admin prompt) and builds
+in `C:\sb`; for `bun run tauri dev`, set `$env:CARGO_TARGET_DIR = "C:\sb"`
+first. `-InstallDeps` first installs everything above with winget (skipping what
 you already have):
 
 ```powershell

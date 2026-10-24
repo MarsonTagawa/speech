@@ -98,10 +98,21 @@ if (-not $env:VULKAN_SDK) {
   throw 'VULKAN_SDK is not set; run with -InstallDeps, or install the Vulkan SDK (https://vulkan.lunarg.com/sdk/home) and open a new terminal'
 }
 
-# whisper.cpp's Vulkan shader build nests ~220 characters under the target dir,
-# and MSBuild fails past Windows' 260-character path limit (PathTooLongException),
-# so build in a short directory unless one is already set.
-if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = "$env:SystemDrive\speech-build" }
+# whisper.cpp's Vulkan shader build nests ~245 characters under the target dir,
+# and MSBuild fails past Windows' 260-character path limit (PathTooLongException)
+# unless long paths are enabled. Enable them (one UAC prompt) and build in a
+# short directory unless one is already set.
+$fs = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+if ((Get-ItemProperty $fs -ErrorAction SilentlyContinue).LongPathsEnabled -ne 1) {
+  Write-Host 'enabling Windows long paths (asks for admin)'
+  try {
+    Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile', '-Command',
+      "Set-ItemProperty '$fs' -Name LongPathsEnabled -Value 1 -Type DWord"
+  } catch {
+    throw 'long paths must be enabled to build; accept the admin prompt, or set HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'
+  }
+}
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = "$env:SystemDrive\sb" }
 
 Set-Location $Root
 bun install
