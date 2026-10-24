@@ -59,10 +59,6 @@ chmod +x Speech_*_amd64.AppImage
 ./Speech_*_amd64.AppImage
 ```
 
-- **NixOS:** `nix run nixpkgs#appimage-run -- Speech_*_amd64.AppImage`
-- **FUSE error:** install `libfuse2` (`libfuse2t64` on Ubuntu 24.04), or run it
-  with `--appimage-extract-and-run`.
-
 ### macOS
 
 Needs Apple Silicon and macOS 13.4 or newer. Download
@@ -79,26 +75,9 @@ macOS reports it as damaged and won't open it. On an Intel Mac,
 
 ### Windows
 
-Needs 64-bit Windows 10 or 11. Download and run `Speech_*_x64-setup.exe`. It
+Needs 64-bit Windows 10 or 11. Download and run [Speech_*_x64-setup.exe](https://github.com/MarsonTagawa/speech/releases/download/v0.2.2/Speech_0.2.2_x64-setup.exe). It
 isn't code-signed, so SmartScreen warns first: click **More info**, then
 **Run anyway**.
-
-### GPU
-
-On macOS transcription runs on Metal. On Linux and Windows it uses a Vulkan GPU
-driver when there is one, and falls back to the slower CPU when there isn't.
-
-### Updating
-
-Settings → Updates → **Check for updates** looks for a newer GitHub release. If
-there is one, it downloads it, checks its signature, installs it and restarts.
-The app only contacts GitHub when you click the button. Each update downloads
-the whole app, models included (about 600 MB).
-
-It works for the downloads above and for builds from the install scripts.
-Intel Macs, `.deb`/`.rpm`/`.msi` installs and `tauri dev` builds have no
-prebuilt update: pull and rebuild. 0.1.0 has no updater, so update it by hand
-once.
 
 ### From source
 
@@ -116,11 +95,6 @@ Windows (PowerShell):
 ```powershell
 git clone https://github.com/MarsonTagawa/speech; cd speech; powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallDeps
 ```
-
-On macOS this puts `Speech.app` in `/Applications`; on Linux it prints where the
-AppImage landed; on Windows it builds the setup `.exe` and runs it. Re-run it to
-rebuild; models you already have aren't fetched again.
-
 | Option | Effect |
 | --- | --- |
 | `--install-deps` / `-InstallDeps` | Install missing build tools first: Homebrew (plus Xcode Command Line Tools) on macOS, apt/dnf/pacman on Linux (asks for sudo), winget on Windows. Rust comes from rustup. Leave it off to only build. |
