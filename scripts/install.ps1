@@ -98,12 +98,17 @@ if (-not $env:VULKAN_SDK) {
   throw 'VULKAN_SDK is not set; run with -InstallDeps, or install the Vulkan SDK (https://vulkan.lunarg.com/sdk/home) and open a new terminal'
 }
 
+# whisper.cpp's Vulkan shader build nests ~220 characters under the target dir,
+# and MSBuild fails past Windows' 260-character path limit (PathTooLongException),
+# so build in a short directory unless one is already set.
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = "$env:SystemDrive\speech-build" }
+
 Set-Location $Root
 bun install
 if ($LASTEXITCODE -ne 0) { throw 'bun install failed' }
 bun run tauri build --bundles nsis
 if ($LASTEXITCODE -ne 0) { throw 'build failed' }
-$setup = Get-ChildItem (Join-Path $Root 'src-tauri\target\release\bundle\nsis\*.exe') |
+$setup = Get-ChildItem (Join-Path $env:CARGO_TARGET_DIR 'release\bundle\nsis\*.exe') |
   Sort-Object LastWriteTime | Select-Object -Last 1
 Write-Host "running $($setup.FullName)"
 Start-Process $setup.FullName -Wait
