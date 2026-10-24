@@ -48,10 +48,33 @@ Needs x86_64 with glibc 2.38 or newer (Ubuntu 24.04+, Fedora 39+, Debian 13+).
 The speech models are bundled. A Vulkan GPU driver makes transcription fast;
 without one it falls back to the CPU, which is slower.
 
-### macOS, Windows, or from source
+### macOS
 
-There's no prebuilt package for macOS or Windows yet, so build it yourself
-(macOS needs 13.4 or newer). You'll need:
+Apple Silicon only, macOS 13.4 or newer. Download
+`Speech_*_aarch64.app.tar.gz` from the
+[latest release](https://github.com/MarsonTagawa/speech/releases/latest), then
+unpack it into Applications:
+
+```sh
+tar -xzf ~/Downloads/Speech_*_aarch64.app.tar.gz -C /Applications
+xattr -dr com.apple.quarantine /Applications/Speech.app
+```
+
+The app isn't signed with an Apple developer ID, so without the `xattr` line
+macOS reports it as damaged and won't open it. On an Intel Mac, build from
+source.
+
+### Windows
+
+Download `Speech_*_x64-setup.exe` from the
+[latest release](https://github.com/MarsonTagawa/speech/releases/latest) and run
+it. It isn't code-signed, so SmartScreen warns first: click **More info**, then
+**Run anyway**. Needs 64-bit Windows 10 or 11; like on Linux, a Vulkan GPU
+driver makes transcription fast and it falls back to the CPU without one.
+
+### From source
+
+You'll need:
 
 - [Rust](https://rustup.rs) and [Bun](https://bun.sh)
 - Tauri's [platform prerequisites](https://v2.tauri.app/start/prerequisites/)
@@ -102,11 +125,12 @@ runs on NixOS. For packages that run on other distros, build inside Ubuntu
 
 Settings → Updates → **Check for updates** looks for a newer GitHub release and,
 if there is one, downloads it, checks its signature, installs it over the
-current app and restarts. It works for the Linux AppImage, `Speech.app` on
-Apple Silicon Macs, and the Windows setup `.exe`, including copies you built
+current app and restarts. It works for the downloads above and for copies built
 with the install scripts. Intel Macs, `.deb`/`.rpm`/`.msi` installs and
-`tauri dev` builds have no prebuilt update: pull and rebuild. The app only
-contacts GitHub when you click the button.
+`tauri dev` builds have no prebuilt update: pull and rebuild. Each update
+downloads the whole app, models included (about 600 MB). The app only contacts
+GitHub when you click the button. 0.1.0 has no updater, so get 0.2.0 by hand
+once.
 
 ## Models (required, not in git)
 
