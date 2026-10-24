@@ -5,7 +5,7 @@
 <h1 align="center">Speech</h1>
 
 <p align="center">
-  A local speech-fluency trainer: Monkeytype for talking.<br>
+  A local speech-fluency trainer<br>
   <a href="https://github.com/MarsonTagawa/speech/releases/latest">Download</a> ·
   <a href="#install">Install</a> ·
   <a href="#develop">Develop</a>
