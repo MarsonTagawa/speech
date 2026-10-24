@@ -2784,7 +2784,10 @@ body.snapping .shot-btn { visibility: hidden; }
    a custom property runs on the main thread and paints in place. */
 @property --rp { syntax: "<number>"; inherits: false; initial-value: 1; }
 @property --t { syntax: "<number>"; inherits: false; initial-value: 1; }
-@media (prefers-reduced-motion: no-preference) {
+/* Off under Settings → Reduced motion, which starts out as the system's setting
+   (main.ts) — a class rather than the media query so the app can override the
+   system either way. :where keeps every rule's specificity as it was. */
+:where(:root:not(.reduce-motion)) {
   .leave > .panel { --t: 0; opacity: var(--t); scale: calc(0.985 + 0.015 * var(--t)); transition: --t 340ms cubic-bezier(.4, 0, .2, 1); }
   .leave tr[data-open]:not(.hit) { --t: 0.25; opacity: var(--t); transition: --t 300ms ease; }
 
@@ -3437,10 +3440,7 @@ body.tpane-none .scope {
   background: var(--green);
   transition: width 300ms ease;
 }
-@media (prefers-reduced-motion: reduce) {
-  .gest-card.pop .learned,
-  .gest-hit {
-    animation: none;
-    transition: none;
-  }
+:root.reduce-motion :is(.gest-card.pop .learned, .gest-hit) {
+  animation: none;
+  transition: none;
 }

@@ -3402,7 +3402,7 @@ function coachSpeak() {
   el.setAttribute("aria-label", text);
   clearInterval(coachTimer);
   halo?.setMode("speaking");
-  let n = matchMedia("(prefers-reduced-motion: reduce)").matches ? text.length : 0;
+  let n = reducedMotion() ? text.length : 0;
   const tick = () => {
     n += 2;
     el.innerHTML = escapeHtml(text.slice(0, n)) + (n >= text.length ? count : "");
@@ -3537,7 +3537,7 @@ function coachFollower(
       haloOf()?.pulse();
       joyUntil = performance.now() + 500;
       raf ||= requestAnimationFrame(frame);
-      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      if (!reducedMotion()) {
         // Springy: pops past full size, dips under, settles. Each easing runs to the next keyframe.
         const grow = (s: number, offset: number, easing = "ease-in-out") => ({ transform: `scale(${s})`, offset, easing });
         mount.animate(
@@ -5180,8 +5180,8 @@ async function openHistorySession(ts: number, row?: HTMLElement) {
   if (histPage === ts) renderHistory(true);
 }
 
-const reducedMotion = () =>
-  document.documentElement.classList.contains("reduce-motion") || matchMedia("(prefers-reduced-motion: reduce)").matches;
+// Settings → Reduced motion, which already folds in the system's setting.
+const reducedMotion = () => document.documentElement.classList.contains("reduce-motion");
 
 // Entrance for Live, Drills, Profile and Settings (styles.css .enter): restart
 // the animations, then drop the class once they're done (`ms`), so a card or
@@ -6101,7 +6101,23 @@ window.addEventListener("DOMContentLoaded", () => {
     renderModelChain();
   });
   bindToggle("set-contrast", CONTRAST_KEY, (on) => document.documentElement.classList.toggle("high-contrast", on), false);
-  bindToggle("set-motion", MOTION_KEY, (on) => document.documentElement.classList.toggle("reduce-motion", on), false);
+  // Reduced motion starts out as the system's (Windows "Animation effects", macOS
+  // "Reduce motion") and follows it until flipped here; either way overrides the
+  // other, since every animation keys off the class (reducedMotion, styles.css).
+  const sysMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const motionBox = $<HTMLInputElement>("set-motion");
+  const applyMotion = () => {
+    const saved = load(MOTION_KEY);
+    const on = saved === null ? sysMotion.matches : saved !== "0";
+    document.documentElement.classList.toggle("reduce-motion", on);
+    if (motionBox) motionBox.checked = on;
+  };
+  applyMotion();
+  sysMotion.addEventListener("change", applyMotion);
+  motionBox?.addEventListener("change", () => {
+    save(MOTION_KEY, motionBox.checked ? "1" : "0");
+    applyMotion();
+  });
   // Voice isolation applies from the next recording; a running mic test restarts with it.
   bindToggle("set-isolate", ISOLATE_KEY, async (on) => {
     voiceIsolation = on;

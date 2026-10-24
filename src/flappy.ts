@@ -293,7 +293,7 @@ export class Flappy {
       this.mode = s.mode;
       this.halo.setMode(HALO_MODE[s.mode]);
       if (s.mode === "dead") {
-        if (!still) this.shake = 1;
+        if (!still()) this.shake = 1;
         this.halo.pulse(26, 1, RED_RGB);
       }
     }
@@ -407,7 +407,7 @@ export class Flappy {
 
   // A swell on scoring.
   private boop() {
-    if (still) return;
+    if (still()) return;
     const grow = (k: number, offset: number, easing = "ease-in-out") => ({ transform: `scale(${k})`, offset, easing });
     this.fx.animate([grow(1, 0, "cubic-bezier(.2, 1.4, .5, 1)"), grow(1.22, 0.28), grow(0.95, 0.55), grow(1.03, 0.78), grow(1, 1)], { duration: 600 });
   }
@@ -427,7 +427,7 @@ export class Flappy {
       this.wing += this.wingV * h;
     }
     this.wing = Math.max(-45, Math.min(95, this.wing));
-    const ang = still ? 10 : this.wing;
+    const ang = still() ? 10 : this.wing;
     this.def.body.nodes.forEach((node, i) => {
       const b = baseNodes[i], side = b.position[0] < 0 ? 1 : -1; // left arm swings +z, right -z to raise
       const far = side < 0; // the right arm is on the far side as he turns right: tucked behind, only its tip peeks out

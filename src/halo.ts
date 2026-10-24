@@ -86,7 +86,8 @@ function blurOutline(ctx: CanvasRenderingContext2D, sh: Float32Array, dpr: numbe
   ctx.stroke();
 }
 
-export const still = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+// Settings → Reduced motion (main.ts), which already folds in the system's setting.
+export const still = () => globalThis.document?.documentElement.classList.contains("reduce-motion") ?? false;
 
 export class Halo {
   mode: RibbonMode = "idle";
@@ -151,7 +152,7 @@ export class Halo {
   // Smaller/tinted for minor beats (a corrected line).
   pulse(sparks = 26, strength = 1, tint?: number[]) {
     this.boost = Math.max(this.boost, strength);
-    if (still) return;
+    if (still()) return;
     for (let i = 0; i < sparks; i++) {
       const c = tint ?? TINTS[i % TINTS.length];
       const a = Math.random() * TAU;
@@ -207,7 +208,7 @@ export class Halo {
     for (const key of ["amp", "speed", "ab", "glow"] as const) this.p[key] = lerp(this.p[key], target[key], k);
     this.boost = Math.max(0, this.boost - dt / 0.8);
     const b = this.boost * this.boost; // eased out
-    if (!still) this.phase += this.p.speed * (1 + 6 * b) * dt; // pulse spins the wisps up
+    if (!still()) this.phase += this.p.speed * (1 + 6 * b) * dt; // pulse spins the wisps up
 
     const P = { amp: this.p.amp * (1 + 2.5 * b), ab: this.p.ab * (1 + b), glow: (this.p.glow + b) * this.gain };
     const cx = w / 2, cy = h / 2;
