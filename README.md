@@ -69,8 +69,15 @@ command fetches the models, builds the app and installs it:
 git clone https://github.com/MarsonTagawa/speech && cd speech && scripts/install.sh
 ```
 
-On macOS that puts `Speech.app` in `/Applications`. On Linux and Windows it
-prints where the AppImage or setup `.exe` landed. Pass `--no-medium` to skip
+On Windows, use the PowerShell version, which builds the setup `.exe` and runs
+it:
+
+```powershell
+git clone https://github.com/MarsonTagawa/speech; cd speech; powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+On macOS that puts `Speech.app` in `/Applications`. On Linux it prints where
+the AppImage landed. Pass `--no-medium` to skip
 the 539 MB correction model (you can download it from Settings later). Re-run
 it to rebuild; models you already have aren't fetched again. For every bundle
 format (`.dmg`, `.msi`, `.deb`, `.rpm`, …), run `bun run tauri build`; they land
