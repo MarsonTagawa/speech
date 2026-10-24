@@ -6,6 +6,7 @@
 #   scripts/build-linux.sh --bundles appimage   # args go to `tauri build`
 # Output: src-tauri/target/docker/release/bundle/
 # Uses the host's node_modules and src-tauri/resources (models) as they are.
+# TAURI_SIGNING_PRIVATE_KEY(_PASSWORD) pass through for updater signatures.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,6 +26,8 @@ if [ "${1:-}" = --fix-appimage ]; then
       mksquashfs "$d/root" "$d/fs" -root-owned -noappend -comp zstd -b 131072 -quiet -no-progress
       cat "$d/fs" >> "$d/out" && chmod +x "$d/out" && mv "$d/out" "$a"
       echo "Removed bundled libwayland from $a"
+      # The updater signature was over the old file (release.yml builds with one).
+      [ ! -f "$a.sig" ] || bun tauri signer sign "$a"
     fi
     rm -rf "$d"
   done
@@ -62,4 +65,5 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -e CARGO_HOME="$out/cargo-home" \
   -e XDG_CACHE_HOME="$out/cache" \
   -e APPIMAGE_EXTRACT_AND_RUN=1 \
+  -e TAURI_SIGNING_PRIVATE_KEY -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
   speech-build sh -c 'bun tauri build "$@" && exec bash /src/scripts/build-linux.sh --fix-appimage' sh "$@"

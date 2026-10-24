@@ -53,6 +53,9 @@ nnnoiseless = { version = "0.5", default-features = false } # Settings → Voice
 # Session video export (export.rs) decodes replay JPEGs to composite them, as do the
 # vision golden tests (src/vision/*_golden). nokhwa already builds it.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# Settings → Updates (update.rs). 2.13+ needs tauri 2.12, whose webview2-com no
+# longer matches the one screenshot.rs uses. native-tls like ureq above.
+tauri-plugin-updater = { version = "~2.12", default-features = false, features = ["native-tls", "zip", "system-proxy"] }
 
 
 # Report screenshot (screenshot.rs): each platform's webview snapshot and

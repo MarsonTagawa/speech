@@ -52,5 +52,16 @@
         "compression": "none"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE5QUE5NjFBNEE4QjhBMEIKUldRTGlvdEtHcGFxR2V0UHUvT2xGLzc1N280ZEN5cEdvMm5HcGxoZHQyQStsNHdtM0NmZ3pzcDkK",
+      "endpoints": [
+        "https://github.com/MarsonTagawa/speech/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -8,6 +8,7 @@ mod pitch;
 mod screen;
 mod screenshot;
 mod tray;
+mod update;
 mod vad;
 mod vision;
 
@@ -32,6 +33,7 @@ pub fn run() {
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Both models run on the GPU (Vulkan). They can't decode at the same
             // time — ggml shares one Vulkan device/queue across contexts and
@@ -156,7 +158,9 @@ pub fn run() {
             drive::google_sign_in_cancel,
             drive::google_sign_out,
             drive::google_status,
-            drive::google_list_files
+            drive::google_list_files,
+            update::update_check,
+            update::update_install
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

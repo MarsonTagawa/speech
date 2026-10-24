@@ -98,6 +98,16 @@ runs on NixOS. For packages that run on other distros, build inside Ubuntu
 24.04 with Docker: `scripts/build-linux.sh` (output in
 `src-tauri/target/docker/release/bundle/`).
 
+### Updating
+
+Settings → Updates → **Check for updates** looks for a newer GitHub release and,
+if there is one, downloads it, checks its signature, installs it over the
+current app and restarts. It works for the Linux AppImage, `Speech.app` on
+Apple Silicon Macs, and the Windows setup `.exe`, including copies you built
+with the install scripts. Intel Macs, `.deb`/`.rpm`/`.msi` installs and
+`tauri dev` builds have no prebuilt update: pull and rebuild. The app only
+contacts GitHub when you click the button.
+
 ## Models (required, not in git)
 
 The whisper + VAD weights are large binaries, so they're gitignored. Fetch them
@@ -158,3 +168,21 @@ not Rust or Bun; `nix develop` for a shell.
 ```sh
 bun run tauri build
 ```
+
+## Release
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the
+AppImage, the macOS app and the Windows installer, signs them for the updater
+and drafts a GitHub release with a `latest.json`. Bump `version` in
+`src-tauri/tauri.conf.json` first (the workflow checks the tag matches), then:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Publish the draft when it looks right; installed apps see the update from then
+on. The workflow signs with the `TAURI_SIGNING_PRIVATE_KEY` repo secret, the
+private half of `plugins.updater.pubkey` in `tauri.conf.json`. Losing that key
+means installed apps can't update anymore. Releases that aren't app versions
+(like the camera models) must not be marked latest, or the updater stops
+finding `latest.json`.

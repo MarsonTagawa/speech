@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, Effect, EffectState } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getVersion } from "@tauri-apps/api/app";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/400-italic.css";
 import "@fontsource/ibm-plex-mono/500.css";
@@ -6070,6 +6071,43 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   $("google-dialog")?.addEventListener("close", () => void syncGoogle()); // signed in from the slides menu
   void syncGoogle();
+
+  // Self-update from GitHub releases (update.rs). Only checks when clicked.
+  // First click checks; if there's a newer release the button turns into
+  // Update, which downloads it, installs it and restarts the app.
+  const updateBtn = $<HTMLButtonElement>("update-btn");
+  const updateStatus = $("update-status");
+  let updateTo: string | null = null;
+  void getVersion().then((v) => {
+    const el = $("app-version");
+    if (el) el.textContent = v;
+  });
+  updateBtn?.addEventListener("click", async () => {
+    const say = (s: string) => {
+      if (updateStatus) updateStatus.textContent = s;
+    };
+    updateBtn.disabled = true;
+    try {
+      if (updateTo) {
+        updateBtn.textContent = "Downloading…";
+        say(`Downloading ${updateTo}; the app restarts when it's installed`);
+        await invoke("update_install"); // restarts on success
+        return;
+      }
+      updateBtn.textContent = "Checking…";
+      const found = await invoke<{ version: string; notes: string | null } | null>("update_check");
+      updateTo = found?.version ?? null;
+      say(found ? `Version ${found.version} is available` : "You're on the latest version");
+      updateBtn.textContent = found ? "Update" : "Check again";
+    } catch (e) {
+      say(`Update failed: ${e}`);
+      updateBtn.textContent = updateTo ? "Retry update" : "Check again";
+    }
+    updateBtn.disabled = false;
+  });
+  listen<{ done: number; total: number }>("update_download", ({ payload: p }) => {
+    if (updateBtn) updateBtn.textContent = p.total ? `${Math.floor((p.done / p.total) * 100)}%` : `${Math.round(p.done / 1e6)} MB`;
+  });
 
   const pauseSel = $<HTMLSelectElement>("set-pause");
   const savedPause = Number(load(PAUSE_KEY));
