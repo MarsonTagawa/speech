@@ -2725,7 +2725,7 @@ body.no-hover-fx #shards {
   cursor: pointer;
 }
 .rep-transcript .seg-ts::before {
-  content: "▶ ";
+  content: "\25B6\FE0E  "; /* U+FE0E: text glyph, not Windows' color emoji */
   opacity: 0.5;
 }
 .rep-transcript .seg-ts:hover,
@@ -2739,7 +2739,7 @@ body.no-hover-fx #shards {
 
 /* Report: whole-session replay in the transcript's header; label swaps while playing. */
 .replay-btn { font-size: 11px; }
-.replay-btn::before { content: "▶ Replay"; }
+.replay-btn::before { content: "\25B6\FE0E  Replay"; }
 .replay-btn.playing::before { content: "■ Stop"; }
 
 /* Pace plot: the filler dot the pointer has snapped to (plotPoint). */
