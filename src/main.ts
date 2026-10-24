@@ -27,6 +27,7 @@ import { type Reading, type Said, type SlideRead, type SlideSpan, frameAt, group
 import { googleFile, type GoogleKind } from "./google";
 import { putDeckFiles, getDeckFiles, deleteDeckFiles } from "./speechDecks";
 import { notchState, scriptAhead, serial } from "./notch";
+import { initWindowControls } from "./windowControls";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
@@ -5401,16 +5402,18 @@ window.addEventListener("DOMContentLoaded", () => {
   if (ribbonCanvas) ribbon = new Ribbon(ribbonCanvas, "idle");
   const shardsCanvas = document.querySelector<HTMLCanvasElement>("#shards");
   if (shardsCanvas) new Shards(shardsCanvas, shardsCanvas.parentElement!);
-  // The scope, nav rail and toolbar strip drag the window, but only once a held
-  // pointer actually moves (and only from their bare background, not buttons).
+  initWindowControls();
+  // The scope, nav rail, toolbar strip and title bar (Windows and Linux) drag
+  // the window, but only once a held pointer actually moves (and only from
+  // their bare background, not buttons).
   // data-tauri-drag-region starts a WM move on every press and maximizes on
   // double-click, so clicks on the bars grabbed the window.
   const scope = shardsCanvas?.parentElement;
   let pressAt: { x: number; y: number } | null = null;
-  for (const bar of [scope, document.querySelector(".nav"), document.querySelector(".strip")]) {
+  for (const bar of [scope, document.querySelector(".nav"), document.querySelector(".strip"), document.querySelector(".titlebar")]) {
     bar?.addEventListener("pointerdown", (e) => {
       const ev = e as PointerEvent;
-      pressAt = ev.button === 0 && (ev.target as Element).matches(".scope, .ribbon, .countdown, .nav, .rail-spacer, .strip") ? { x: ev.clientX, y: ev.clientY } : null;
+      pressAt = ev.button === 0 && (ev.target as Element).matches(".scope, .ribbon, .countdown, .nav, .rail-spacer, .strip, .titlebar, .wc") ? { x: ev.clientX, y: ev.clientY } : null;
     });
     bar?.addEventListener("pointerup", () => (pressAt = null));
     bar?.addEventListener("pointerleave", () => (pressAt = null));

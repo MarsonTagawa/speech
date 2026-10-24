@@ -342,6 +342,134 @@ body[data-view="settings"] #settings-btn {
   align-self: stretch;
 }
 
+/* --- Window controls (windowControls.ts) ---------------------------------- */
+
+.wc {
+  display: flex;
+  flex: 0 0 auto;
+}
+.wc-btn {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+.wc-btn svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+}
+.wc-btn svg .fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* macOS: traffic lights atop the nav rail, glyphs on hover, grey unfocused. */
+body[data-os="mac"] .wc {
+  gap: 8px;
+  margin: -4px 0 10px;
+}
+body[data-os="mac"] .wc-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+  color: rgba(0, 0, 0, 0.55);
+}
+body[data-os="mac"] .wc-close { background: #ff5f57; }
+body[data-os="mac"] .wc-min { background: #febc2e; }
+body[data-os="mac"] .wc-max { background: #28c840; }
+body[data-os="mac"] .wc-btn svg {
+  width: 8px;
+  height: 8px;
+  stroke-width: 1.3;
+  opacity: 0;
+}
+body[data-os="mac"] .wc:hover svg {
+  opacity: 1;
+}
+body[data-os="mac"] .wc-btn:active {
+  filter: brightness(0.85);
+}
+body.win-blurred[data-os="mac"] .wc:not(:hover) .wc-btn {
+  background: color-mix(in srgb, var(--fg) 20%, transparent);
+  box-shadow: none;
+}
+
+/* Windows and Linux: a slim title bar, controls at the right. */
+.titlebar {
+  height: 32px;
+  display: flex;
+  justify-content: flex-end;
+  background: var(--chassis);
+  border-bottom: 0.5px solid var(--shadow-edge);
+  user-select: none;
+}
+.titlebar + .app {
+  height: calc(100vh - 32px);
+}
+body.presenting .titlebar {
+  display: none;
+}
+body.presenting .titlebar + .app {
+  height: 100vh;
+}
+body.win-blurred .titlebar .wc-btn {
+  color: var(--ink-3);
+}
+
+body[data-os="windows"] .wc-btn {
+  width: 46px;
+  height: 32px;
+  color: var(--ink);
+}
+body[data-os="windows"] .wc-btn svg {
+  width: 10px;
+  height: 10px;
+  stroke-width: 1;
+  stroke-linecap: butt;
+}
+body[data-os="windows"] .wc-btn:hover {
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
+}
+body[data-os="windows"] .wc-btn:active {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+body[data-os="windows"] .wc-close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+body[data-os="windows"] .wc-close:active {
+  background: #c83c31;
+  color: #fff;
+}
+
+body[data-os="linux"] .wc {
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+}
+body[data-os="linux"] .wc-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  color: var(--ink);
+}
+body[data-os="linux"] .wc-btn svg {
+  width: 10px;
+  height: 10px;
+  stroke-width: 1.4;
+}
+body[data-os="linux"] .wc-btn:hover {
+  background: color-mix(in srgb, var(--fg) 16%, transparent);
+}
+body[data-os="linux"] .wc-btn:active {
+  background: color-mix(in srgb, var(--fg) 24%, transparent);
+}
+
 /* --- Toolbar strip (live only) -------------------------------------------- */
 
 .strip {
