@@ -1,0 +1,117 @@
+# Builds Speech for Linux, macOS and Windows and drafts a GitHub release with the
+# bundles and the latest.json that Settings → Updates reads (src-tauri/src/update.rs).
+#
+# To release: bump "version" in src-tauri/tauri.conf.json, push a matching tag
+# (git tag v0.2.0 && git push origin v0.2.0), then publish the draft. Installed
+# apps only see the update once it's published, since the updater fetches
+# releases/latest/download/latest.json.
+#
+# Needs the repo secret TAURI_SIGNING_PRIVATE_KEY (the contents of the key whose
+# public half is plugins.updater.pubkey in tauri.conf.json), plus
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD if that key has one.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      # The release build and its Docker image don't fit in the runner's free disk.
+      - run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: test "v$(jq -r .version src-tauri/tauri.conf.json)" = "$GITHUB_REF_NAME"
+      - run: scripts/install.sh --models-only
+      - run: bun install
+      - run: scripts/build-linux.sh --bundles appimage --config src-tauri/tauri.updater.conf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            src-tauri/target/docker/release/bundle/appimage/*.AppImage
+            src-tauri/target/docker/release/bundle/appimage/*.AppImage.sig
+
+  macos:
+    runs-on: macos-latest # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/install.sh --models-only
+      - run: bun install
+      - run: bun tauri build --bundles app --config src-tauri/tauri.updater.conf.json
+      # The bundler names it Speech.app.tar.gz; give it the version and arch.
+      - run: |
+          v=${GITHUB_REF_NAME#v}
+          cd src-tauri/target/release/bundle/macos
+          mv Speech.app.tar.gz "Speech_${v}_aarch64.app.tar.gz"
+          mv Speech.app.tar.gz.sig "Speech_${v}_aarch64.app.tar.gz.sig"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: src-tauri/target/release/bundle/macos/*.app.tar.gz*
+
+  windows:
+    runs-on: windows-latest
+    env:
+      # whisper.cpp's Vulkan shader build overflows MAX_PATH under a long target dir
+      # (see scripts/install.ps1).
+      CARGO_TARGET_DIR: C:\sb
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      VULKAN_SDK: C:\VulkanSDK
+    steps:
+      - run: Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1 -Type DWord
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the Vulkan SDK
+        run: |
+          curl.exe -fsSL -o vulkan-sdk.exe https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe
+          Start-Process .\vulkan-sdk.exe -Wait -ArgumentList '--root', $env:VULKAN_SDK, '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          Add-Content $env:GITHUB_PATH "$env:VULKAN_SDK\Bin"
+      - run: scripts\install.ps1 -ModelsOnly
+      - run: bun install
+      - run: bun tauri build --bundles nsis --config src-tauri/tauri.updater.conf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: C:\sb\release\bundle\nsis\*-setup.exe*
+
+  publish:
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # Only the AppImage key for Linux: a .deb or .rpm install would otherwise
+      # fall back to it, and the updater can't install an AppImage over a package.
+      - name: Write latest.json
+        run: |
+          cd dist
+          v=${GITHUB_REF_NAME#v}
+          url=https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME
+          entry() { jq -n --arg url "$url/$1" --arg sig "$(cat "$1.sig")" '{url: $url, signature: $sig}'; }
+          linux=$(entry Speech_${v}_amd64.AppImage)
+          mac=$(entry Speech_${v}_aarch64.app.tar.gz)
+          win=$(entry Speech_${v}_x64-setup.exe)
+          jq -n --arg v "$v" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson linux "$linux" --argjson mac "$mac" --argjson win "$win" \
+            '{version: $v, pub_date: $date, platforms: {
+              "linux-x86_64-appimage": $linux,
+              "darwin-aarch64": $mac,
+              "windows-x86_64": $win}}' > latest.json
+          cat latest.json
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Speech ${GITHUB_REF_NAME#v}" --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
