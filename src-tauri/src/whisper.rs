@@ -20,7 +20,17 @@ static GPU_LOCK: Mutex<()> = Mutex::new(());
 /// This is the *fast* model (tiny.en-q5_1), on the **GPU** (Vulkan): it drives
 /// the live preview and the immediate commit so text appears as soon as possible
 /// (~160-500ms per decode on GPU vs ~2x that on CPU).
-pub struct WhisperModel(pub Mutex<WhisperState>);
+///
+/// `None` only after [`release`] at exit.
+pub struct WhisperModel(pub Mutex<Option<WhisperState>>);
+
+impl WhisperModel {
+    /// Runs `f` on the live model's decode state, holding its mutex.
+    pub fn with<T>(&self, f: impl FnOnce(&mut WhisperState) -> Result<T, String>) -> Result<T, String> {
+        let mut state = self.0.lock().map_err(|e| e.to_string())?;
+        f(state.as_mut().ok_or("the app is quitting")?)
+    }
+}
 
 /// The *accurate* model (medium.en-q5_0), also on the **GPU**, used only for the
 /// background correction pass. It has its own context/state; the correction
@@ -330,7 +340,7 @@ pub async fn set_live_model(app: tauri::AppHandle, id: String) -> Result<(), Str
     tauri::async_runtime::spawn_blocking(move || {
         let mut state = load_model(&app, &id)?;
         warm_up(&mut state)?;
-        *app.state::<WhisperModel>().0.lock().map_err(|e| e.to_string())? = state;
+        *app.state::<WhisperModel>().0.lock().map_err(|e| e.to_string())? = Some(state);
         Ok(())
     })
     .await
@@ -347,6 +357,19 @@ pub fn warm_up(state: &mut WhisperState) -> Result<String, String> {
 
 #[tauri::command]
 pub fn transcribe(state: tauri::State<WhisperModel>, audio: Vec<f32>) -> Result<String, String> {
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    run(&mut guard, &audio, false)
+    state.with(|s| run(s, &audio, false))
+}
+
+/// Frees both models' GPU buffers; lib.rs calls it on `RunEvent::Exit`. On
+/// macOS ggml-metal's device destructor runs from `exit()` and aborts if any
+/// Metal buffer is still allocated, so every quit and every restart after an
+/// update showed "Speech quit unexpectedly".
+pub fn release(app: &tauri::AppHandle) {
+    let _gpu = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Ok(mut live) = app.state::<WhisperModel>().0.lock() {
+        live.take();
+    }
+    if let Ok(mut accurate) = app.state::<AccurateModel>().0.lock() {
+        accurate.take();
+    }
 }

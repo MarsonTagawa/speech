@@ -47,7 +47,7 @@ pub fn run() {
             //   GPU decodes in ~160-500ms, keeping the live preview and immediate
             //   commit fast. Its lower accuracy doesn't matter — the medium model
             //   re-decodes and replaces this draft (see AccurateModel).
-            app.manage(WhisperModel(Mutex::new(whisper::load_model(app.handle(), "tiny.en")?)));
+            app.manage(WhisperModel(Mutex::new(Some(whisper::load_model(app.handle(), "tiny.en")?))));
 
             //   The frontend swaps in the user's chosen live model at startup
             //   (whisper::set_live_model); tiny.en is bundled so there's always one.
@@ -68,12 +68,7 @@ pub fn run() {
             // for the warmup (the cost it would pay anyway).
             let warmup_handle = app.handle().clone();
             std::thread::spawn(move || {
-                let fast = warmup_handle
-                    .state::<WhisperModel>()
-                    .0
-                    .lock()
-                    .map_err(|e| e.to_string())
-                    .and_then(|mut state| whisper::warm_up(&mut state));
+                let fast = warmup_handle.state::<WhisperModel>().with(whisper::warm_up);
                 match fast {
                     Ok(_) => eprintln!("[whisper] fast warmup complete"),
                     Err(e) => eprintln!("[whisper] fast warmup failed: {e}"),
@@ -162,6 +157,12 @@ pub fn run() {
             update::update_check,
             update::update_install
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        // Quitting, and restarting after an update (update.rs).
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                whisper::release(app);
+            }
+        });
 }

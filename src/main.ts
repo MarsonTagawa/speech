@@ -6100,13 +6100,23 @@ window.addEventListener("DOMContentLoaded", () => {
       say(found ? `Version ${found.version} is available` : "You're on the latest version");
       updateBtn.textContent = found ? "Update" : "Check again";
     } catch (e) {
+      $("update-meter")?.setAttribute("hidden", "");
       say(`Update failed: ${e}`);
       updateBtn.textContent = updateTo ? "Retry update" : "Check again";
     }
     updateBtn.disabled = false;
   });
+  const updateMeter = $("update-meter");
+  const updateFill = $("update-fill");
   listen<{ done: number; total: number }>("update_download", ({ payload: p }) => {
-    if (updateBtn) updateBtn.textContent = p.total ? `${Math.floor((p.done / p.total) * 100)}%` : `${Math.round(p.done / 1e6)} MB`;
+    const pct = p.total ? Math.floor((p.done / p.total) * 100) : 0;
+    if (updateBtn) updateBtn.textContent = p.total ? `${pct}%` : `${Math.round(p.done / 1e6)} MB`;
+    updateMeter?.toggleAttribute("hidden", !p.total);
+    if (updateFill) updateFill.style.width = `${pct}%`;
+  });
+  listen("update_installing", () => {
+    if (updateBtn) updateBtn.textContent = "Installing…";
+    if (updateFill) updateFill.style.width = "100%";
   });
 
   const pauseSel = $<HTMLSelectElement>("set-pause");

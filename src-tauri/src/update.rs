@@ -43,9 +43,9 @@ pub async fn update_check(app: AppHandle) -> Result<Option<Available>, String> {
     Ok(latest(&app).await?.map(|u| Available { version: u.version, notes: u.body }))
 }
 
-/// Downloads the newer release, emitting `update_download` progress, installs it
-/// over this one and restarts. On Windows the NSIS installer takes over and
-/// relaunches the app itself.
+/// Downloads the newer release, emitting `update_download` progress and then
+/// `update_installing`, installs it over this one and restarts. On Windows the
+/// NSIS installer takes over and relaunches the app itself.
 #[tauri::command]
 pub async fn update_install(app: AppHandle) -> Result<(), String> {
     // A dev build's executable sits in target/, not in a bundle the updater can replace.
@@ -63,7 +63,9 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
                     let _ = app.emit("update_download", Progress { done, total: total.unwrap_or(0) });
                 }
             },
-            || {},
+            || {
+                let _ = app.emit("update_installing", ());
+            },
         )
         .await
         .map_err(message)?;

@@ -2506,6 +2506,10 @@ body.no-hover-fx #shards {
 #mic-peak {
   border-right: 2px solid var(--ink-2);
 }
+#update-fill {
+  background: var(--blue);
+  transition: width 200ms linear;
+}
 .set-row input[type="range"] {
   accent-color: var(--blue);
   width: 160px;

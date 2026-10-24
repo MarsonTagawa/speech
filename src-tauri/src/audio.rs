@@ -908,14 +908,7 @@ fn spawn_transcription(
     in_flight: Option<Arc<AtomicBool>>,
 ) {
     std::thread::spawn(move || {
-        let result = {
-            let whisper_state = app.state::<WhisperModel>();
-            whisper_state
-                .0
-                .lock()
-                .map_err(|e| e.to_string())
-                .and_then(|mut state| whisper::run(&mut state, &samples, false))
-        };
+        let result = app.state::<WhisperModel>().with(|state| whisper::run(state, &samples, false));
 
         match result {
             // Finals always emit (even when empty) so the UI can commit or drop
