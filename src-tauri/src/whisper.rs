@@ -73,7 +73,7 @@ pub fn load_model(app: &tauri::AppHandle, id: &str) -> Result<WhisperState, Stri
     // with it vs 1.6s without, tiny 0.94s vs 0.17s, with identical text.
     params.flash_attn(false);
     let _gpu = GPU_LOCK.lock().map_err(|e| e.to_string())?;
-    let ctx = WhisperContext::new_with_params(&path.to_string_lossy(), params).map_err(|e| e.to_string())?;
+    let ctx = WhisperContext::new_with_params(&path, params).map_err(|e| e.to_string())?;
     ctx.create_state().map_err(|e| e.to_string())
 }
 
@@ -185,15 +185,14 @@ pub fn run(state: &mut WhisperState, audio: &[f32], accurate: bool) -> Result<St
         decode_s * 1000.0
     );
 
-    let num_segments = state.full_n_segments().map_err(|e| e.to_string())?;
     let mut text = String::new();
-    for i in 0..num_segments {
+    for segment in state.as_iter() {
         // Use the lossy accessor: the per-segment token cap can end a decode
         // mid-token, and a BPE token may split a multi-byte UTF-8 character, so
         // the raw bytes can be incomplete. The strict accessor errors out the
         // whole utterance on that; lossy substitutes a replacement char for the
         // stray byte and keeps the rest of the text.
-        text.push_str(&state.full_get_segment_text_lossy(i).map_err(|e| e.to_string())?);
+        text.push_str(&segment.to_str_lossy().map_err(|e| e.to_string())?);
     }
     Ok(clean_transcript(&collapse_repeats(text.trim())))
 }
