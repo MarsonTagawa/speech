@@ -5,7 +5,7 @@
 #   scripts/install.sh --models-only  # just the models, for `bun run tauri dev`
 #   scripts/install.sh --no-medium    # skip medium.en (539 MB); download it from Settings later
 #   scripts/install.sh --install-deps # first install the build tools (Homebrew on macOS,
-#                                     # apt/dnf/pacman on Linux; asks for sudo)
+#                                     # apt/dnf/pacman/zypper on Linux; asks for sudo)
 # macOS installs Speech.app into /Applications (~/Applications if that isn't
 # writable). Elsewhere it prints where the bundle landed.
 set -euo pipefail
@@ -45,27 +45,57 @@ deps_macos() {
   install_rust
 }
 
-# The same libraries flake.nix provides, plus Tauri's own prerequisites.
+# whisper.cpp's Vulkan shaders need a newer glslc and Vulkan headers than some
+# distros ship (Ubuntu 24.04 has shaderc 2023.8; 2025 and later work). Take
+# both from the Vulkan SDK into /usr/local, as scripts/build-linux.sh does; the
+# runtime loader stays the system's.
+VULKAN_SDK_VERSION=1.4.363.0
+vulkan_sdk_tools() {
+  local year
+  year=$(glslc --version 2>/dev/null | sed -n '1s/^shaderc v\{0,1\}\([0-9]*\).*/\1/p') || true
+  [ "${year:-0}" -lt 2025 ] || return 0
+  if [ "$(uname -m)" != x86_64 ]; then
+    echo "glslc is older than shaderc 2025; install a newer one for whisper.cpp's GPU backend" >&2
+    return
+  fi
+  echo "fetching glslc and Vulkan headers from the Vulkan SDK $VULKAN_SDK_VERSION"
+  local v=$VULKAN_SDK_VERSION
+  curl -fsSL "https://sdk.lunarg.com/sdk/download/$v/linux/vulkansdk-linux-x86_64-$v.tar.xz" |
+    sudo tar -xJ -C /usr/local --strip-components=2 \
+      "$v/x86_64/bin/glslc" "$v/x86_64/include/vulkan" "$v/x86_64/include/vk_video"
+  hash -r
+}
+
+# The same libraries flake.nix provides, plus Tauri's own prerequisites
+# (the AppImage bundler needs xdg-open).
 deps_linux() {
   if [ -e /etc/NIXOS ]; then
     echo "on NixOS, run this inside \`nix develop\` with Rust and Bun from nixpkgs instead"
     return
   elif command -v apt-get >/dev/null; then
     sudo apt-get update
-    sudo apt-get install -y build-essential curl wget file unzip pkg-config cmake clang libclang-dev \
-      libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev \
-      librsvg2-dev libxdo-dev libasound2-dev libvulkan-dev glslc libpipewire-0.3-dev libspa-0.2-dev
+    sudo apt-get install -y build-essential curl wget file unzip xz-utils pkg-config cmake clang \
+      libclang-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+      libayatana-appindicator3-dev librsvg2-dev libxdo-dev libasound2-dev libvulkan-dev glslc \
+      vulkan-tools libpipewire-0.3-dev libspa-0.2-dev xdg-utils
   elif command -v dnf >/dev/null; then
-    sudo dnf install -y gcc gcc-c++ make curl wget file unzip pkgconf-pkg-config cmake clang clang-devel \
-      openssl-devel gtk3-devel webkit2gtk4.1-devel libsoup3-devel libappindicator-gtk3-devel \
-      librsvg2-devel libxdo-devel alsa-lib-devel vulkan-loader-devel vulkan-headers glslc pipewire-devel
+    sudo dnf install -y gcc gcc-c++ make curl wget file unzip xz pkgconf-pkg-config cmake clang \
+      clang-devel openssl-devel gtk3-devel webkit2gtk4.1-devel libsoup3-devel \
+      libappindicator-gtk3-devel librsvg2-devel libxdo-devel alsa-lib-devel vulkan-loader-devel \
+      vulkan-headers glslc vulkan-tools pipewire-devel xdg-utils
   elif command -v pacman >/dev/null; then
-    sudo pacman -S --needed --noconfirm base-devel curl wget file unzip cmake clang \
+    sudo pacman -S --needed --noconfirm base-devel curl wget file unzip xz cmake clang \
       openssl gtk3 webkit2gtk-4.1 libsoup3 libayatana-appindicator librsvg xdotool alsa-lib \
-      vulkan-icd-loader vulkan-headers shaderc pipewire
+      vulkan-icd-loader vulkan-headers shaderc vulkan-tools pipewire xdg-utils
+  elif command -v zypper >/dev/null; then
+    sudo zypper --non-interactive install gcc gcc-c++ make curl wget file unzip xz pkgconf cmake \
+      clang clang-devel libopenssl-devel gtk3-devel webkitgtk3-devel libsoup-devel \
+      libayatana-appindicator3-devel librsvg-devel xdotool-devel alsa-devel vulkan-devel \
+      vulkan-headers shaderc vulkan-tools pipewire-devel xdg-utils
   else
-    echo "no apt, dnf or pacman; install the libraries flake.nix lists by hand" >&2
+    echo "no apt, dnf, pacman or zypper; install the libraries flake.nix lists by hand" >&2
   fi
+  vulkan_sdk_tools
   install_rust
   if ! command -v bun >/dev/null; then
     curl -fsSL https://bun.sh/install | bash
@@ -96,8 +126,8 @@ fetch https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/sile
 [ $MEDIUM = 1 ] && fetch $HF/ggml-medium.en-q5_0.bin ggml-medium.en-q5_0.bin
 
 # Camera models are optional. They come pre-converted from a GitHub release;
-# converting them locally needs Nix, so that's only the fallback. errexit is off
-# inside an `if` condition, hence the explicit returns.
+# converting them locally (about 250 MB of TensorFlow) is only the fallback.
+# errexit is off inside an `if` condition, hence the explicit returns.
 VISION_ZIP=https://github.com/MarsonTagawa/speech/releases/download/vision-models-1/vision-models.zip
 VISION_SHA=207c1f73308fc50f841b1bef0f5c8c3f5c080f45e227deb2c6e60960783d3887
 fetch_vision() {
@@ -115,10 +145,8 @@ if [ -d "$RES/vision" ]; then
   echo "have vision/"
 elif fetch_vision; then
   :
-elif command -v nix >/dev/null; then
-  "$ROOT/scripts/convert-vision-models.sh"
-else
-  echo "skipping camera models: scripts/convert-vision-models.sh needs Nix (the app works audio-only without them)"
+elif ! "$ROOT/scripts/convert-vision-models.sh"; then
+  echo "skipping camera models (the app works audio-only without them)"
 fi
 
 [ $MODELS_ONLY = 1 ] && exit 0

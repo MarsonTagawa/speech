@@ -76,7 +76,7 @@ Fetch 'https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/sil
 if (-not $NoMedium) { Fetch "$HF/ggml-medium.en-q5_0.bin" 'ggml-medium.en-q5_0.bin' }
 
 # Camera models are optional and come pre-converted from a GitHub release (their
-# converter needs Nix, which doesn't run on Windows).
+# converter is a bash script).
 $VisionZip = 'https://github.com/MarsonTagawa/speech/releases/download/vision-models-1/vision-models.zip'
 $VisionSha = '207c1f73308fc50f841b1bef0f5c8c3f5c080f45e227deb2c6e60960783d3887'
 $vision = Join-Path $Res 'vision'
