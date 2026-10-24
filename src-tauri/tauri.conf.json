@@ -46,6 +46,11 @@
       "rpm": {
         "compression": { "type": "none" }
       }
+    },
+    "windows": {
+      "nsis": {
+        "compression": "none"
+      }
     }
   }
 }
