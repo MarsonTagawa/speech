@@ -48,7 +48,10 @@ pub async fn notch_show(app: tauri::AppHandle, on: bool, script: bool) -> Result
 mod mac {
     use super::{notch_frame, Rect};
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSScreen, NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior as B};
+    use objc2_app_kit::{
+        NSAccessibility, NSAccessibilitySystemFloatingWindowSubrole, NSScreen, NSStatusWindowLevel, NSWindow,
+        NSWindowCollectionBehavior as B,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -109,6 +112,10 @@ mod mac {
         w.setCollectionBehavior(B::CanJoinAllSpaces | B::Stationary | B::FullScreenAuxiliary | B::IgnoresCycle);
         w.setHasShadow(false);
         w.setIgnoresMouseEvents(true);
+        // A borderless NSWindow reads as AXStandardWindow, so tiling window
+        // managers (AeroSpace) tile it; this subrole makes them leave it be.
+        // Set before ordering front, which is when they first see it.
+        w.setAccessibilitySubrole(Some(NSAccessibilitySystemFloatingWindowSubrole));
         w.setFrame_display(NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h)), true);
         w.orderFrontRegardless();
     }
