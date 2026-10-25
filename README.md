@@ -97,7 +97,7 @@ git clone https://github.com/MarsonTagawa/speech; cd speech; powershell -Executi
 ```
 | Option | Effect |
 | --- | --- |
-| `--install-deps` / `-InstallDeps` | Install missing build tools first: Homebrew (plus Xcode Command Line Tools) on macOS, apt, dnf, pacman or zypper on Linux (asks for sudo), winget on Windows. Rust comes from rustup. Leave it off to only build. |
+| `--install-deps` / `-InstallDeps` | Install missing build tools first: Homebrew (plus Xcode Command Line Tools) on macOS, apt/dnf/pacman on Linux (asks for sudo), winget on Windows. Rust comes from rustup. Leave it off to only build. |
 | `--no-medium` | Skip the 539 MB correction model. You can download it from Settings later. |
 | `--models-only` | Only fetch the models, for [development](#develop). |
 
@@ -109,10 +109,7 @@ To install the dependencies yourself instead:
   WebKitGTK and friends on Linux)
 - CMake and Clang, to build whisper.cpp
 - On Linux and Windows, the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)
-  (headers, loader and `glslc`) for whisper.cpp's GPU backend. On Linux the
-  distro's packages work when its `glslc` is shaderc 2025 or newer. Older ones
-  (Ubuntu 24.04) fail on the shaders, so `--install-deps` takes `glslc` and the
-  headers from the SDK into `/usr/local` instead.
+  (headers, loader and `glslc`) for whisper.cpp's GPU backend
 
 On NixOS, `nix develop` provides everything except Rust and Bun.
 
@@ -170,8 +167,7 @@ curl -L -O https://github.com/MarsonTagawa/speech/releases/download/vision-model
 unzip vision-models.zip -d vision && rm vision-models.zip
 ```
 
-To convert them yourself (runs on x86_64 Linux, any distro, and on macOS; it
-uses `uv` from your PATH or Nix, or fetches it if you have neither, and the first run
+To convert them yourself (needs Nix, which it uses to run `uv`; the first run
 downloads about 250 MB of TensorFlow into `src-tauri/target/vision-convert/`):
 
 ```sh

@@ -3,36 +3,18 @@
 # pipeline (src-tauri/src/vision). One-time setup; output is git-ignored.
 #   scripts/convert-vision-models.sh            # models
 #   scripts/convert-vision-models.sh --goldens  # + test images and expected outputs
-# Runs on x86_64 Linux (any glibc distro) and macOS; mediapipe has no ARM Linux
-# wheels. nixpkgs' TensorFlow doesn't build on Python 3.14/3.12, so this uses a
-# uv venv with upstream wheels; on NixOS those need nix-ld. uv comes from PATH,
-# then Nix, then astral.sh's installer (into the work dir, leaving PATH and
-# shell profiles alone).
+# nixpkgs' TensorFlow doesn't build on Python 3.14/3.12, so this uses a uv venv
+# with upstream wheels (needs nix-ld, which this machine has).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$ROOT/src-tauri/resources/vision
 WORK=$ROOT/src-tauri/target/vision-convert
 mkdir -p "$OUT" "$WORK"
-if command -v uv >/dev/null; then
-  UV=uv
-elif command -v nix >/dev/null; then
-  UV="nix run nixpkgs#uv --"
-else
-  UV=$WORK/uv/uv
-  [ -x "$UV" ] || curl -LsSf https://astral.sh/uv/install.sh |
-    UV_UNMANAGED_INSTALL="$WORK/uv" sh
-fi
+UV="nix run nixpkgs#uv --"
 PY=$WORK/venv/bin/python
 if [ ! -x "$PY" ]; then
   $UV venv --python 3.11 "$WORK/venv"
-  # tf2onnx pins protobuf<4 but runs on 4.x, which mediapipe needs. onnx 1.18
-  # wants a newer ml_dtypes than TensorFlow 2.15 allows.
-  echo "protobuf>=4.25.3,<5" > "$WORK/overrides.txt"
-  # tensorflow-cpu has no ARM wheels; on Apple Silicon the full build is CPU-only anyway.
-  $UV pip install --python "$PY" --override "$WORK/overrides.txt" \
-    "tensorflow-cpu==2.15.*; platform_machine == 'x86_64'" \
-    "tensorflow==2.15.*; platform_machine != 'x86_64'" \
-    "tf2onnx==1.16.1" "onnx<1.18" onnxruntime "numpy<2" "mediapipe==0.10.21"
+  $UV pip install --python "$PY" "tensorflow-cpu==2.15.*" "tf2onnx==1.16.1" onnxruntime "numpy<2" "mediapipe==0.10.21"
   # mediapipe pulls a desktop OpenCV that needs libGL; the headless build doesn't.
   $UV pip uninstall --python "$PY" opencv-contrib-python
   $UV pip install --python "$PY" "opencv-python-headless<4.11"
