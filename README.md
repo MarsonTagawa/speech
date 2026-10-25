@@ -15,9 +15,9 @@ Speak, and Speech transcribes you live, flags filler words, and scores your
 pace, pauses and delivery. It runs entirely on-device: no audio ever leaves
 your machine.
 
-Demo Video: <https://youtu.be/3KGP_7Rvy60?si=7YgsJYu72BsbGU6Y>
-
 ![Live session: transcript with fillers highlighted and delivery metrics](docs/screenshots/live-session.png)
+
+Demo Video: <https://youtu.be/3KGP_7Rvy60?si=7YgsJYu72BsbGU6Y>
 
 ## Features
 
