@@ -370,12 +370,23 @@ fn run_capture(mic: Option<&str>, audio_tx: Sender<Vec<f32>>, stop_rx: Receiver<
     let stream_config: cpal::StreamConfig = config.into();
     let err_fn = |e| eprintln!("audio stream error: {e}");
 
+    // The processing loop ends when this sender goes away. cpal 0.15's macOS
+    // stream for a non-default device never drops (its disconnect listener
+    // holds an Arc of the stream it lives in), so the callback — and a sender
+    // moved into it — would outlive the stream and the loop would wait forever.
+    // The callback borrows the sender from this slot instead, emptied on stop.
+    let tx_slot = Arc::new(Mutex::new(Some(audio_tx)));
+    let tx = Arc::clone(&tx_slot);
+    let send = move |samples: Vec<f32>| {
+        if let Some(tx) = tx.lock().ok().as_deref().and_then(Option::as_ref) {
+            let _ = tx.send(samples);
+        }
+    };
+
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_input_stream(
             &stream_config,
-            move |data: &[f32], _: &_| {
-                let _ = audio_tx.send(mixdown(data, channels));
-            },
+            move |data: &[f32], _: &_| send(mixdown(data, channels)),
             err_fn,
             None,
         ),
@@ -383,7 +394,7 @@ fn run_capture(mic: Option<&str>, audio_tx: Sender<Vec<f32>>, stop_rx: Receiver<
             &stream_config,
             move |data: &[i16], _: &_| {
                 let floats: Vec<f32> = data.iter().map(|s| *s as f32 / i16::MAX as f32).collect();
-                let _ = audio_tx.send(mixdown(&floats, channels));
+                send(mixdown(&floats, channels))
             },
             err_fn,
             None,
@@ -394,6 +405,11 @@ fn run_capture(mic: Option<&str>, audio_tx: Sender<Vec<f32>>, stop_rx: Receiver<
 
     stream.play().map_err(|e| e.to_string())?;
     let _ = stop_rx.recv();
+    // Pause explicitly too: dropping a leaked stream wouldn't stop the mic.
+    let _ = stream.pause();
+    if let Ok(mut slot) = tx_slot.lock() {
+        slot.take();
+    }
     Ok(())
 }
 
