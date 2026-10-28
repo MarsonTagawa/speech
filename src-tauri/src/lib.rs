@@ -92,6 +92,10 @@ pub fn run() {
                 corners::apply(&main);
             }
             tray::build(app.handle())?;
+            #[cfg(target_os = "linux")]
+            if let Err(e) = register_appimage(app.handle()) {
+                eprintln!("[appimage] desktop entry not written: {e}");
+            }
 
             Ok(())
         })
@@ -165,4 +169,32 @@ pub fn run() {
                 whisper::release(app);
             }
         });
+}
+
+/// The deb and rpm install a desktop entry; an AppImage doesn't, so launchers (rofi,
+/// GNOME, KDE) never list it. Write one to ~/.local/share/applications pointing at
+/// this AppImage, rewritten on every launch so it follows the file if it's moved.
+/// Same file name as the packaged entry, so it overrides that one instead of doubling.
+#[cfg(target_os = "linux")]
+fn register_appimage(app: &tauri::AppHandle) -> std::io::Result<()> {
+    let (Some(appimage), Some(appdir)) = (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR"))
+    else {
+        return Ok(());
+    };
+    let err = |e: tauri::Error| std::io::Error::other(e.to_string());
+    // The AppImage's own mount goes away when it exits, so keep a copy of the icon.
+    let icon = app.path().app_data_dir().map_err(err)?.join("speech.png");
+    std::fs::create_dir_all(icon.parent().unwrap())?;
+    std::fs::copy(std::path::Path::new(&appdir).join("speech.png"), &icon)?;
+    let apps = app.path().data_dir().map_err(err)?.join("applications");
+    std::fs::create_dir_all(&apps)?;
+    std::fs::write(
+        apps.join("Speech.desktop"),
+        format!(
+            "[Desktop Entry]\nType=Application\nName=Speech\nComment=A local speech-fluency trainer\n\
+             Exec=\"{}\"\nIcon={}\nStartupWMClass=speech\nCategories=Education;\nTerminal=false\n",
+            std::path::Path::new(&appimage).display(),
+            icon.display()
+        ),
+    )
 }
