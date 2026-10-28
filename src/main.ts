@@ -27,7 +27,7 @@ import { type Reading, type Said, type SlideRead, type SlideSpan, frameAt, group
 import { googleFile, type GoogleKind } from "./google";
 import { putDeckFiles, getDeckFiles, deleteDeckFiles } from "./speechDecks";
 import { notchState, scriptAhead, serial } from "./notch";
-import { initWindowControls } from "./windowControls";
+import { currentOs, initWindowControls } from "./windowControls";
 import { createAvatar, type AnimationKey, type ExpressionKey } from "@bible-strong/avatar-web";
 import { expressionFromDefinition, renderAvatarExpression, type AvatarDefinition } from "@bible-strong/avatar-core";
 import strobi from "./strobi.avatar.json";
@@ -4693,6 +4693,7 @@ const SATURATION_KEY = "speech.saturation";
 const CONTRAST_KEY = "speech.highContrast";
 const MOTION_KEY = "speech.reducedMotion";
 const PERF_KEY = "speech.perfMode";
+const WIN_AUTOHIDE_KEY = "speech.windowAutohide";
 const CAMERA_DEVICE_KEY = "speech.cameraDevice"; // camera name; unset = the first
 let accurateCorrection = true;
 let voiceIsolation = false;
@@ -5403,6 +5404,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const shardsCanvas = document.querySelector<HTMLCanvasElement>("#shards");
   if (shardsCanvas) new Shards(shardsCanvas, shardsCanvas.parentElement!);
   initWindowControls();
+  // macOS has no title bar to hide.
+  if (currentOs() === "mac") $("win-autohide-row")?.remove();
   // The scope, nav rail, toolbar strip and title bar (Windows and Linux) drag
   // the window, but only once a held pointer actually moves (and only from
   // their bare background, not buttons).
@@ -6151,6 +6154,7 @@ window.addEventListener("DOMContentLoaded", () => {
     accurateCorrection = on;
     renderModelChain();
   });
+  bindToggle("set-win-autohide", WIN_AUTOHIDE_KEY, (on) => document.documentElement.classList.toggle("win-autohide", on), false);
   bindToggle("set-contrast", CONTRAST_KEY, (on) => document.documentElement.classList.toggle("high-contrast", on), false);
   // Reduced motion starts out as the system's (Windows "Animation effects", macOS
   // "Reduce motion") and follows it until flipped here; either way overrides the

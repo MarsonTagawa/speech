@@ -419,6 +419,25 @@ body.presenting .titlebar + .app {
 body.win-blurred .titlebar .wc-btn {
   color: var(--ink-3);
 }
+/* Auto-hide: a thin strip over the app's top edge that opens on hover. */
+:root.win-autohide .titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  height: 6px;
+  opacity: 0;
+  overflow: hidden;
+  transition: height 160ms, opacity 160ms;
+}
+:root.win-autohide .titlebar:is(:hover, :focus-within) {
+  height: 32px;
+  opacity: 1;
+}
+:root.win-autohide .titlebar + .app {
+  height: 100vh;
+}
 
 body[data-os="windows"] .wc-btn {
   width: 46px;
@@ -2407,6 +2426,20 @@ body.recording .script-pane[data-memory="letters"] :is(.script-pending, .script-
 .set-row .sub {
   display: block;
   margin-top: 2px;
+}
+.view-settings .label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.view-settings .label svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 /* Divider between consecutive shown rows of a settings panel. */
 .view-settings .set-row:not([hidden]) ~ .set-row:not([hidden]) {

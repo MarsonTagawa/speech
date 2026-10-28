@@ -10,8 +10,8 @@
 
   <body data-view="live">
     <div class="app">
-      <!-- Nav rail: page switches keep the same slot on every page. The titlebar
-           is gone (decorations off), so the nav rail, scope and toolbar strip drag the window (main.ts). -->
+      <!-- Nav rail: page switches keep the same slot on every page. Decorations are off,
+           so the title bar, nav rail, scope and toolbar strip drag the window (main.ts). -->
       <nav class="nav">
         <button id="live-btn" class="nav-btn" aria-label="Live" type="button" data-tip="Live session">
           <svg class="nav-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg><span class="nav-dot"></span>
@@ -250,7 +250,7 @@
         <input id="set-search" class="ctl set-search" type="search" spellcheck="false" placeholder="Search settings" aria-label="Search settings" />
         <div id="set-empty" class="empty" hidden>No settings match.</div>
         <div class="panel">
-          <span class="label">Practice</span>
+          <span class="label"><svg viewBox="0 0 24 24"><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></svg>Practice</span>
           <div class="set-row">
             <span>Speaking context<span class="sub">Target pace band used for scoring</span></span>
             <select id="set-preset">
@@ -273,6 +273,50 @@
             <input id="set-countdown" type="checkbox" role="switch" />
           </label>
           <label class="set-row">
+            <span>Ghost caret<span class="sub">When reading a saved speech, underline where your best attempt was at this moment</span></span>
+            <input id="set-ghost" type="checkbox" role="switch" />
+          </label>
+          <div class="set-row">
+            <span>Start / stop recording<span class="sub">Keyboard shortcut · click, then press a key · Esc cancels</span></span>
+            <button id="set-record-key" class="ctl" type="button">Space</button>
+          </div>
+        </div>
+        <div class="panel">
+          <span class="label"><svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg>Microphone</span>
+          <div class="set-row">
+            <span>Microphone<span class="sub">What recordings and the mic test listen to</span></span>
+            <select id="set-mic"></select>
+          </div>
+          <label class="set-row">
+            <span>Mic sensitivity<span class="sub">Raise if the level meter barely moves when you speak</span></span>
+            <input id="set-gain" type="range" min="2" max="24" step="1" />
+          </label>
+          <label class="set-row">
+            <span>Voice isolation<span class="sub">Filter out background noise (fans, typing, room hum) before transcription</span></span>
+            <input id="set-isolate" type="checkbox" role="switch" />
+          </label>
+          <div class="set-row">
+            <span>Mic test<span id="mic-status" class="sub">Talk for a few seconds, then stop to hear it back</span></span>
+            <div class="mic-test">
+              <span id="mic-speech" class="mic-speech" data-tip="Lights up when speech is detected — what the transcriber listens for">speech</span>
+              <div class="mic-meter" data-tip="Input level at the current sensitivity — aim for the upper half when talking"><div id="mic-live"></div><div id="mic-peak"></div></div>
+              <button id="mic-replay" class="ctl" type="button" hidden>Replay</button>
+              <button id="mic-test-btn" class="ctl" type="button">Test</button>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <span class="label"><svg viewBox="0 0 24 24"><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" /><rect x="2" y="6" width="14" height="12" rx="2" /></svg>Camera</span>
+          <div class="set-row">
+            <span>Camera<span class="sub">What Video watches for eye contact, expression and gestures</span></span>
+            <select id="set-camera"></select>
+          </div>
+          <div class="set-row cam-test">
+            <span>Camera test<span id="cam-status" class="sub">Check your framing and lighting before you record</span></span>
+            <button id="cam-test-btn" class="ctl" type="button">Test</button>
+            <canvas id="cam-test-view" class="cam-test-view" hidden aria-label="Camera preview"></canvas>
+          </div>
+          <label class="set-row">
             <span>Hand highlights<span class="sub">Draw a green wireframe over your hands in the video, glowing as they move</span></span>
             <input id="set-hand-lines" type="checkbox" role="switch" />
           </label>
@@ -280,28 +324,9 @@
             <span>Gesture readout<span class="sub">Show what the camera reads from each hand: left/right, fingers out, palm direction</span></span>
             <input id="set-gesture-readout" type="checkbox" role="switch" />
           </label>
-          <label class="set-row">
-            <span>Ghost caret<span class="sub">When reading a saved speech, underline where your best attempt was at this moment</span></span>
-            <input id="set-ghost" type="checkbox" role="switch" />
-          </label>
-        </div>
-        <div id="notch-panel" class="panel">
-          <span class="label">Notch</span>
-          <label class="set-row">
-            <span>Show notch<span class="sub">Live cues around the MacBook notch while you record, over your slides and fullscreen apps</span></span>
-            <input id="set-notch" type="checkbox" role="switch" />
-          </label>
-          <label class="set-row">
-            <span>Timer and stopwatch<span class="sub">The timer counting down when one is set, otherwise the time elapsed</span></span>
-            <input id="set-notch-time" type="checkbox" role="switch" />
-          </label>
-          <label class="set-row">
-            <span>Script<span class="sub">The next few words of your read-along script, under the notch</span></span>
-            <input id="set-notch-script" type="checkbox" role="switch" />
-          </label>
         </div>
         <div class="panel">
-          <span class="label">Transcription</span>
+          <span class="label"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 15h4M15 15h2M7 11h2M13 11h4" /></svg>Transcription</span>
           <label class="set-row">
             <span>Accurate correction<span class="sub">Re-transcribe with the larger model after Stop. Off = instant results, rougher text</span></span>
             <input id="set-correct" type="checkbox" role="switch" />
@@ -316,25 +341,11 @@
           </div>
         </div>
         <div class="panel">
-          <span class="label">Models</span>
+          <span class="label"><svg viewBox="0 0 24 24"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" /><path d="M12 22V12" /><path d="m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7" /><path d="m7.5 4.27 9 5.15" /></svg>Models</span>
           <div id="model-list"></div>
         </div>
         <div class="panel">
-          <span class="label">Google</span>
-          <div class="set-row">
-            <span>Google account<span id="g-status" class="sub">Sign in to open private Slides, Docs and Drive files as slides</span></span>
-            <button id="g-sign" class="ctl" type="button">Sign in</button>
-          </div>
-        </div>
-        <div class="panel">
-          <span class="label">Data</span>
-          <div class="set-row">
-            <span>Session history<span class="sub">Permanently delete all saved sessions</span></span>
-            <button id="set-clear" class="ctl" type="button">Clear history</button>
-          </div>
-        </div>
-        <div class="panel">
-          <span class="label">Updates</span>
+          <span class="label"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8" /><path d="M21 3v5h-5" /></svg>Updates</span>
           <div class="set-row">
             <span>Speech <span id="app-version"></span><span id="update-status" class="sub">Check GitHub for a newer release</span></span>
             <div class="mic-test">
@@ -344,7 +355,7 @@
           </div>
         </div>
         <div class="panel">
-          <span class="label">Display</span>
+          <span class="label"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></svg>Display</span>
           <div class="set-row">
             <span>Colorscheme<span class="sub">Surfaces and accent color</span></span>
             <select id="set-theme">
@@ -396,9 +407,10 @@
             <span>Hover effect<span class="sub">Animated glyphs that follow the cursor</span></span>
             <input id="set-hover" type="checkbox" role="switch" />
           </label>
-        </div>
-        <div class="panel">
-          <span class="label">Performance</span>
+          <label id="win-autohide-row" class="set-row">
+            <span>Auto-hide window buttons<span class="sub">Hide the title bar until the pointer reaches the top edge of the window</span></span>
+            <input id="set-win-autohide" type="checkbox" role="switch" />
+          </label>
           <div class="set-row">
             <span>Performance mode<span class="sub">Frame rate and sharpness of the live animations. Lower saves battery</span></span>
             <select id="set-perf">
@@ -408,48 +420,37 @@
             </select>
           </div>
         </div>
+        <div id="notch-panel" class="panel">
+          <span class="label"><svg viewBox="0 0 24 24"><path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16" /></svg>Notch</span>
+          <label class="set-row">
+            <span>Show notch<span class="sub">Live cues around the MacBook notch while you record, over your slides and fullscreen apps</span></span>
+            <input id="set-notch" type="checkbox" role="switch" />
+          </label>
+          <label class="set-row">
+            <span>Timer and stopwatch<span class="sub">The timer counting down when one is set, otherwise the time elapsed</span></span>
+            <input id="set-notch-time" type="checkbox" role="switch" />
+          </label>
+          <label class="set-row">
+            <span>Script<span class="sub">The next few words of your read-along script, under the notch</span></span>
+            <input id="set-notch-script" type="checkbox" role="switch" />
+          </label>
+        </div>
         <div class="panel">
-          <span class="label">Input</span>
+          <span class="label"><svg viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" /></svg>Google</span>
           <div class="set-row">
-            <span>Microphone<span class="sub">What recordings and the mic test listen to</span></span>
-            <select id="set-mic"></select>
-          </div>
-          <label class="set-row">
-            <span>Voice isolation<span class="sub">Filter out background noise (fans, typing, room hum) before transcription</span></span>
-            <input id="set-isolate" type="checkbox" role="switch" />
-          </label>
-          <div class="set-row">
-            <span>Camera<span class="sub">What Video watches for eye contact, expression and gestures</span></span>
-            <select id="set-camera"></select>
-          </div>
-          <div class="set-row cam-test">
-            <span>Camera test<span id="cam-status" class="sub">Check your framing and lighting before you record</span></span>
-            <button id="cam-test-btn" class="ctl" type="button">Test</button>
-            <canvas id="cam-test-view" class="cam-test-view" hidden aria-label="Camera preview"></canvas>
-          </div>
-          <label class="set-row">
-            <span>Mic sensitivity<span class="sub">Raise if the level meter barely moves when you speak</span></span>
-            <input id="set-gain" type="range" min="2" max="24" step="1" />
-          </label>
-          <div class="set-row">
-            <span>Mic test<span id="mic-status" class="sub">Talk for a few seconds, then stop to hear it back</span></span>
-            <div class="mic-test">
-              <span id="mic-speech" class="mic-speech" data-tip="Lights up when speech is detected — what the transcriber listens for">speech</span>
-              <div class="mic-meter" data-tip="Input level at the current sensitivity — aim for the upper half when talking"><div id="mic-live"></div><div id="mic-peak"></div></div>
-              <button id="mic-replay" class="ctl" type="button" hidden>Replay</button>
-              <button id="mic-test-btn" class="ctl" type="button">Test</button>
-            </div>
+            <span>Google account<span id="g-status" class="sub">Sign in to open private Slides, Docs and Drive files as slides</span></span>
+            <button id="g-sign" class="ctl" type="button">Sign in</button>
           </div>
         </div>
         <div class="panel">
-          <span class="label">Keyboard</span>
+          <span class="label"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14a9 3 0 0 0 18 0V5" /><path d="M3 12a9 3 0 0 0 18 0" /></svg>Data</span>
           <div class="set-row">
-            <span>Start / stop recording<span class="sub">Click, then press a key · Esc cancels</span></span>
-            <button id="set-record-key" class="ctl" type="button">Space</button>
+            <span>Session history<span class="sub">Permanently delete all saved sessions</span></span>
+            <button id="set-clear" class="ctl" type="button">Clear history</button>
           </div>
         </div>
         <div class="panel">
-          <span class="label">Minigame</span>
+          <span class="label"><svg viewBox="0 0 24 24"><line x1="6" x2="10" y1="11" y2="11" /><line x1="8" x2="8" y1="9" y2="13" /><line x1="15" x2="15.01" y1="12" y2="12" /><line x1="18" x2="18.01" y1="10" y2="10" /><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z" /></svg>Minigame</span>
           <div class="set-row">
             <span>Flappy Coach<span id="flappy-best" class="sub">Best 0 · also press Space while it's correcting</span></span>
             <button id="set-flappy" class="ctl" type="button">Play</button>
