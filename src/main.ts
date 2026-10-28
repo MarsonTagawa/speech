@@ -6154,7 +6154,7 @@ window.addEventListener("DOMContentLoaded", () => {
     accurateCorrection = on;
     renderModelChain();
   });
-  bindToggle("set-win-autohide", WIN_AUTOHIDE_KEY, (on) => document.documentElement.classList.toggle("win-autohide", on), false);
+  bindToggle("set-win-autohide", WIN_AUTOHIDE_KEY, (on) => document.documentElement.classList.toggle("win-autohide", on));
   bindToggle("set-contrast", CONTRAST_KEY, (on) => document.documentElement.classList.toggle("high-contrast", on), false);
   // Reduced motion starts out as the system's (Windows "Animation effects", macOS
   // "Reduce motion") and follows it until flipped here; either way overrides the
