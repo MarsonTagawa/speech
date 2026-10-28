@@ -60,7 +60,9 @@ deps_linux() {
       openssl-devel gtk3-devel webkit2gtk4.1-devel libsoup3-devel libappindicator-gtk3-devel \
       librsvg2-devel libxdo-devel alsa-lib-devel vulkan-loader-devel vulkan-headers glslc pipewire-devel
   elif command -v pacman >/dev/null; then
-    sudo pacman -S --needed --noconfirm base-devel curl wget file unzip cmake clang \
+    # -Syu, not -S: Arch doesn't support partial upgrades, and -S alone can bump a
+    # package (e.g. alsa-lib) past what its lib32-* counterpart pins
+    sudo pacman -Syu --needed base-devel curl wget file unzip cmake clang \
       openssl gtk3 webkit2gtk-4.1 libsoup3 libayatana-appindicator librsvg xdotool alsa-lib \
       vulkan-icd-loader vulkan-headers shaderc pipewire
   else
