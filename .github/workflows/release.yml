@@ -90,10 +90,36 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Full history and tags, to list the commits since the previous release.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # The release notes: commit subjects since the previous v* tag, leaving out
+      # version bumps, README edits, and commits reverted within the same range
+      # (along with their reverts). Edit the draft before publishing to reword them.
+      - name: Write release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^")
+          range="$prev..$GITHUB_REF_NAME"
+          inrange=$(git rev-list "$range")
+          drop=$(git log --format=%b "$range" | sed -n 's/.*This reverts commit \([0-9a-f]*\).*/\1/p' |
+            while read -r t; do
+              grep -qx "$t" <<<"$inrange" || continue
+              echo "$t"
+              git log --format=%H --grep="This reverts commit $t" "$range"
+            done)
+          git log --reverse --no-merges --format='%H %s' "$range" -- . ':!*.md' |
+            while read -r hash subject; do
+              grep -qx "$hash" <<<"$drop" && continue
+              [[ $subject =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ || $subject == *README* ]] && continue
+              echo "- $subject"
+            done > notes.md
+          echo -e "\n**Full changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$prev...$GITHUB_REF_NAME" >> notes.md
+          cat notes.md
       # Only the AppImage key for Linux: a .deb or .rpm install would otherwise
       # fall back to it, and the updater can't install an AppImage over a package.
       - name: Write latest.json
@@ -112,6 +138,6 @@ jobs:
               "darwin-aarch64": $mac,
               "windows-x86_64": $win}}' > latest.json
           cat latest.json
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Speech ${GITHUB_REF_NAME#v}" --repo "$GITHUB_REPOSITORY"
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Speech ${GITHUB_REF_NAME#v}" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}
