@@ -1,6 +1,6 @@
 [package]
 name = "speech"
-version = "0.2.3"
+version = "0.2.4"
 description = "A local speech-fluency trainer"
 authors = ["MarsonTagawa"]
 edition = "2021"
