@@ -53,6 +53,14 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
         return Err("this is a dev build; pull and rebuild instead".into());
     }
     let update = latest(&app).await?.ok_or("already up to date")?;
+    // The updater backs the AppImage up by renaming it into $TMPDIR, checking
+    // only st_dev. NixOS's appimage-run (bwrap) binds /tmp and /home as
+    // separate mounts of one filesystem, so the check passes and rename fails
+    // with EXDEV. Back up next to the AppImage instead; we restart right after.
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = std::env::var_os("APPIMAGE").as_ref().and_then(|p| std::path::Path::new(p).parent()) {
+        std::env::set_var("TMPDIR", dir);
+    }
     let (mut done, mut emitted) = (0u64, 0u64);
     update
         .download_and_install(
