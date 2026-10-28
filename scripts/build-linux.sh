@@ -7,6 +7,9 @@
 # Output: src-tauri/target/docker/release/bundle/
 # Uses the host's node_modules and src-tauri/resources (models) as they are.
 # TAURI_SIGNING_PRIVATE_KEY(_PASSWORD) pass through for updater signatures.
+# GGML_NATIVE=OFF: whisper.cpp otherwise targets the build machine's CPU, and a CI
+# runner with AVX-512 makes a bundle that dies with SIGILL on CPUs without it
+# (0.2.6 on a Ryzen 5850U). Off, it targets AVX2/FMA/F16C.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -65,5 +68,6 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -e CARGO_HOME="$out/cargo-home" \
   -e XDG_CACHE_HOME="$out/cache" \
   -e APPIMAGE_EXTRACT_AND_RUN=1 \
+  -e GGML_NATIVE=OFF \
   -e TAURI_SIGNING_PRIVATE_KEY -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
   speech-build sh -c 'bun tauri build "$@" && exec bash /src/scripts/build-linux.sh --fix-appimage' sh "$@"

@@ -64,6 +64,8 @@ jobs:
       # whisper.cpp's Vulkan shader build overflows MAX_PATH under a long target dir
       # (see scripts/install.ps1).
       CARGO_TARGET_DIR: C:\sb
+      # Target AVX2, not the runner's CPU (see scripts/build-linux.sh).
+      GGML_NATIVE: 'OFF'
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       VULKAN_SDK: C:\VulkanSDK
     steps:
