@@ -4926,7 +4926,7 @@ dependencies = [
 
 [[package]]
 name = "speech"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "ashpd",
  "base64 0.22.1",
